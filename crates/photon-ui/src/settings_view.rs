@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 /// The header: the title and the cross, ten points over and under them.
 const HEADER: f32 = 48.0;
+pub(crate) const HEADER_HEIGHT: f32 = HEADER;
 /// The section list's width, and a row of it.
 const NAV: f32 = 150.0;
 const NAV_ROW: f32 = 28.0;
@@ -57,6 +58,10 @@ const TRAY: f32 = 2.0;
 const BOX: f32 = 16.0;
 /// The interval's field.
 const FIELD: f32 = 64.0;
+/// A row of Statistics: its height, its label's room at most, and its count's.
+const STAT_ROW: f32 = 26.0;
+const STAT_LABEL: f32 = 176.0;
+const STAT_COUNT: f32 = 72.0;
 /// A notch of the wheel over the section, whatever the system's: the info panel's.
 const NOTCH: f32 = 40.0;
 
@@ -115,14 +120,10 @@ impl SettingsView {
 /// What the view keeps from frame to frame.
 #[derive(Default)]
 pub struct SettingsView {
-    /// How far the section is scrolled, and how tall it came to when last drawn.
-    scroll: f32,
-    content: f32,
+    /// The section, scrolled by a number of its own.
+    column: Column,
     /// The section last drawn: another begins at its top.
     of: Option<Section>,
-    /// How far the section is to be scrolled in the next frame to bring the question
-    /// into sight.
-    reveal: f32,
     /// The question a row asked in the last frame, and in this one: the keyboard is put
     /// on its Cancel in the frame it is first asked.
     asked: Option<Question>,
@@ -136,6 +137,115 @@ pub struct SettingsView {
     /// is typed in was: a field opened is given the keyboard, and a history of its own.
     renaming: Option<String>,
     adding: bool,
+}
+
+/// A column painted by hand and scrolled by a number of its own: how far it is scrolled,
+/// how tall it came to when last drawn, and how far it is to be scrolled in the next frame
+/// to bring something into sight. Settings' section and the shortcut sheet's body.
+#[derive(Default)]
+pub(crate) struct Column {
+    pub(crate) scroll: f32,
+    content: f32,
+    pub(crate) reveal: f32,
+}
+
+impl Column {
+    /// The column in `inner`, within `place`, the room the wheel turns it in: the page to
+    /// fill, which `end` is given back once it has been.
+    pub(crate) fn begin(&mut self, ui: &egui::Ui, place: Rect, inner: Rect) -> Page {
+        if ui.rect_contains_pointer(place) {
+            let turned: f32 = ui.input(|input| {
+                (input.events.iter())
+                    .map(|event| match event {
+                        Event::MouseWheel { unit, delta, .. } => match unit {
+                            egui::MouseWheelUnit::Line => delta.y * NOTCH,
+                            egui::MouseWheelUnit::Point => delta.y,
+                            egui::MouseWheelUnit::Page => delta.y * inner.height(),
+                        },
+                        _ => 0.0,
+                    })
+                    .sum()
+            });
+            self.scroll -= turned;
+        }
+        self.scroll += std::mem::take(&mut self.reveal);
+        // Held to what there is to scroll, as it was when last drawn.
+        let most = (self.content - inner.height()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, most);
+        Page {
+            painter: ui.painter().clone(),
+            clip: inner,
+            left: inner.left(),
+            width: inner.width(),
+            y: inner.top() - self.scroll,
+            after: None,
+            asked: Vec::new(),
+        }
+    }
+
+    /// The column filled: how tall it came to, and its mark at `place`'s right edge.
+    pub(crate) fn end(
+        &mut self,
+        ui: &egui::Ui,
+        page: &Page,
+        place: Rect,
+        inner: Rect,
+        palette: &Palette,
+    ) {
+        self.content = page.y + self.scroll - inner.top();
+        // Shorter than it was and scrolled past its new end: the frame that puts it
+        // right is asked for.
+        if self.scroll > (self.content - inner.height()).max(0.0) {
+            ui.ctx().request_repaint();
+        }
+        if self.content > inner.height() {
+            let share = inner.height() / self.content;
+            let mark = Rect::from_min_size(
+                pos2(place.right() - 6.0, inner.top() + self.scroll * share),
+                vec2(3.0, inner.height() * share),
+            );
+            (ui.painter()).rect_filled(mark, 1.5, color(palette.line).gamma_multiply(2.0));
+        }
+    }
+}
+
+/// A dialog's header on the chrome, its top corners the dialog's: `title`, and room for
+/// the cross at its right, whose rectangle is answered. Settings' and the shortcut sheet's.
+pub(crate) fn header(ui: &egui::Ui, rect: Rect, title: &str, palette: &Palette) -> (Rect, Rect) {
+    let painter = ui.painter();
+    let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER));
+    let top = CornerRadius {
+        nw: R[3] as u8,
+        ne: R[3] as u8,
+        sw: 0,
+        se: 0,
+    };
+    painter.rect_filled(header, top, color(palette.chrome));
+    painter.hline(
+        header.x_range(),
+        header.bottom() - 0.5,
+        (1.0, color(palette.line)),
+    );
+    let cross = Rect::from_center_size(
+        pos2(header.right() - S[2] - CROSS / 2.0, header.center().y),
+        vec2(CROSS, CROSS),
+    );
+    paint_line(
+        ui,
+        painter,
+        (header.left() + S[3], header.center().y),
+        cross.left() - S[1] - header.left() - S[3],
+        title,
+        fonts::semibold(ui.ctx(), T[4]),
+        color(palette.text),
+    );
+    ui.interact(
+        header.shrink(1.0),
+        Id::new(("dialog-title", title)),
+        Sense::hover(),
+    )
+    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, title));
+    (header, cross)
 }
 
 /// A text field of Settings at `rect`: its ground, its words, its placeholder. The field
@@ -222,14 +332,14 @@ fn opened_field(ui: &egui::Ui, id: Id, text: &str) {
 }
 
 /// Where the next thing goes in the section, and what is in sight of it.
-struct Page {
-    painter: egui::Painter,
-    clip: Rect,
-    left: f32,
-    width: f32,
+pub(crate) struct Page {
+    pub(crate) painter: egui::Painter,
+    pub(crate) clip: Rect,
+    pub(crate) left: f32,
+    pub(crate) width: f32,
     /// The top of the next thing, on screen: above the section for what is scrolled
     /// past.
-    y: f32,
+    pub(crate) y: f32,
     /// The room already left under what was put on it last, or none while nothing has
     /// been: a heading after something stands clear of it by its own room, which takes
     /// in what is already there as one CSS margin collapses into the next.
@@ -238,29 +348,36 @@ struct Page {
 }
 
 impl Page {
-    fn sees(&self, rect: Rect) -> bool {
+    pub(crate) fn sees(&self, rect: Rect) -> bool {
         rect.intersects(self.clip)
     }
 
     /// Room under what was put on it last.
-    fn gap(&mut self, by: f32) {
+    pub(crate) fn gap(&mut self, by: f32) {
         self.y += by;
         self.after = Some(self.after.unwrap_or(0.0) + by);
     }
 
     /// Something put on it, ending at `bottom`.
-    fn put(&mut self, bottom: f32) {
+    pub(crate) fn put(&mut self, bottom: f32) {
         self.y = bottom;
         self.after = Some(0.0);
     }
 
-    fn row(&self, height: f32) -> Rect {
+    pub(crate) fn row(&self, height: f32) -> Rect {
         Rect::from_min_size(pos2(self.left, self.y), vec2(self.width, height))
     }
 
     /// Words wrapped to the column, at `self.y`, which they move on past. They tell
     /// AccessKit what they say, which is how a test of the whole application reads them.
-    fn words(&mut self, ui: &egui::Ui, words: &str, font: FontId, tint: Color32, id: Id) -> Rect {
+    pub(crate) fn words(
+        &mut self,
+        ui: &egui::Ui,
+        words: &str,
+        font: FontId,
+        tint: Color32,
+        id: Id,
+    ) -> Rect {
         let galley = wrap(ui, words, font, tint, self.width);
         let rect = Rect::from_min_size(pos2(self.left, self.y), galley.size());
         self.put(self.y + galley.size().y.ceil());
@@ -273,7 +390,7 @@ impl Page {
     }
 
     /// A heading: a second one starts a new group, and stands clear of what is above it.
-    fn heading(&mut self, ui: &egui::Ui, words: &str, palette: &Palette) {
+    pub(crate) fn heading(&mut self, ui: &egui::Ui, words: &str, palette: &Palette) {
         if let Some(after) = self.after {
             self.y += (S[4] - after).max(0.0);
         }
@@ -289,7 +406,7 @@ impl Page {
     }
 
     /// A line of dim words under a heading, and the room after it.
-    fn hint(&mut self, ui: &egui::Ui, words: &str, palette: &Palette) {
+    pub(crate) fn hint(&mut self, ui: &egui::Ui, words: &str, palette: &Palette) {
         self.words(
             ui,
             words,
@@ -301,11 +418,17 @@ impl Page {
     }
 }
 
-fn wrap(ui: &egui::Ui, words: &str, font: FontId, tint: Color32, width: f32) -> Arc<egui::Galley> {
+pub(crate) fn wrap(
+    ui: &egui::Ui,
+    words: &str,
+    font: FontId,
+    tint: Color32,
+    width: f32,
+) -> Arc<egui::Galley> {
     ui.painter().layout(words.to_owned(), font, tint, width)
 }
 
-fn line_height(ui: &egui::Ui, font: &FontId) -> f32 {
+pub(crate) fn line_height(ui: &egui::Ui, font: &FontId) -> f32 {
     ui.ctx().fonts_mut(|fonts| fonts.row_height(font)).ceil()
 }
 
@@ -537,39 +660,7 @@ impl SettingsView {
             });
         }
 
-        // The header, on the chrome, its corners the dialog's.
-        let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER));
-        let top = CornerRadius {
-            nw: R[3] as u8,
-            ne: R[3] as u8,
-            sw: 0,
-            se: 0,
-        };
-        painter.rect_filled(header, top, color(palette.chrome));
-        painter.hline(
-            header.x_range(),
-            header.bottom() - 0.5,
-            (1.0, color(palette.line)),
-        );
-        let cross = Rect::from_center_size(
-            pos2(header.right() - S[2] - CROSS / 2.0, header.center().y),
-            vec2(CROSS, CROSS),
-        );
-        paint_line(
-            ui,
-            &painter,
-            (header.left() + S[3], header.center().y),
-            cross.left() - S[1] - header.left() - S[3],
-            TITLE,
-            fonts::semibold(ui.ctx(), T[4]),
-            color(palette.text),
-        );
-        ui.interact(
-            header.shrink(1.0),
-            Id::new("settings-title"),
-            Sense::hover(),
-        )
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, TITLE));
+        let (header, cross) = self::header(ui, rect, TITLE, palette);
 
         // The section list, on the chrome down the left.
         let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
@@ -602,58 +693,17 @@ impl SettingsView {
         );
         if self.of != Some(settings.section) {
             self.of = Some(settings.section);
-            self.scroll = 0.0;
+            self.column.scroll = 0.0;
         }
-        if ui.rect_contains_pointer(place) {
-            let turned: f32 = ui.input(|input| {
-                (input.events.iter())
-                    .map(|event| match event {
-                        Event::MouseWheel { unit, delta, .. } => match unit {
-                            egui::MouseWheelUnit::Line => delta.y * NOTCH,
-                            egui::MouseWheelUnit::Point => delta.y,
-                            egui::MouseWheelUnit::Page => delta.y * inner.height(),
-                        },
-                        _ => 0.0,
-                    })
-                    .sum()
-            });
-            self.scroll -= turned;
-        }
-        self.scroll += std::mem::take(&mut self.reveal);
-        // Held to what there is to scroll, as it was when last drawn.
-        let most = (self.content - inner.height()).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, most);
-        let scroll = self.scroll;
+        let mut page = self.column.begin(ui, place, inner);
         let page = ui
             .scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.set_clip_rect(inner.intersect(ui.clip_rect()));
-                let mut page = Page {
-                    painter: ui.painter().clone(),
-                    clip: inner,
-                    left: inner.left(),
-                    width: inner.width(),
-                    y: inner.top() - scroll,
-                    after: None,
-                    asked: Vec::new(),
-                };
                 self.fill(ui, &mut page, settings, tags, palette);
                 page
             })
             .inner;
-        self.content = page.y + self.scroll - inner.top();
-        // Shorter than it was and scrolled past its new end: the frame that puts it
-        // right is asked for.
-        if self.scroll > (self.content - inner.height()).max(0.0) {
-            ui.ctx().request_repaint();
-        }
-        if self.content > inner.height() {
-            let share = inner.height() / self.content;
-            let mark = Rect::from_min_size(
-                pos2(place.right() - 6.0, inner.top() + self.scroll * share),
-                vec2(3.0, inner.height() * share),
-            );
-            painter.rect_filled(mark, 1.5, color(palette.line).gamma_multiply(2.0));
-        }
+        self.column.end(ui, &page, place, inner, palette);
         asked.extend(page.asked);
 
         // Made last, although it is drawn at the top: the last thing one wants to tab to.
@@ -710,9 +760,15 @@ impl SettingsView {
                 page.hint(ui, TAGS_HINT, palette);
                 self.tags(ui, page, settings, tags, palette);
             }
-            // Built by the pull request after this one: its heading.
-            Section::Statistics | Section::Shortcuts => {
+            Section::Statistics => {
                 page.heading(ui, section.label(), palette);
+                self.statistics(ui, page, settings, palette);
+            }
+            // The list the `?` sheet draws, in one column.
+            Section::Shortcuts => {
+                page.heading(ui, section.label(), palette);
+                page.hint(ui, crate::shortcuts::SECTION_HINT, palette);
+                crate::shortcuts_view::draw_list(ui, page, false, palette);
             }
             Section::Appearance => {
                 page.heading(ui, section.label(), palette);
@@ -946,8 +1002,8 @@ impl SettingsView {
             // nothing would bring it into sight: the section is scrolled to it.
             let below = row.bottom() - page.clip.bottom();
             let above = words.top() - page.clip.top();
-            self.reveal = if below > 0.0 { below } else { above.min(0.0) };
-            if self.reveal != 0.0 {
+            self.column.reveal = if below > 0.0 { below } else { above.min(0.0) };
+            if self.column.reveal != 0.0 {
                 ui.ctx().request_repaint();
             }
         }
@@ -1521,6 +1577,100 @@ impl SettingsView {
             );
         }
         page.gap(6.0);
+    }
+
+    /// Statistics: the summary line, then the years, the cameras and the lenses, each row
+    /// a bar of its share of the largest and a search for its photos.
+    fn statistics(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        settings: &Settings,
+        palette: &Palette,
+    ) {
+        use crate::{settings::Counted, stats};
+        let counted = match &settings.stats {
+            Counted::Counted(counted) => counted,
+            Counted::Failed => {
+                page.hint(ui, stats::NOT_COUNTED, palette);
+                return;
+            }
+            Counted::NotAsked | Counted::Counting => {
+                page.hint(ui, stats::COUNTING, palette);
+                return;
+            }
+        };
+        let summary = format!("{}. {}", stats::summary(counted), stats::SUMMARY_TAIL);
+        page.hint(ui, &summary, palette);
+        let lists = [
+            (stats::YEARS, stats::year_rows(counted)),
+            (stats::CAMERAS, stats::camera_rows(counted)),
+            (stats::LENSES, stats::lens_rows(counted)),
+        ];
+        let font = fonts::regular(T[2]);
+        for (title, rows) in lists {
+            if rows.is_empty() {
+                continue;
+            }
+            page.heading(ui, title, palette);
+            for row in &rows {
+                let rect = page.row(STAT_ROW);
+                page.put(rect.bottom());
+                if !page.sees(rect) {
+                    continue;
+                }
+                let response = ui.interact(
+                    rect,
+                    Id::new(("settings-stat", &row.search)),
+                    Sense::click(),
+                );
+                let count = crate::grid::labels::grouped(usize::try_from(row.count).unwrap_or(0));
+                let label = format!("{}, {count}", row.label);
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+                if response.hovered() {
+                    page.painter.rect_filled(rect, R[1], color(palette.hover));
+                }
+                if response.has_focus() {
+                    ring(&page.painter, rect, R[1], palette);
+                }
+                let inner = rect.shrink2(vec2(S[1], 0.0));
+                let label_room = STAT_LABEL.min(inner.width() / 3.0);
+                let count_at = inner.right() - STAT_COUNT;
+                paint_line(
+                    ui,
+                    &page.painter,
+                    (inner.left(), inner.center().y),
+                    label_room,
+                    &row.label,
+                    font.clone(),
+                    color(palette.text),
+                );
+                let track = Rect::from_min_max(
+                    pos2(inner.left() + label_room + S[2], inner.center().y - 3.0),
+                    pos2(count_at - S[2], inner.center().y + 3.0),
+                );
+                page.painter.rect_filled(track, R[0], color(palette.field));
+                let bar = Rect::from_min_size(
+                    track.min,
+                    vec2((track.width() * row.share as f32).max(2.0), track.height()),
+                );
+                page.painter.rect_filled(bar, R[0], color(palette.accent));
+                page.painter.text(
+                    pos2(inner.right(), inner.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    &count,
+                    font.clone(),
+                    color(palette.text_dim),
+                );
+                if response.clicked() {
+                    page.asked.push(Asked::Search(row.search.clone()));
+                }
+            }
+            if title == stats::CAMERAS && counted.no_camera > 0 {
+                page.gap(S[2]);
+                page.hint(ui, &stats::without_camera(counted.no_camera), palette);
+            }
+        }
     }
 
     /// About: the version, the library and its Reveal, photon's memory, the licence, as
@@ -2150,6 +2300,63 @@ mod tests {
         assert!(f.drew(&tag_manager::remove_question("lake")).is_some());
         assert!(f.drew("Faro — removed").is_some());
         assert_eq!(click(&mut f, RESTORE), [Asked::Restore("Faro".to_owned())]);
+    }
+
+    // Statistics: counting, failed, then the summary and the lists, a row a search; the
+    // cameras say how many have no camera data.
+    #[test]
+    fn statistics_counts_and_a_row_asks_for_its_search() {
+        use crate::settings::Counted;
+        use photon_core::library::{CameraCount, LibraryStats, YearCount};
+        let mut f = settings(Section::Statistics, true);
+        assert!(f.drew(crate::stats::COUNTING).is_some());
+        the(&mut f).stats = Counted::Failed;
+        f.frame(Vec::new());
+        assert!(f.drew(crate::stats::NOT_COUNTED).is_some());
+        the(&mut f).stats = Counted::Counted(Box::new(LibraryStats {
+            photos: 3,
+            videos: 0,
+            bytes: 2 * 1_048_576,
+            oldest: None,
+            newest: None,
+            years: vec![YearCount {
+                year: 2024,
+                count: 3,
+            }],
+            cameras: vec![CameraCount {
+                make: Some("Canon".to_owned()),
+                model: Some("Canon EOS 5D".to_owned()),
+                count: 2,
+            }],
+            no_camera: 1,
+            lenses: Vec::new(),
+        }));
+        f.frame(Vec::new());
+        assert!(
+            f.drew("3 photos · 2 MB. Hidden photos are not counted. Click a row to search for it.")
+                .is_some()
+        );
+        assert!(f.drew(crate::stats::LENSES).is_none(), "no lens, no list");
+        assert!(f.drew("1 without camera data.").is_some());
+        assert_eq!(
+            click(&mut f, "2024"),
+            [Asked::Search("from:2024 to:2024".to_owned())]
+        );
+        assert_eq!(
+            click(&mut f, "Canon EOS 5D"),
+            [Asked::Search("camera:\"Canon EOS 5D\"".to_owned())]
+        );
+    }
+
+    // Shortcuts: the hint and the list, in one column.
+    #[test]
+    fn the_shortcuts_section_is_the_list_in_one_column() {
+        let f = settings(Section::Shortcuts, true);
+        assert!(f.drew(crate::shortcuts::SECTION_HINT).is_some());
+        let everywhere = f.drew("Everywhere").unwrap();
+        let grid = f.drew("Grid").unwrap();
+        assert!((everywhere.left() - grid.left()).abs() < 3.0, "one column");
+        assert!(grid.top() > everywhere.top());
     }
 
     // In a window too low to hold it, the question is scrolled into sight as it is asked:

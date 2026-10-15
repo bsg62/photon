@@ -104,6 +104,11 @@ impl CompareView {
         self.held.is_some()
     }
 
+    /// A pan held is let go of where it stands: a dialog has opened over it.
+    fn let_go(&mut self) {
+        self.held = None;
+    }
+
     /// Draws compare over the whole window and answers what was done in it; the zoom
     /// and the pan are `zoom`'s, changed here by the wheel and a drag.
     pub fn show(
@@ -111,6 +116,7 @@ impl CompareView {
         ui: &mut egui::Ui,
         data: &CompareData<'_>,
         zoom: &mut Zoom,
+        paused: bool,
     ) -> Vec<CompareAction> {
         let window = ui.ctx().content_rect();
         ui.painter().rect_filled(window, 0.0, color(DARK.surface));
@@ -125,7 +131,14 @@ impl CompareView {
         );
         // The ground under the controls: a press beside the cross is not the cross's.
         ui.interact(window, Id::new("compare-ground"), Sense::CLICK);
-        let mut actions = self.input(ui, &places, close, zoom, size);
+        // Under a dialog nothing is read: the wheel would zoom the panes under the sheet,
+        // and a drag held when it opened would go on panning them.
+        let mut actions = if paused {
+            self.let_go();
+            Vec::new()
+        } else {
+            self.input(ui, &places, close, zoom, size)
+        };
 
         for (number, (pane, place)) in data.panes.iter().zip(&places).enumerate() {
             self.pane(ui, pane, *place, number, number == data.focus, zoom);
@@ -542,7 +555,7 @@ mod tests {
                 crate::icons::install(ui.ctx());
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show(ui, |ui| actions = view.show(ui, &data, zoom));
+                    .show(ui, |ui| actions = view.show(ui, &data, zoom, false));
             });
             full.textures_delta.clear();
             self.cursor = full.platform_output.cursor_icon;

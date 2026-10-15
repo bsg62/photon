@@ -55,9 +55,12 @@ pub mod selection;
 pub mod settings;
 pub mod settings_view;
 pub mod shell;
+pub mod shortcuts;
+pub mod shortcuts_view;
 pub mod side_menu;
 pub mod slideshow;
 pub mod slideshow_order;
+pub mod stats;
 pub mod status;
 pub mod sidebar {
     pub mod folders;
@@ -101,7 +104,9 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 57] = [
+    const STATE_MODULES: [(&str, &str); 59] = [
+        ("shortcuts.rs", include_str!("shortcuts.rs")),
+        ("stats.rs", include_str!("stats.rs")),
         ("watched_list.rs", include_str!("watched_list.rs")),
         ("tag_manager.rs", include_str!("tag_manager.rs")),
         ("settings.rs", include_str!("settings.rs")),

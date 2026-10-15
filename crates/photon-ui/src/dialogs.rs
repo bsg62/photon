@@ -82,6 +82,8 @@ pub enum Dialog {
     /// Boxed: it holds the lists of its sections, and every other dialog would be as
     /// large.
     Settings(Box<Settings>),
+    /// The list of shortcuts, over whatever the `?` was pressed in.
+    Shortcuts,
 }
 
 #[cfg(test)]

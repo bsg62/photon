@@ -37,7 +37,7 @@ pub fn field_query(field: &str, value: &str) -> String {
 /// binary - every multiple of a sixty-fourth of a degree, which degrees, minutes and
 /// seconds make - was spelled a digit off the Svelte panel's, and searched for ten
 /// metres from where its link searches.
-fn fixed(value: f64, places: usize) -> String {
+pub fn fixed(value: f64, places: usize) -> String {
     let scale = 10f64.powi(places as i32);
     format!(
         "{:.places$}",

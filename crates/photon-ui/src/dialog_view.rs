@@ -21,6 +21,7 @@ use crate::{
     person_picker::{self, PersonPicker},
     settings::Asked,
     settings_view::SettingsView,
+    shortcuts_view::{self, SheetView},
     tag_picker::{LIST, NO_KEYWORDS, NO_MATCH, TagPicker},
     text::paint_line,
     theme::{
@@ -97,6 +98,8 @@ pub struct DialogView {
     deaf: bool,
     /// What Settings keeps from frame to frame: how far its section is scrolled.
     settings: SettingsView,
+    /// And the shortcut sheet: how far its list is.
+    sheet: SheetView,
 }
 
 fn field_id() -> Id {
@@ -297,6 +300,7 @@ impl DialogView {
         let widest = match dialog {
             Dialog::Export(_) => WIDTH_EXPORT,
             Dialog::Settings(_) => WIDTH_SETTINGS,
+            Dialog::Shortcuts => shortcuts_view::sheet_size(ui, window).x,
             Dialog::Confirm(_) | Dialog::Tags(_) | Dialog::Person(_) => WIDTH,
         };
         let width = widest.min(window.width() - 2.0 * PAD).max(0.0);
@@ -305,7 +309,9 @@ impl DialogView {
         let picker = match dialog {
             Dialog::Tags(picker) => Some(Picker::of_tags(picker, keywords)),
             Dialog::Person(picker) => Some(Picker::of_people(picker, people)),
-            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Settings(_) => None,
+            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Settings(_) | Dialog::Shortcuts => {
+                None
+            }
         };
         let height = match (dialog, &picker) {
             (_, Some(picker)) => picker.height(window.height()),
@@ -314,6 +320,7 @@ impl DialogView {
             // As tall as the Svelte dialog, or the window less its margin: the section
             // scrolls.
             (Dialog::Settings(_), _) => HEIGHT_SETTINGS.min(window.height() - 2.0 * PAD).max(0.0),
+            (Dialog::Shortcuts, _) => shortcuts_view::sheet_size(ui, window).y,
             // (Each is a picker, above.)
             (Dialog::Tags(_) | Dialog::Person(_), None) => 0.0,
         };
@@ -361,6 +368,7 @@ impl DialogView {
                 );
                 let room = rect.shrink(PAD);
                 let settings_view = &mut self.settings;
+                let sheet = &mut self.sheet;
                 done = match (dialog, &picker) {
                     (_, Some(picker)) => picker.show(ui, room, palette, opened),
                     (Dialog::Confirm(confirm), _) => {
@@ -373,6 +381,7 @@ impl DialogView {
                     (Dialog::Settings(settings), _) => {
                         settings_view.show(ui, rect, settings, tags, palette, opened)
                     }
+                    (Dialog::Shortcuts, _) => sheet.show(ui, rect, palette),
                     (Dialog::Tags(_) | Dialog::Person(_), None) => Done::Open,
                 };
             });

@@ -27,6 +27,7 @@ mod settings;
 mod settings_edges;
 mod settings_lists;
 mod shell;
+mod shortcuts;
 mod side;
 mod slideshow;
 mod slideshow_edges;

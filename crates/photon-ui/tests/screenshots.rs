@@ -1352,3 +1352,50 @@ fn native_settings_tags_dark() {
         },
     );
 }
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_shortcuts_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-shortcuts-light.png",
+        |harness| {
+            harness.event(egui::Event::Key {
+                key: Key::Questionmark,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            });
+            for _ in 0..5 {
+                harness.step();
+            }
+        },
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_shortcuts_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-settings-shortcuts-dark.png",
+        |harness| settings_at(harness, "Shortcuts"),
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_statistics_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-settings-statistics-light.png",
+        |harness| {
+            settings_at(harness, "Statistics");
+            until(harness, "the library counted", |app| {
+                matches!(app.dialog(), Some(photon_ui::dialogs::Dialog::Settings(settings))
+                    if matches!(settings.stats, photon_ui::settings::Counted::Counted(_)))
+            });
+        },
+    );
+}
