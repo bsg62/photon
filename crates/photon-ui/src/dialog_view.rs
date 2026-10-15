@@ -362,7 +362,7 @@ impl DialogView {
                     }
                     // Settings draws its own header and list to the dialog's edge.
                     (Dialog::Settings(settings), _) => {
-                        settings_view.show(ui, rect, settings, palette)
+                        settings_view.show(ui, rect, settings, palette, opened)
                     }
                     (Dialog::Tags(_) | Dialog::Person(_), None) => Done::Open,
                 };
@@ -374,8 +374,20 @@ impl DialogView {
                 .then(|| input.pointer.interact_pos())
                 .flatten()
         });
-        if done == Done::Open && pressed.is_some_and(|at| !ground.contains(at)) {
-            done = Done::Closed;
+        if pressed.is_some_and(|at| !ground.contains(at)) {
+            done = match done {
+                Done::Open => Done::Closed,
+                // Settings may have asked for something in this very frame: its
+                // interval's field gives up the keyboard at a click elsewhere, and asks
+                // to be stored. A tap - its press and release in one frame - on the
+                // scrim did that, and the close was dropped for it. The close goes with
+                // what was asked, which is done first.
+                Done::Settings(mut asked) => {
+                    asked.push(Asked::Close);
+                    Done::Settings(asked)
+                }
+                done => done,
+            };
         }
         // The second press of a double click does nothing; what was typed stands.
         if deaf {

@@ -2927,6 +2927,26 @@ launch (`egui_kittest` draws frames past the first before a test can read its ou
 the press is tested, and `put` itself). Folders, Tags, Statistics and Shortcuts are their
 heading and what can be said already, until the pull requests that build them.
 
+**What a review of Settings found, each with its test** (`tests/settings_edges.rs`).
+*A press on the scrim closes it whatever else the frame asked*: a tap - press and release
+in one frame - had the interval's field give up the keyboard and ask to be stored in that
+very frame, and the close was dropped for the ask (`Asked::Close` now goes with it, done
+after). *An answered question gives the keyboard back to the box*, as the system's `ask`
+does; on nothing, Space ticked nothing. *The interval's field opens with a history of its
+own*, the lesson every field here has learnt. *A question asked in a low window is
+scrolled into sight* with the keyboard on its Cancel. *A pinned theme is put on the title
+bar again whenever the system says the window's theme changed* (`keep_title_bar`): winit
+on Windows does not keep the theme it is told and puts the system's back at every
+`WM_SETTINGCHANGE` (read in winit 0.30.13's source, not seen run - the smoke checklist's).
+*Each opening of Settings has a number* (`Settings::opening`): the count of people named
+and the interval's answers act on the opening that asked - over another opening's field
+the stored interval does not write over what is being typed - and a count that lands
+after the dialog has closed still switches off when nobody is named, as the Svelte switch
+went on after its dialog closed. That last has no test: a read cannot be held back, and
+the count is one. Known and left: letters typed in the double click's deaf time after
+opening are dropped, which cannot happen while the field takes nothing before the stored
+interval is read.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs

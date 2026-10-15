@@ -19,7 +19,11 @@ pub(super) enum SettingWrite {
     /// Applied at the press, and kept for the session if the library will not store it:
     /// going back would answer a disk error with a flash of the whole window.
     Theme(ThemeChoice),
-    Interval(i64),
+    /// With the opening of Settings it was sent from.
+    Interval {
+        seconds: i64,
+        opening: u64,
+    },
     Shuffle(bool),
     Distance(i64),
     FaceDetection(bool),
@@ -28,7 +32,7 @@ pub(super) enum SettingWrite {
 /// What the library made of one: an interval and a distance are clamped, and the
 /// dialog shows what was stored.
 pub(super) enum SettingWrote {
-    Interval(i64),
+    Interval { seconds: i64, opening: u64 },
     Shuffle(bool),
     Distance(i64),
     Stored,
@@ -36,7 +40,7 @@ pub(super) enum SettingWrote {
 
 /// Makes `write`, on the queue's thread.
 pub(super) fn store(engine: &Arc<Engine>, write: SettingWrite) -> Result<Wrote, Unwritten> {
-    let refused = |interval: bool| {
+    let refused = |interval: Option<u64>| {
         move |err: photon_engine::error::AppError| Unwritten::Setting {
             interval,
             said: err.message,
@@ -45,19 +49,21 @@ pub(super) fn store(engine: &Arc<Engine>, write: SettingWrite) -> Result<Wrote, 
     let wrote = match write {
         SettingWrite::Theme(choice) => commands::set_theme(engine, choice)
             .map(|()| SettingWrote::Stored)
-            .map_err(refused(false))?,
-        SettingWrite::Interval(seconds) => commands::set_slideshow_interval(engine, seconds)
-            .map(SettingWrote::Interval)
-            .map_err(refused(true))?,
+            .map_err(refused(None))?,
+        SettingWrite::Interval { seconds, opening } => {
+            commands::set_slideshow_interval(engine, seconds)
+                .map(|seconds| SettingWrote::Interval { seconds, opening })
+                .map_err(refused(Some(opening)))?
+        }
         SettingWrite::Shuffle(shuffle) => commands::set_slideshow_shuffle(engine, shuffle)
             .map(|()| SettingWrote::Shuffle(shuffle))
-            .map_err(refused(false))?,
+            .map_err(refused(None))?,
         SettingWrite::Distance(distance) => commands::set_similar_distance(engine, distance)
             .map(SettingWrote::Distance)
-            .map_err(refused(false))?,
+            .map_err(refused(None))?,
         SettingWrite::FaceDetection(on) => commands::set_face_detection(engine, on)
             .map(|()| SettingWrote::Stored)
-            .map_err(refused(false))?,
+            .map_err(refused(None))?,
     };
     Ok(Wrote::Setting(wrote))
 }
@@ -73,8 +79,8 @@ pub(super) fn read(engine: &Engine) -> Result<Stored, String> {
 }
 
 /// photon's memory, read off the window's thread: on Linux each read walks the whole
-/// process table. A read that fails leaves the row out, rather than a message every two
-/// seconds.
+/// process table. A read that fails says nothing, rather than a message every two
+/// seconds: the figure last read stands, and before one there is no row.
 pub(super) fn memory() -> Option<Memory> {
     commands::memory_usage().ok().map(|usage| Memory {
         bytes: usage.bytes,
@@ -83,10 +89,11 @@ pub(super) fn memory() -> Option<Memory> {
 }
 
 /// How many people the user has named: what switching face detection off deletes.
-pub(super) fn named(engine: &Engine) -> Result<i64, String> {
-    commands::face_data_summary(engine)
+pub(super) fn named(engine: &Engine, opening: u64) -> (u64, Result<i64, String>) {
+    let named = commands::face_data_summary(engine)
         .map(|summary| summary.named_people)
-        .map_err(|err| err.message)
+        .map_err(|err| err.message);
+    (opening, named)
 }
 
 impl App {
@@ -100,7 +107,28 @@ impl App {
         };
         self.settings_read.ask(());
         self.memory_asked = None;
-        self.open_dialog(Dialog::Settings(Settings::new(section, about)));
+        self.settings_opened += 1;
+        let mut settings = Settings::new(section, about);
+        settings.opening = self.settings_opened;
+        self.open_dialog(Dialog::Settings(settings));
+    }
+
+    /// A theme pinned against the desktop's is put on the title bar again whenever the
+    /// system says the window's theme has changed. winit on Windows does not keep the
+    /// theme it is told: at every `WM_SETTINGCHANGE` - which Windows broadcasts for many
+    /// changes, the wheel's lines among them - it puts the system's back on the title
+    /// bar, and says so as a new theme (read in winit 0.30.13's source, not seen run).
+    /// With `System` there is nothing to keep.
+    pub(super) fn keep_title_bar(&mut self, ctx: &egui::Context) {
+        let system = ctx.input(|input| input.raw.system_theme);
+        if system != self.system_theme {
+            let first = self.system_theme.is_none();
+            self.system_theme = system;
+            // The launch has put it already (`App::new`).
+            if !first && self.theme != ThemeChoice::System {
+                theme::apply::put(ctx, self.theme);
+            }
+        }
     }
 
     /// Before Settings is drawn: what it shows that the application holds, and photon's
@@ -151,19 +179,44 @@ impl App {
                 settings.memory = memory.ok().flatten().or(settings.memory);
             }
         }
-        if let Some(named) = self.face_count.answer() {
+        if let Some(answer) = self.face_count.answer() {
             answered = true;
-            if let Some(Dialog::Settings(settings)) = &mut self.dialog {
-                match named.map_err(|_| "photon could not count the people named.".to_owned()) {
-                    Ok(Ok(named)) => {
+            let open = match &mut self.dialog {
+                Some(Dialog::Settings(settings)) => Some(settings),
+                _ => None,
+            };
+            match answer.map_err(|_| "photon could not count the people named.".to_owned()) {
+                Ok((opening, Ok(named))) => match open {
+                    // Asked in the Settings on screen: with people named, its row asks.
+                    Some(settings) if settings.opening == opening => {
                         if settings.named(named) {
                             self.push_setting(SettingWrite::FaceDetection(false));
                         }
                     }
-                    Ok(Err(said)) | Err(said) => {
-                        settings.uncounted();
-                        self.toasts.error(said, now_ms);
+                    // Asked in a Settings closed since. The box was unticked, and with
+                    // nobody named there is nothing to lose and nothing to ask: it is
+                    // switched off, as the Svelte dialog's own switch went on after it
+                    // closed. With people named the question cannot be asked where it
+                    // was, nor in another Settings, which nobody unticked: nothing.
+                    _ => {
+                        if named == 0 {
+                            self.push_setting(SettingWrite::FaceDetection(false));
+                        }
                     }
+                },
+                Ok((opening, Err(said))) => {
+                    if let Some(settings) = open
+                        && settings.opening == opening
+                    {
+                        settings.uncounted();
+                    }
+                    self.toasts.error(said, now_ms);
+                }
+                Err(said) => {
+                    if let Some(settings) = open {
+                        settings.uncounted();
+                    }
+                    self.toasts.error(said, now_ms);
                 }
             }
         }
@@ -176,17 +229,22 @@ impl App {
             return;
         };
         match wrote {
-            SettingWrote::Interval(seconds) => settings.interval_stored(seconds),
+            SettingWrote::Interval { seconds, opening } => {
+                settings.interval_stored(seconds, opening)
+            }
             SettingWrote::Shuffle(shuffle) => settings.shuffle_stored(shuffle),
             SettingWrote::Distance(distance) => settings.distance_stored(distance),
             SettingWrote::Stored => {}
         }
     }
 
-    /// A setting the library would not store: the interval's field shows what it holds.
-    pub(super) fn setting_refused(&mut self, interval: bool) {
-        if interval && let Some(Dialog::Settings(settings)) = &mut self.dialog {
-            settings.interval_refused();
+    /// A setting the library would not store: the interval's field, sent from the
+    /// opening numbered `interval`, shows what the library holds.
+    pub(super) fn setting_refused(&mut self, interval: Option<u64>) {
+        if let Some(opening) = interval
+            && let Some(Dialog::Settings(settings)) = &mut self.dialog
+        {
+            settings.interval_refused(opening);
         }
     }
 
@@ -197,6 +255,12 @@ impl App {
     /// Does what was asked in Settings.
     pub(super) fn settings_asked(&mut self, ctx: &egui::Context, asked: Vec<Asked>) {
         for asked in asked {
+            if asked == Asked::Close {
+                if let Some(Dialog::Settings(settings)) = self.dialog.take() {
+                    self.settings_closed(settings);
+                }
+                return;
+            }
             let Some(Dialog::Settings(settings)) = &mut self.dialog else {
                 return;
             };
@@ -220,7 +284,8 @@ impl App {
                 Asked::Interval { text, store } => {
                     settings.type_interval(&text);
                     if store && let Some(seconds) = settings.commit_interval() {
-                        self.push_setting(SettingWrite::Interval(seconds));
+                        let opening = settings.opening;
+                        self.push_setting(SettingWrite::Interval { seconds, opening });
                     }
                 }
                 Asked::Shuffle(shuffle) => self.push_setting(SettingWrite::Shuffle(shuffle)),
@@ -230,7 +295,7 @@ impl App {
                 // there are first, and with any the row asks.
                 Asked::FindFaces(false) => {
                     if settings.ask_off() {
-                        self.face_count.ask(());
+                        self.face_count.ask(settings.opening);
                     }
                 }
                 Asked::SwitchOff => {
@@ -238,6 +303,8 @@ impl App {
                     self.push_setting(SettingWrite::FaceDetection(false));
                 }
                 Asked::KeepFaces => settings.answered(),
+                // (Taken before the dialog is borrowed, above.)
+                Asked::Close => {}
             }
         }
     }
@@ -246,7 +313,8 @@ impl App {
     /// field would have stored it - Escape closes the dialog from inside the field.
     pub(super) fn settings_closed(&mut self, mut settings: Settings) {
         if let Some(seconds) = settings.commit_interval() {
-            self.push_setting(SettingWrite::Interval(seconds));
+            let opening = settings.opening;
+            self.push_setting(SettingWrite::Interval { seconds, opening });
         }
     }
 }

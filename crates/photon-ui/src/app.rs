@@ -171,6 +171,8 @@ pub struct App {
     show_settings: Latest<(), (Option<i64>, bool)>,
     /// The theme the user chose, as put on the window.
     theme: ThemeChoice,
+    /// The theme the system last said the window has (`keep_title_bar`).
+    system_theme: Option<egui::Theme>,
     /// What Settings shows of the stored settings, read as it opens.
     settings_read: Latest<(), Result<settings::Stored, String>>,
     /// photon's memory, read every two seconds while Settings shows About, and when it
@@ -178,7 +180,9 @@ pub struct App {
     memory_read: Latest<(), Option<settings::Memory>>,
     memory_asked: Option<f64>,
     /// How many people the user has named, read before face detection is switched off.
-    face_count: Latest<(), Result<i64, String>>,
+    face_count: Latest<u64, (u64, Result<i64, String>)>,
+    /// How many times Settings has been opened: each opening's number.
+    settings_opened: u64,
     /// Compare, while it is open.
     compare: Option<Comparing>,
     /// Compare, its photos read, to be put up at the end of the frame.
@@ -536,9 +540,10 @@ enum Unwritten {
         said: String,
     },
     /// A setting of Settings the library would not store; the interval's field, if it
-    /// was the interval, shows what it holds.
+    /// was the interval, and from the Settings opened under that number, shows what the
+    /// library holds.
     Setting {
-        interval: bool,
+        interval: Option<u64>,
         said: String,
     },
 }
@@ -1011,7 +1016,7 @@ impl App {
             "named count",
             {
                 let engine = engine.clone();
-                move |()| settings_dialog::named(&engine)
+                move |opening| settings_dialog::named(&engine, opening)
             },
             repaint(&ctx),
         );
@@ -1124,10 +1129,12 @@ impl App {
             ctx: ctx.clone(),
             show_settings,
             theme,
+            system_theme: None,
             settings_read,
             memory_read,
             memory_asked: None,
             face_count,
+            settings_opened: 0,
             fullscreen_asked: None,
             fullscreen_pending: None,
             compare: None,
@@ -4059,6 +4066,7 @@ impl eframe::App for App {
         if fronted {
             self.notch = (self.wheel)();
         }
+        self.keep_title_bar(ui.ctx());
         let in_view = ui.ctx().content_rect().height() - TOP_BAR - STATUS_BAR;
         crate::grid::view::set_wheel_notch(ui.ctx(), self.notch.points(f64::from(in_view)));
         // What the window has asked for and the window has now done is no longer on

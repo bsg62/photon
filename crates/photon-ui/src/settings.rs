@@ -1,7 +1,7 @@
 //! Settings: which section is shown, what has been read of the settings it shows, and the
 //! words - `Settings.svelte` and `settings.ts`. A dialog of the dialog layer
 //! (`dialogs.rs`), drawn by `settings_view.rs`; the application reads and writes what it
-//! shows (`app/settings.rs`).
+//! shows (`app/settings_dialog.rs`).
 //!
 //! **Nothing is shown before the library has said it.** The interval, the shuffle and the
 //! look-alikes are read as the dialog opens, and their controls take no press until then,
@@ -227,6 +227,9 @@ pub enum Asked {
     /// The question answered: switch off, deleting the people named; or keep them.
     SwitchOff,
     KeepFaces,
+    /// The dialog closed by a press on the scrim in a frame that asked for something
+    /// else as well: done after it.
+    Close,
 }
 
 /// The interval's field holds at most this many digits: the library clamps to a minute,
@@ -249,6 +252,9 @@ pub struct Settings {
     /// The People row's question: how many people switching off would delete.
     question: Option<i64>,
     pub memory: Option<Memory>,
+    /// Which opening of Settings this is, in the session: what an answer to something
+    /// asked in it is told apart by from one asked in a Settings closed since.
+    pub opening: u64,
 }
 
 impl Settings {
@@ -262,6 +268,7 @@ impl Settings {
             counting: false,
             question: None,
             memory: None,
+            opening: 0,
         }
     }
 
@@ -306,17 +313,27 @@ impl Settings {
         }
     }
 
-    /// The library stored an interval, clamped to what it takes: the field shows it.
-    pub fn interval_stored(&mut self, seconds: i64) {
-        if let Some(stored) = &mut self.stored {
-            stored.interval = seconds;
+    /// The library stored an interval, clamped to what it takes, sent from the opening
+    /// numbered `opening`: the field shows it. One sent from a Settings closed since is
+    /// what the library holds now, and this one's field shows it only where nothing
+    /// has been typed into it - over what is being typed, the answer would put back a
+    /// number nobody typed here.
+    pub fn interval_stored(&mut self, seconds: i64, opening: u64) {
+        let Some(stored) = &mut self.stored else {
+            return;
+        };
+        if opening == self.opening || self.interval == stored.interval.to_string() {
+            self.interval = seconds.to_string();
         }
-        self.interval = seconds.to_string();
+        stored.interval = seconds;
     }
 
-    /// The library would not store the interval: the field shows what it holds.
-    pub fn interval_refused(&mut self) {
-        if let Some(stored) = self.stored {
+    /// The library would not store the interval sent from the opening numbered
+    /// `opening`: if that is this one, the field shows what the library holds.
+    pub fn interval_refused(&mut self, opening: u64) {
+        if let Some(stored) = self.stored
+            && opening == self.opening
+        {
             self.interval = stored.interval.to_string();
         }
     }
@@ -501,7 +518,7 @@ mod tests {
         settings.type_interval("15");
         assert_eq!(settings.commit_interval(), Some(15));
         // The library clamps, and the field shows what it stored.
-        settings.interval_stored(60);
+        settings.interval_stored(60, settings.opening);
         assert_eq!(settings.interval(), "60");
         assert_eq!(settings.stored().map(|s| s.interval), Some(60));
 
@@ -513,8 +530,32 @@ mod tests {
 
         settings.type_interval("8");
         assert_eq!(settings.commit_interval(), Some(8));
-        settings.interval_refused();
+        settings.interval_refused(settings.opening);
         assert_eq!(settings.interval(), "60");
+    }
+
+    // An answer to an interval sent from a Settings closed since is what the library
+    // holds, and does not write over what is being typed in this one; a refusal of it
+    // says nothing here.
+    #[test]
+    fn an_interval_answered_for_another_opening_leaves_what_is_typed() {
+        let mut settings = read();
+        settings.opening = 2;
+        settings.interval_stored(9, 1);
+        assert_eq!(
+            (settings.interval(), settings.stored().map(|s| s.interval)),
+            ("9", Some(9)),
+            "nothing typed here: the field shows what the library holds"
+        );
+        settings.type_interval("30");
+        settings.interval_stored(12, 1);
+        assert_eq!(
+            (settings.interval(), settings.stored().map(|s| s.interval)),
+            ("30", Some(12))
+        );
+        settings.interval_refused(1);
+        assert_eq!(settings.interval(), "30");
+        assert_eq!(settings.commit_interval(), Some(30));
     }
 
     // Switching off asks the library how many people are named, once; with none it

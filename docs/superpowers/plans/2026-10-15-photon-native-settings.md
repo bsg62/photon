@@ -19,7 +19,7 @@ Statistics and Shortcuts (PR 3) are in the section list and show their heading.
    interval field, the checkboxes, the question in the row with the keyboard on Cancel.
 3. `dialogs.rs`: `Dialog::Settings`. `dialog_view.rs`: its size (720 by 520, less the
    window's margin), `Done::Settings(Vec<Asked>)`.
-4. `app/settings.rs`, the application's side: opening (gear, sidebar's button, empty
+4. `app/settings_dialog.rs`, the application's side: opening (gear, sidebar's button, empty
    library's "Watched folders…"), reading the stored values off the thread, the memory every
    two seconds while About is shown, the writes (`Write::Theme`, `Interval`, `Shuffle`,
    `Distance`, `FaceDetection`) and their answers, the face summary read before switching off.

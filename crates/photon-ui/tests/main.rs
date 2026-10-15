@@ -24,6 +24,7 @@ mod screenshots;
 mod search;
 mod selection;
 mod settings;
+mod settings_edges;
 mod shell;
 mod side;
 mod slideshow;

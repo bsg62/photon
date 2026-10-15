@@ -7,7 +7,8 @@
 //! viewer's info panel is, and by its rules (`viewer_info_view.rs`): through a child cut
 //! off at the section's edge, so that what is scrolled out is neither drawn nor pressed;
 //! with nothing out of sight handed to egui at all, or AccessKit is told of things that are
-//! not on screen; forty points a notch of the wheel, whatever the system's, since egui's
+//! not on screen - but for what may hold the keyboard, the interval's field and the
+//! question's buttons, which egui would let go of if they were not drawn; forty points a notch of the wheel, whatever the system's, since egui's
 //! own speed is the grid's and at a Windows set to scroll no lines a notch the section
 //! could not be brought to its foot.
 
@@ -61,6 +62,11 @@ pub(crate) fn interval_id() -> Id {
     Id::new("settings-interval")
 }
 
+/// A checkbox, to egui, by its words.
+fn box_id(label: &str) -> Id {
+    Id::new(("settings-box", label))
+}
+
 /// The question's "Cancel", to egui: the keyboard is put on it as the question is asked.
 pub(crate) fn keep_id() -> Id {
     Id::new("settings-keep-faces")
@@ -74,6 +80,9 @@ pub struct SettingsView {
     content: f32,
     /// The section last drawn: another begins at its top.
     of: Option<Section>,
+    /// How far the section is to be scrolled in the next frame to bring the question
+    /// into sight.
+    reveal: f32,
     /// Whether the People row's question was asked in the last frame: the keyboard is
     /// put on its Cancel in the frame it is first asked.
     asked: bool,
@@ -316,7 +325,7 @@ fn checkbox(
     } else {
         Sense::hover()
     };
-    let response = ui.interact(at, Id::new(("settings-box", label)), sense);
+    let response = ui.interact(at, box_id(label), sense);
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, works, ticked, label));
     let painter = page.painter.clone();
     let square =
@@ -362,7 +371,14 @@ impl SettingsView {
         rect: Rect,
         settings: &Settings,
         palette: &Palette,
+        opened: bool,
     ) -> Done {
+        // The interval's field opens with a history of its own: it is one field under one
+        // id for every Settings opened, egui keeps a field's undo by id, and Ctrl+Z in a
+        // Settings opened again brought back what was typed in the last one.
+        if opened {
+            egui::text_edit::TextEditState::default().store(ui.ctx(), interval_id());
+        }
         let painter = ui.painter().clone();
         let mut asked = Vec::new();
 
@@ -448,6 +464,7 @@ impl SettingsView {
             });
             self.scroll -= turned;
         }
+        self.scroll += std::mem::take(&mut self.reveal);
         // Held to what there is to scroll, as it was when last drawn.
         let most = (self.content - inner.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, most);
@@ -588,6 +605,14 @@ impl SettingsView {
                         if checkbox(ui, page, FIND_FACES_BOX, on, true, palette) {
                             page.asked.push(Asked::FindFaces(!on));
                         }
+                        // The question was answered in the last frame, and its buttons
+                        // went with it: the keyboard, which was on one of them, comes
+                        // back to the box that asked - as the system's own question the
+                        // Svelte dialog asks gives it back. On nothing, Space ticked
+                        // nothing and Tab began again at the top of the dialog.
+                        if asked_before {
+                            ui.memory_mut(|memory| memory.request_focus(box_id(FIND_FACES_BOX)));
+                        }
                     }
                 }
                 if settings.seen.find_faces
@@ -708,7 +733,7 @@ impl SettingsView {
         palette: &Palette,
     ) {
         let warning = switch_off_warning(named);
-        page.words(
+        let words = page.words(
             ui,
             &warning,
             fonts::regular(T[2]),
@@ -737,6 +762,14 @@ impl SettingsView {
         );
         if first {
             keep.request_focus();
+            // In a low window the row can be out of sight, the keyboard with it, and
+            // nothing would bring it into sight: the section is scrolled to it.
+            let below = row.bottom() - page.clip.bottom();
+            let above = words.top() - page.clip.top();
+            self.reveal = if below > 0.0 { below } else { above.min(0.0) };
+            if self.reveal != 0.0 {
+                ui.ctx().request_repaint();
+            }
         }
         if keep.clicked() {
             page.asked.push(Asked::KeepFaces);
@@ -1127,6 +1160,29 @@ mod tests {
         let mut f = settings(Section::About, true);
         let cross = f.ground().right_top() + vec2(-S[2] - CROSS / 2.0, HEADER / 2.0);
         assert_eq!(f.click(cross), Done::Closed);
+    }
+
+    // In a window too low to hold it, the question is scrolled into sight as it is asked:
+    // the keyboard is put on its Cancel, and nothing else would bring that into sight.
+    #[test]
+    fn the_question_is_brought_into_sight_in_a_low_window() {
+        let mut f = settings(Section::People, true);
+        f.size = Vec2::new(WINDOW.x, 240.0);
+        the(&mut f).seen.find_faces = true;
+        f.open();
+        let ground = f.ground();
+        assert!(f.drew(CANCEL).is_none(), "nothing asked yet");
+        the(&mut f).ask_off();
+        the(&mut f).named(2);
+        for _ in 0..3 {
+            f.frame(Vec::new());
+        }
+        let cancel = f.drew(CANCEL).expect("the question in sight");
+        assert!(
+            cancel.bottom() <= ground.bottom(),
+            "{cancel:?} in {ground:?}"
+        );
+        assert_eq!(f.focused(), Some(keep_id()));
     }
 
     // A section taller than its place scrolls by the wheel over it, as far as its end;
