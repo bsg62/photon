@@ -3,7 +3,10 @@
 //!
 //! No egui here: a row is what it says and whether it is where the user is.
 
-use crate::nav::{Place, Step};
+use crate::{
+    copies::CopiesOf,
+    nav::{Place, Step},
+};
 use photon_core::grid::GridView;
 
 /// A row's height, in points. Every row of the sidebar is this tall, which is what lets
@@ -42,8 +45,8 @@ pub struct Counts {
     pub duplicates: usize,
     pub hidden: usize,
     pub videos: usize,
-    /// The file name of the photo whose copies are shown, while the view is Copies.
-    pub copies_of: Option<String>,
+    /// The photo whose copies are shown, while the view is Copies.
+    pub copies_of: Option<CopiesOf>,
 }
 
 /// Today, as "On this day" means it: the machine's own day - where the user is - while a
@@ -165,7 +168,9 @@ pub fn fixed_rows(counts: &Counts, at: &Place, today: Today) -> Vec<Row> {
             "Photos with a byte-identical copy elsewhere in the library",
         ));
         if view == GridView::Copies {
-            let name = counts.copies_of.as_deref().filter(|name| !name.is_empty());
+            let name = (counts.copies_of.as_ref())
+                .map(|of| of.file_name.as_str())
+                .filter(|name| !name.is_empty());
             rows.push(row(
                 Fixed::CopiesOf,
                 &format!("Copies of {}", name.unwrap_or("a photo")),
@@ -262,7 +267,12 @@ mod tests {
     #[test]
     fn the_copies_of_a_photo_are_a_row_under_duplicates_that_is_not_a_button() {
         let counts = Counts {
-            copies_of: Some("IMG_0042.jpg".to_owned()),
+            copies_of: Some(CopiesOf {
+                id: 42,
+                file_name: "IMG_0042.jpg".to_owned(),
+                gone: false,
+                hidden: false,
+            }),
             ..Counts::default()
         };
         let at = Place {

@@ -69,6 +69,8 @@ pub enum InfoAction {
     Person(String),
     /// A copy to find in the grid.
     Locate(i64),
+    /// The photo's copies, in the grid's Copies view.
+    ShowCopies(i64),
     AddTag(String),
     RemoveTag(String),
     /// One of photon's own albums, ticked or not.
@@ -407,10 +409,11 @@ impl InfoView {
             }
         }
         if !item.copies.is_empty() {
-            // The Copies view is a later sub-project's: in its place, and no link.
             page.gap(S[0]);
             let all = format!("{} in the grid", show_copies_label(item.copies.len()));
-            page.wrapped(ui, &all, body, dim);
+            if page.link(ui, Id::new("viewer-info-all-copies"), &all) {
+                page.actions.push(InfoAction::ShowCopies(item.id));
+            }
         }
     }
 
@@ -1678,14 +1681,17 @@ mod tests {
         );
     }
 
-    // A copy is a link that finds it in the grid; the line that would show them all
-    // together waits for the view it shows them in.
+    // A copy is a link that finds it in the grid, and the line under them shows them all
+    // together in the view of the photo's copies.
     #[test]
     fn a_copy_is_a_link_that_locates_it() {
         let mut f = Fixture::of(full());
         assert_eq!(f.press("/backup/IMG_0412.jpg"), [InfoAction::Locate(21)]);
         assert_eq!(f.press("/web/small.jpg"), [InfoAction::Locate(22)]);
-        assert_eq!(f.press("Show 2 duplicates in the grid"), []);
+        assert_eq!(
+            f.press("Show 2 duplicates in the grid"),
+            [InfoAction::ShowCopies(7)]
+        );
         assert_eq!(f.press("1600 × 1200"), []);
     }
 

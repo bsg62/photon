@@ -8,6 +8,7 @@ mod app;
 mod band;
 mod compare;
 mod compare_edges;
+mod copies;
 mod dialogs;
 mod drop;
 mod edits;

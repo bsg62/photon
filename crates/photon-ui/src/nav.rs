@@ -26,6 +26,7 @@
 
 use photon_core::{
     grid::GridView,
+    library::CopiesArg,
     sort::{Grouping, Sort, SortKey},
 };
 use std::collections::VecDeque;
@@ -70,6 +71,8 @@ pub enum Step {
     /// A person's key: `p:<id>`, or `c:<hash>` for a Picasa contact no person is linked to.
     Person(String),
     Tag(String),
+    /// One photo and its copies, by the photo's id.
+    Copies(i64),
     /// The order and the grouping, whatever the view: the engine holds one for all.
     Sort(Sort),
 }
@@ -102,6 +105,13 @@ impl Step {
             Step::Tag(tag) => Place {
                 view: GridView::Tag,
                 arg: tag.clone(),
+            },
+            // Named by the photo. The engine keeps another argument - the photo and its
+            // content's hash as it was when the view opened (`CopiesArg`) - so where the
+            // user already is is asked of the photo alone (`copies_of`).
+            Step::Copies(id) => Place {
+                view: GridView::Copies,
+                arg: id.to_string(),
             },
         })
     }
@@ -224,6 +234,7 @@ impl Nav {
     pub fn wants(&self, step: &Step) -> bool {
         match step {
             Step::Sort(sort) => *sort != self.sort_target(),
+            Step::Copies(id) => copies_of(&self.target()) != Some(*id),
             _ => step.leads_to() != Some(self.target()),
         }
     }
@@ -351,6 +362,15 @@ impl Nav {
         self.sort = sort;
         changed
     }
+}
+
+/// The photo a Copies view is of, from its argument: the step's, which is the photo's id,
+/// or the engine's, which is the id with the content's hash after it.
+pub fn copies_of(place: &Place) -> Option<i64> {
+    (place.view == GridView::Copies)
+        .then(|| CopiesArg::parse(&place.arg))
+        .flatten()
+        .map(|arg| arg.anchor)
 }
 
 /// What `results_changed` compares: the view, its argument, and the order - the same
@@ -555,6 +575,30 @@ mod tests {
         nav.asked(2, Step::Search("lake".to_owned()));
         assert!(!nav.wants(&Step::Search("lake".to_owned())));
         assert!(nav.wants(&Step::Search("lake 2024".to_owned())));
+    }
+
+    // A photo's copies are where the user is by the photo, whatever the engine keeps
+    // beside it: its argument is the photo's id and the hash its content had, which the
+    // step cannot name.
+    #[test]
+    fn a_photo_s_copies_are_where_the_user_is_by_the_photo_alone() {
+        let mut nav = nav();
+        assert!(nav.wants(&Step::Copies(7)));
+        nav.asked(1, Step::Copies(7));
+        assert!(!nav.wants(&Step::Copies(7)));
+        let made = Landed {
+            place: Place {
+                view: GridView::Copies,
+                arg: format!("7:{}", "ab".repeat(16)),
+            },
+            sort: Sort::default(),
+            shown_at: Some(1),
+        };
+        assert_eq!(nav.answered(1, Ok(made)), None);
+        assert_eq!(adopt(&mut nav, 1), Some(true));
+        assert!(!nav.wants(&Step::Copies(7)));
+        assert!(nav.wants(&Step::Copies(8)));
+        assert!(nav.wants(&Step::View(GridView::Duplicates)));
     }
 
     #[test]

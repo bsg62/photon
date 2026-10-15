@@ -2328,8 +2328,9 @@ for whatever is on screen: `go` asks for no step to where the user already is, a
 search half typed, which would land after the jump. From Hidden too, where a folder asked
 for is looked up in the grid on screen: a copy the panel lists is never a hidden photo, and
 a photo unhidden in the viewer stays on screen in Hidden with its copies listed - looked up
-there, the press closed the viewer and found nothing. "Open in OpenStreetMap" and "Show N
-duplicates in the grid" are in their places and take no press; no text of the panel can be
+there, the press closed the viewer and found nothing. "Show N duplicates in the grid" is
+the view of the photo's copies (below); "Open in OpenStreetMap" is in its place and takes
+no press; no text of the panel can be
 selected. Known and left: a double click on a copy's link lands its second click on the grid
 that is by then under the pointer, and selects that photo in the copy's place.
 
@@ -2967,6 +2968,27 @@ reads the whole of a file's code*: it stopped at the first `#[cfg(test)]` (a thi
 the way into `grid/view.rs`), dropped a key it had no spelling for (`Key::Delete` was no
 key to it), and read `GridKey::Home` as the key. Now it stops at the tests' module, a name
 it cannot spell is a key no row lists, and `Key::` is egui's only after no letter.
+
+**The view of a photo's copies** (`copies.rs` - `copies.ts`, with its tests' cases):
+`GridView::Copies`, a `Step::Copies` on the views' queue, from the info panel's "Show N
+duplicates in the grid" and the tile menu's "Show N duplicates", and landed as the Svelte
+`showCopies` lands it - the view first, then the photo selected in it and brought into
+sight (`App::show_copies`, `Nav::jump`). The menu's item is there once the library has
+counted the one photo's copies (`copy_count`, asked as the menu opens and forgotten at the
+next opening), and not for a photo with none. **The engine's argument is the photo and the
+hash its content had when the view opened** (`CopiesArg`), which no step can name, so where
+the user already is is asked of the photo alone (`nav::copies_of`): asked by the step's
+argument, every link to the copies on screen was a rebuild. The sidebar names the view
+under Duplicates by the photo's file name, and keeps the name once the photo has left the
+library (`copies::keep_name`). **What the view says of its photo is said only beside the
+grid it was read with** (`App::copies_notice`, `counted_at`): the counts are read a round
+trip after the grid, and with the grid before, a photo just purged was "No other copies
+any more" of a photo whose copies were all still there. Over an empty view it is the
+view's line; over one that holds photos it is a line under them, in a band at the
+content's foot that the photos do not reach (`ShellData::foot`, the Svelte `.lone`). A
+tile's copies mark is left off in Duplicates and here (`copies::marked`), where every photo
+has copies; the marks are painted as images, which no frame test reads, so the rule is
+held by its function's test and the wiring by nothing.
 
 **Settings' Folders and Tags** (`watched_list.rs`, `tag_manager.rs` - `settings.ts`,
 `tags.ts` and `createTagRenamer`, with their tests' cases). **A question is asked in its

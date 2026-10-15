@@ -35,6 +35,8 @@ pub enum TileAction {
     RemoveFromAlbum(i64),
     Export,
     AddToAlbum(i64),
+    /// The Copies view of the one photo selected.
+    ShowCopies(i64),
 }
 
 impl TileAction {
@@ -55,6 +57,7 @@ impl TileAction {
                 | Self::RemoveFromAlbum(_)
                 | Self::AddToAlbum(_)
                 | Self::Compare
+                | Self::ShowCopies(_)
         )
     }
 }
@@ -86,6 +89,10 @@ pub struct Facts<'a> {
     /// Whether an export is running: one at a time, and "Export…" takes no press
     /// until the one that runs is over.
     pub exporting: bool,
+    /// The one photo selected and how many copies the library has of it, once it has
+    /// said: the item that shows them comes a moment after the menu opens, as the Svelte
+    /// one does, and not at all for a photo with none.
+    pub copies: Option<(i64, usize)>,
 }
 
 /// The fewest and the most photos that can be compared side by side.
@@ -255,6 +262,18 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
         look: Look::Plain,
         does: TileAction::Export,
     });
+    // The one photo's copies, once the library has counted them - for the photo the menu
+    // is of now, and not one it was opened on before.
+    if let Some((id, count)) = facts
+        .copies
+        .filter(|(_, count)| facts.count == 1 && *count > 0)
+    {
+        items.push(plain(
+            crate::viewer_info::show_copies_label(count),
+            None,
+            TileAction::ShowCopies(id),
+        ));
+    }
     items.push(Item::Heading("Add to album"));
     // Adding is harmless twice over, so the album the photos are already in is not left
     // out: the grid's rows do not know their albums, and asking for each photo of a
@@ -367,6 +386,7 @@ mod tests {
         finds_faces: bool,
         mac: bool,
         exporting: bool,
+        copies: Option<(i64, usize)>,
     }
 
     impl World {
@@ -385,6 +405,7 @@ mod tests {
                 finds_faces: false,
                 mac: false,
                 exporting: false,
+                copies: None,
             }
         }
 
@@ -405,6 +426,7 @@ mod tests {
                 finds_faces: self.finds_faces,
                 mac: self.mac,
                 exporting: self.exporting,
+                copies: self.copies,
             })
         }
 
@@ -716,6 +738,25 @@ mod tests {
         assert!(w.lines().contains(&"Export photo… (off)".to_owned()));
         // Nothing else waits for it.
         assert_eq!(w.does("Hide photo"), Some(TileAction::Hide(true)));
+    }
+
+    // The one photo's copies, once the library has counted them, after "Export…": none
+    // for a photo with no copy, nor for several photos.
+    #[test]
+    fn the_copies_of_one_photo_are_offered_once_they_are_counted() {
+        let mut w = World::one();
+        assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
+        w.copies = Some((5, 0));
+        assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
+        w.copies = Some((5, 2));
+        let lines = w.lines();
+        let export = lines.iter().position(|line| line == "Export photo…");
+        let copies = lines.iter().position(|line| line == "Show 2 duplicates");
+        assert_eq!(copies, export.map(|at| at + 1), "{lines:?}");
+        assert_eq!(w.does("Show 2 duplicates"), Some(TileAction::ShowCopies(5)));
+        let mut w = World::several(2);
+        w.copies = Some((5, 2));
+        assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
     }
 
     // The words are the Svelte menu's: read out of the component that draws it.

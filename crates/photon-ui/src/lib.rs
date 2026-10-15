@@ -11,6 +11,7 @@ pub mod compare;
 pub mod compare_view;
 pub mod controls;
 pub mod controls_bar;
+pub mod copies;
 pub mod crop;
 pub mod crop_tool;
 pub mod crop_view;
@@ -104,7 +105,8 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 59] = [
+    const STATE_MODULES: [(&str, &str); 60] = [
+        ("copies.rs", include_str!("copies.rs")),
         ("shortcuts.rs", include_str!("shortcuts.rs")),
         ("stats.rs", include_str!("stats.rs")),
         ("watched_list.rs", include_str!("watched_list.rs")),
