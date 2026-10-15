@@ -351,3 +351,65 @@ fn a_videos_keys_reach_its_player_and_its_sound_goes_on_to_the_next() {
     });
     assert_eq!(log(&told), ["volume 1", "muted true", "play"]);
 }
+
+// A double click on an item of the viewer's menu that lies over the picture: the first
+// click picks the item and closes the menu, the second lands on the picture. It pauses
+// nothing; a click there a moment later does.
+#[test]
+fn a_double_click_on_a_menus_item_over_a_video_does_not_pause_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let told = Arc::new(Mutex::new(Told::default()));
+    let (mut harness, mut driver, _) = launched(dir.path(), &told);
+    open(&mut driver, &mut harness, "v.mp4");
+    driver.until(&mut harness, "its player opened", |_| {
+        told.lock().unwrap().opened.len() == 1
+    });
+    told.lock()
+        .unwrap()
+        .frames
+        .push_back(frame(0.5, [20, 200, 20]));
+    driver.until(&mut harness, "a frame drawn", |app| {
+        app.video_frame() == Some(0.5)
+    });
+    let middle = egui::pos2(500.0, 300.0);
+    harness.event(egui::Event::PointerMoved(middle));
+    harness.event(press(middle, PointerButton::Secondary, true));
+    harness.event(press(middle, PointerButton::Secondary, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let item = harness.get_by_label("Hide photo").rect().center();
+    log(&told);
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(press(item, PointerButton::Primary, true));
+    harness.event(press(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(
+        !harness.state().menu_open(),
+        "the first click picked the item"
+    );
+    // The second, a tenth of a second on.
+    driver.frames_in(&mut harness, 0.1);
+    harness.event(press(item, PointerButton::Primary, true));
+    harness.event(press(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(
+        !log(&told).contains(&"pause".to_owned()),
+        "the second click paused it"
+    );
+    // Once a double click's time is over, a click on the picture is a click on it.
+    driver.frames_in(&mut harness, 1.0);
+    harness.event(press(item, PointerButton::Primary, true));
+    harness.event(press(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(log(&told).contains(&"pause".to_owned()));
+}
+
+fn press(pos: Pos2, button: PointerButton, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}

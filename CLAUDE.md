@@ -2873,11 +2873,24 @@ loop are the session's** (`playback::Prefs`, `App::video_prefs`, stored nowhere)
 set on a player **before it plays**: after, a muted session heard the first moment of every
 video. A drag along the bar pauses the video and shows each place's frame, plays on when let
 go of, and is called off - back to where it began - by Escape, which is the drag's alone
-while it lasts, and by the window being left with the button down; egui itself ends a
-widget's drag at Escape, so no flag of the strip's keeps a drag called off from beginning
-again under the held button (one was written, and a probe passed without it). At its end a
-video loops, or stands, and its button plays it again from the start. Paused, nothing is
-asked for but the frame a seek is waiting for: a still window draws nothing. **Another video, or another
+while it lasts, and by the window being left with the button down. **A drag called off is
+over until the button comes up** (`ViewerView::scrub_off`): egui ends a widget's *drag* at
+Escape, but not a press that may still be a click - one held still, inside its time - and
+the bar went on being held, so the frame after the Escape began the drag again. The first
+probe of the flag passed, because its test moved the pointer after the Escape, which is
+what ends a click's chance; the test now holds still first. **At its end a video loops, or
+stands paused** - as a web view's does: a seek back shows its place and plays nothing, and
+the button's first press plays it again from the start; taken for playing still, the strip
+said "Pause" over a still video and the window drew on. Paused, nothing is asked for but
+the frame a seek is waiting for, and that **for at most `AWAIT_LIMIT` frames, or none at the
+end**: a seek to the end brings no frame, nor does one to the frame already shown, which a
+player hands over once, and waited for, they kept a still window drawing for good. The strip
+takes the photo's area less a margin, as `VideoControls.svelte` does (the buttons at the
+sides stand at the middle of the window's height), and where its position bar would have
+less than `STRIP_BAR` the volume's slider gives way. A click on the picture is its own action
+(`ViewerAction::VideoClicked`): within a double click's time of a menu's item or a dialog's
+row closing it is that double click's second press, and pauses nothing (`overlay_closed`, as
+for a face's outline). **Another video, or another
 picture of the same one, is another player** (`Playing::is_of`): the step from one video to
 the next let go of the first. What is said over a video that cannot be played is the web
 view's, in its order (`playback::said`): a crash first; then a system that plays nothing -

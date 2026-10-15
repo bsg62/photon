@@ -28,6 +28,10 @@ impl Default for Prefs {
     }
 }
 
+/// How many frames ask for a seek's frame before it is taken not to be coming: about half
+/// a second at the 8 ms they are asked at.
+const AWAIT_LIMIT: u32 = 60;
+
 /// What the user does to a video: by its strip, its picture or its keys.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act {
@@ -79,11 +83,14 @@ pub struct Playing {
     prefs: Prefs,
     paused: bool,
     scrub: Option<Scrub>,
-    /// A seek's frame is on its way: frames are asked for, paused or not, until it comes.
-    awaiting: bool,
-    /// Whether the frame after its end has been asked for: its last frame can come
-    /// after the frame that heard it end.
-    after_end: bool,
+    /// A seek's frame is on its way: frames are asked for, paused or not, until it comes -
+    /// or the video is at its end, or `AWAIT_LIMIT` frames have asked in vain: a seek to
+    /// the end brings no frame, nor does one to the frame already shown, which a player
+    /// hands over once, and waited for, they kept a still window drawing for good.
+    awaiting: Option<u32>,
+    /// One frame more is to be asked for, after the one that found it at its end: its
+    /// last frame can come after it.
+    one_more: bool,
 }
 
 impl Playing {
@@ -101,8 +108,8 @@ impl Playing {
             prefs,
             paused: false,
             scrub: None,
-            awaiting: false,
-            after_end: false,
+            awaiting: None,
+            one_more: false,
         }
     }
 
@@ -122,13 +129,24 @@ impl Playing {
             return None;
         }
         let frame = stream.frame();
-        if frame.is_some() {
-            self.awaiting = false;
-        }
-        if self.prefs.looping && !self.paused && self.scrub.is_none() && stream.ended() {
-            stream.seek(0.0);
-            stream.play();
-            self.after_end = false;
+        self.awaiting = match self.awaiting {
+            _ if frame.is_some() || stream.ended() => None,
+            Some(asked) if asked < AWAIT_LIMIT => Some(asked + 1),
+            _ => None,
+        };
+        // At its end a video loops, or stands paused there - as a web view's does: a seek
+        // back from the end then shows its place and plays nothing, and the button's
+        // first press plays it again. Taken for playing still, the strip said "Pause"
+        // over a still video, and the window drew on.
+        if stream.ended() && self.scrub.is_none() && !self.paused {
+            if self.prefs.looping {
+                stream.seek(0.0);
+                stream.play();
+            } else {
+                stream.pause();
+                self.paused = true;
+                self.one_more = true;
+            }
         }
         frame
     }
@@ -145,10 +163,10 @@ impl Playing {
         let Some(stream) = self.stream.as_ref() else {
             return false;
         };
-        if self.awaiting || self.scrub.is_some() {
+        if self.awaiting.is_some() || self.scrub.is_some() || std::mem::take(&mut self.one_more) {
             return true;
         }
-        !self.paused && (!stream.ended() || !std::mem::replace(&mut self.after_end, true))
+        !self.paused && !stream.ended()
     }
 
     /// The session's prefs as this player has them, after what the user did.
@@ -162,7 +180,11 @@ impl Playing {
         Some(Strip {
             playing: !self.paused && !stream.ended(),
             time: stream.position().unwrap_or(0.0),
-            duration: stream.duration(),
+            // A length of nought is none: the bar would take drags that go nowhere, and
+            // the place along it would be no number.
+            duration: stream
+                .duration()
+                .filter(|whole| whole.is_finite() && *whole > 0.0),
             prefs: self.prefs,
             scrubbing: self.scrub.is_some(),
         })
@@ -178,12 +200,13 @@ impl Playing {
             .filter(|whole| whole.is_finite() && *whole > 0.0);
         let seek = |at: f64| stream.seek(at);
         match act {
+            // Under a drag the video's playing is the drag's to give back.
+            Act::Toggle if self.scrub.is_some() => {}
             Act::Toggle if self.paused || stream.ended() => {
                 // Played at its end, it plays again from its start, as a web view's does.
                 if stream.ended() {
                     seek(0.0);
-                    self.awaiting = true;
-                    self.after_end = false;
+                    self.awaiting = Some(0);
                 }
                 stream.play();
                 self.paused = false;
@@ -196,8 +219,7 @@ impl Playing {
                 if let Some(whole) = length {
                     let at = stream.position().unwrap_or(0.0);
                     seek((at + by).clamp(0.0, whole));
-                    self.awaiting = true;
-                    self.after_end = false;
+                    self.awaiting = Some(0);
                 }
             }
             Act::ScrubBegin(along) => {
@@ -209,22 +231,21 @@ impl Playing {
                     let from = stream.position().unwrap_or(0.0);
                     self.scrub = Some(Scrub { from, resume });
                     seek(along.clamp(0.0, 1.0) * whole);
-                    self.awaiting = true;
+                    self.awaiting = Some(0);
                 }
             }
             Act::ScrubTo(along) => {
                 if let (Some(_), Some(whole)) = (self.scrub, length) {
                     seek(along.clamp(0.0, 1.0) * whole);
-                    self.awaiting = true;
+                    self.awaiting = Some(0);
                 }
             }
             Act::ScrubEnd | Act::ScrubAbandon => {
                 if let Some(scrub) = self.scrub.take() {
                     if act == Act::ScrubAbandon {
                         seek(scrub.from);
-                        self.awaiting = true;
+                        self.awaiting = Some(0);
                     }
-                    self.after_end = false;
                     if scrub.resume {
                         stream.play();
                     }
@@ -344,6 +365,9 @@ mod tests {
         }
         fn seek(&self, at: f64) {
             self.0.at.set(at);
+            // Taken back from its end, a video is not at its end - but where it is sent
+            // to the end itself, as a player is.
+            self.0.ended.set(at >= 4.0);
             self.0.log.borrow_mut().push(format!("seek {at}"));
         }
         fn set_volume(&self, volume: f64) {
@@ -411,9 +435,69 @@ mod tests {
         let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
         assert!(playing.running());
         told.ended.set(true);
+        playing.frame();
         assert!(playing.running(), "once more, for a last frame");
         assert!(!playing.running());
         assert!(!told.dropped.get());
+    }
+
+    // At its end a video that does not loop stands paused, as a web view's does: the
+    // strip says "Play", nothing is asked for, and a seek back shows its place and plays
+    // nothing - neither a step of Shift with an arrow nor a drag along the bar.
+    #[test]
+    fn a_video_at_its_end_stands_paused_and_a_seek_back_does_not_play_it() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
+        told.ended.set(true);
+        told.at.set(4.0);
+        super::tests::told(&told);
+        playing.frame();
+        assert_eq!(super::tests::told(&told), ["pause"]);
+        assert!(!playing.strip().unwrap().playing);
+        playing.act(Act::SeekBy(-SEEK_STEP));
+        told.frames.borrow_mut().push(frame(0.0));
+        playing.frame();
+        assert!(!playing.strip().unwrap().playing);
+        playing.running();
+        assert!(!playing.running(), "a still window draws nothing");
+        playing.act(Act::ScrubBegin(0.5));
+        playing.act(Act::ScrubEnd);
+        assert_eq!(super::tests::told(&told), ["seek 0", "seek 2"]);
+        // Its button plays it.
+        playing.act(Act::Toggle);
+        assert_eq!(super::tests::told(&told), ["play"]);
+    }
+
+    // A seek whose frame never comes - to the end itself, or to the frame already shown,
+    // which a player hands over once - is not waited for for ever.
+    #[test]
+    fn a_seeks_frame_that_never_comes_is_not_waited_for_for_ever() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
+        playing.act(Act::Toggle);
+        playing.act(Act::SeekBy(-SEEK_STEP));
+        assert!(playing.running(), "its frame is waited for");
+        for _ in 0..=AWAIT_LIMIT {
+            playing.frame();
+        }
+        assert!(!playing.running(), "and then not");
+        // At the end there is nothing to wait for at all.
+        playing.act(Act::SeekBy(SEEK_STEP));
+        playing.frame();
+        assert!(!playing.running());
+    }
+
+    // Under a drag Space does nothing: the drag gives the video back its playing.
+    #[test]
+    fn under_a_drag_a_toggle_does_nothing() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
+        playing.act(Act::ScrubBegin(0.5));
+        super::tests::told(&told);
+        playing.act(Act::Toggle);
+        playing.act(Act::ScrubEnd);
+        assert_eq!(super::tests::told(&told), ["play"]);
+        assert!(playing.strip().unwrap().playing);
     }
 
     fn why(failure: Option<&Failure>) -> Why<'_> {
@@ -580,11 +664,17 @@ mod tests {
         told.ended.set(true);
         super::tests::told(&told);
         playing.frame();
-        assert!(super::tests::told(&told).is_empty());
+        assert_eq!(super::tests::told(&told), ["pause"]);
         assert!(!playing.strip().unwrap().playing);
+        // Turning the loop on at the end plays nothing; the button does, from the start.
+        playing.act(Act::Loop);
+        playing.frame();
+        assert!(super::tests::told(&told).is_empty());
+        told.ended.set(true);
         playing.act(Act::Toggle);
         assert_eq!(super::tests::told(&told), ["seek 0", "play"]);
-        playing.act(Act::Loop);
+        // And looping, it goes round at its end.
+        told.ended.set(true);
         playing.frame();
         assert_eq!(super::tests::told(&told), ["seek 0", "play"]);
     }

@@ -2651,6 +2651,20 @@ impl App {
                     }
                     false
                 }
+                // The second click of a double click on a menu's item or a dialog's
+                // row that lay over the picture a moment ago is no click on it: the
+                // first did what it was for, and this one paused the video.
+                ViewerAction::VideoClicked => {
+                    let double =
+                        ctx.options(|options| options.input_options.max_double_click_delay);
+                    let just_closed =
+                        (self.overlay_closed).is_some_and(|at| now - at < double * 1000.0);
+                    if !just_closed && let Some(playing) = open.playing.as_mut() {
+                        playing.act(crate::playback::Act::Toggle);
+                        ctx.request_repaint();
+                    }
+                    false
+                }
                 // Done to the player now, in the frame's order: a key that seeks and
                 // the arrow after it act on the video they were pressed on.
                 ViewerAction::Video(act) => {

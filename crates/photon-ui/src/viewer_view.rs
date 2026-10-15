@@ -72,8 +72,12 @@ const PIXELS_A_LINE: f32 = 100.0;
 #[derive(Clone, Debug, PartialEq)]
 pub enum ViewerAction {
     Close,
-    /// Something done to the video on screen: by its strip, its keys, a click on it.
+    /// Something done to the video on screen: by its strip or its keys.
     Video(Act),
+    /// A click on a playing video's picture, which plays or pauses it - unless it is the
+    /// second click of a double click on what lay over it a moment before, which the
+    /// application knows and the view does not.
+    VideoClicked,
     /// One photo on (1) or back (-1).
     Step(i64),
     First,
@@ -252,6 +256,9 @@ pub struct ViewerView {
     /// down: the slider follows the pointer no further, as a pan does not. A button let
     /// go of over another window may never be heard of.
     let_go: bool,
+    /// A drag along a video's position bar that Escape called off while the button was
+    /// still down: the drag is over until the button comes up.
+    scrub_off: bool,
     /// The crop tool's dropdown.
     ratio: SelectView,
     /// When the crop tool was first drawn, while it is open; and whether a press made
@@ -873,6 +880,7 @@ impl ViewerView {
                         if strip.scrubbing {
                             if *key == Key::Escape && !repeat {
                                 actions.push(ViewerAction::Video(Act::ScrubAbandon));
+                                self.scrub_off = true;
                             }
                             continue;
                         }
@@ -1071,7 +1079,7 @@ impl ViewerView {
                     }
                     // A click on a video's picture plays it or pauses it.
                     if data.strip.is_some() {
-                        actions.push(ViewerAction::Video(Act::Toggle));
+                        actions.push(ViewerAction::VideoClicked);
                         continue;
                     }
                     // A click. The second of two in the same place, in the time a
@@ -1443,12 +1451,13 @@ fn bar_place(
     )
 }
 
-/// Where the zoom's slider stands: in the corner beside the bar.
 /// Where a video's strip stands: over the bar, in the middle of the photo's area and as
-/// wide as it leaves room for between the buttons at its sides, up to 720 points - as
-/// `VideoControls.svelte` stands, beside the info panel too.
+/// wide as the area less a margin, up to 720 points - as `VideoControls.svelte` stands,
+/// beside the info panel too. The buttons at the sides stand at the middle of the
+/// window's height, never down by it: kept clear of them as well, the strip of a small
+/// window with the panel open left its position bar seventy points.
 fn strip_place(window: Rect, area: Frame) -> Rect {
-    let room = area.width - 2.0 * (EDGE + NAV + S[2]);
+    let room = area.width - 2.0 * EDGE;
     let width = room.clamp(0.0, STRIP_WIDE);
     let height = TOOL + 2.0 * S[1];
     Rect::from_min_size(
@@ -1465,6 +1474,8 @@ const STRIP_WIDE: f32 = 720.0;
 /// How wide its two times are, and its volume.
 const STRIP_TIME: f32 = 44.0;
 const STRIP_VOLUME: f32 = 80.0;
+/// The least room the position bar is to have before the volume's slider gives way.
+const STRIP_BAR: f32 = 120.0;
 
 impl ViewerView {
     /// A video's strip: play and pause, the time, the position bar, the length, mute,
@@ -1506,11 +1517,17 @@ impl ViewerView {
         time(row.left() + TOOL + S[2], clock(shown.time));
         // From the right: the loop, the volume, mute, an upright, the length.
         let looped = row.right() - TOOL;
+        // Where the row is too narrow for the position bar to have room beside
+        // everything - the info panel open in a small window - the volume's slider gives
+        // way, and mute stays: seeking by the mouse is what the strip is for.
+        let fixed = 4.0 * TOOL + 2.0 * STRIP_TIME + 7.0 * S[2] + 1.0;
+        let roomy = row.width() - fixed - STRIP_VOLUME - S[2] >= STRIP_BAR;
+        let slider = if roomy { STRIP_VOLUME + S[2] } else { 0.0 };
         let volume = Rect::from_min_size(
-            pos2(looped - S[2] - STRIP_VOLUME, row.top()),
-            vec2(STRIP_VOLUME, TOOL),
+            pos2(looped - slider, row.top()),
+            vec2(slider - if roomy { S[2] } else { 0.0 }, TOOL),
         );
-        let mute = volume.left() - S[2] - TOOL;
+        let mute = looped - slider - S[2] - TOOL;
         let upright = mute - S[2];
         let length = upright - S[2] - STRIP_TIME;
         if tool(
@@ -1553,9 +1570,14 @@ impl ViewerView {
         );
 
         let primary = ui.input(|input| input.pointer.primary_down());
-        // (A drag Escape called off is begun again by nothing while the button is still
-        // down: egui ends a widget's drag at Escape, so the bar is no longer held.)
-        let follows = primary && !self.let_go;
+        // Called off by Escape in this frame or one before with the button still down:
+        // over, and neither begun again nor ended until the button comes up. egui ends a
+        // widget's drag at Escape but not a press that may still be a click - one held
+        // still, within its time - and the bar went on being held, so the frame after
+        // the Escape began the drag again where the pointer stood.
+        let off = self.scrub_off;
+        self.scrub_off = off && primary;
+        let follows = primary && !self.let_go && !off;
         let moved = ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO);
         let along = |track: Rect, at: Pos2| ((at.x - track.left()) / track.width()).clamp(0.0, 1.0);
 
@@ -1587,7 +1609,7 @@ impl ViewerView {
             // called off, as Escape calls it off - the user did not choose where it
             // stopped.
             (None, true) if self.let_go => acts.push(Act::ScrubAbandon),
-            (None, true) if !primary => acts.push(Act::ScrubEnd),
+            (None, true) if !primary && !off => acts.push(Act::ScrubEnd),
             (None, _) => {}
         }
         let dim = if known { 1.0 } else { 0.4 };
@@ -1601,6 +1623,9 @@ impl ViewerView {
             color(DARK.accent),
         );
 
+        if !roomy {
+            return acts;
+        }
         // The volume: where it is pressed and dragged, it stands; muted, it shows none.
         let response = ui.interact(volume, Id::new("video-volume"), Sense::CLICK | Sense::DRAG);
         let level = if shown.prefs.muted {
@@ -1632,6 +1657,7 @@ impl ViewerView {
     }
 }
 
+/// Where the zoom's slider stands: in the corner beside the bar.
 fn slider_place(window: Rect) -> Rect {
     let width = S[2] + SLIDER + S[1] + SLIDER_LEVEL + S[2];
     Rect::from_min_size(
@@ -3511,7 +3537,9 @@ mod tests {
         assert_eq!(f.key(Key::Escape), [act(Act::ScrubAbandon)]);
         f.strip.as_mut().unwrap().scrubbing = false;
         // Called off, the drag is over while the button is still down: not begun again
-        // under it, nor ended when it comes up.
+        // under it - held still, where egui still takes the press for a click on the
+        // bar, nor moved - nor ended when it comes up.
+        assert_eq!(f.frame(Vec::new()), []);
         assert_eq!(
             f.frame(vec![Event::PointerMoved(bar + vec2(20.0, 0.0))]),
             []
@@ -3529,9 +3557,9 @@ mod tests {
     #[test]
     fn a_click_on_a_videos_picture_plays_or_pauses_it() {
         let mut f = video();
-        assert_eq!(f.click(pos2(700.0, 300.0)), [act(Act::Toggle)]);
+        assert_eq!(f.click(pos2(700.0, 300.0)), [ViewerAction::VideoClicked]);
         // And two are two, not a double click's zoom.
-        assert_eq!(f.click(pos2(700.0, 300.0)), [act(Act::Toggle)]);
+        assert_eq!(f.click(pos2(700.0, 300.0)), [ViewerAction::VideoClicked]);
         assert_eq!(f.zoomed(), (1.0, (0.0, 0.0)));
     }
 
@@ -3551,6 +3579,23 @@ mod tests {
             matches!(pressed.as_slice(), [ViewerAction::Video(Act::ScrubBegin(along))] if *along > 0.0 && *along < 0.5),
             "{pressed:?}"
         );
+    }
+
+    // In a small window with the info panel open the position bar keeps its room, and
+    // the volume's slider gives way to it.
+    #[test]
+    fn a_narrow_strip_keeps_room_for_its_position_bar() {
+        let room = |f: &Fixture| {
+            let (time, length) = (f.drew("0:01").unwrap(), f.drew("0:04").unwrap());
+            length.left() - time.right() - 2.0 * S[2]
+        };
+        let mut f = video();
+        let wide = room(&f);
+        f.size = vec2(800.0, 600.0);
+        f.info_open = true;
+        f.frame(Vec::new());
+        assert!(room(&f) >= STRIP_BAR, "{} beside {wide}", room(&f));
+        assert!(wide > room(&f) + STRIP_VOLUME, "{wide}");
     }
 
     // No hand where nothing is drawn that could be moved: a photo that was zoomed and
