@@ -1397,8 +1397,9 @@ application has been made.
 **The window is four areas around the grid** (`window_layout.rs`: the top bar, the sidebar
 with its splitter, the status bar, the content), drawn by `shell.rs`, a view that answers
 what the user did as a list of `Action`s; `app.rs` is the one place an action changes
-anything. What needs a later sub-project is drawn in place and takes no press (the gear):
-a button that will be there is there, so nothing moves when it starts to work
+anything (and its child modules, `app/settings_dialog.rs`, which are `app.rs` in a file of
+their own). What needs a later sub-project is drawn in place and takes no press (a
+Reveal): a button that will be there is there, so nothing moves when it starts to work
 (spec `2026-10-10-photon-native-sidebar-views-search-design.md`).
 
 **A step that moves the engine's view goes through `tasks::Queue`, never `Latest`.** The
@@ -1663,8 +1664,9 @@ that holds the launch waits in real time instead. **What the Svelte UI's
 before the engine is opened, so no report is sent before someone listens.
 
 **The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
-All photos and Recent alone; every other view has its one line. "Add folder…" and
-"Watched folders…" are drawn fainter and sense no click (`PanelButton::works`), and "Or
+All photos and Recent alone; every other view has its one line. "Add folder…" is drawn
+fainter and senses no click until Settings' typed path (`PanelButton::works`); "Watched
+folders…" opens Settings at its folders; and "Or
 drop a folder onto this window." stands under them only where a drop can arrive
 (`LibraryFacts::drops`, below): a line that offered one where none arrives would be
 false, not inactive. The block is centred, so a longer sentence
@@ -1672,9 +1674,8 @@ pushes its buttons down, as in the Svelte grid; its sentence is wrapped by egui 
 not go through `text::paint_line`, so a folder's path in another script is drawn in the
 order it is written. The sidebar's notes - the empty groups', and "No folders yet." -
 tell AccessKit their words, which is how a test of the whole application reads them.
-"No folders yet." stands at the folders' own inset with air over it, over a button to
-Settings that is drawn and takes no press: at a note's indent it read as the note of the
-group above it.
+"No folders yet." stands at the folders' own inset with air over it, over the button to
+Settings' folders: at a note's indent it read as the note of the group above it.
 
 **The selection is `selection.rs`, and most of the Svelte store's has no successor**
 (spec `2026-10-11-photon-native-grid-interaction-design.md`). The ids picked, the lead
@@ -2898,6 +2899,53 @@ on Linux naming GStreamer's plugins; then the video's own failure, a missing dec
 Linux named the same way. Its tests drive a stand-in player (`tests/playback.rs`); which
 frame is on screen is read off the texture the viewer last drew (`App::video_frame`), not
 off the one kept, which a probe showed is no proof it was drawn.
+
+**Settings is a dialog of the dialog layer** (spec `2026-10-15-photon-native-pages-design.md`;
+`settings.rs` for what it holds and says, `settings_view.rs` for what is drawn,
+`app/settings_dialog.rs` for what it reads and writes): `Settings.svelte`, its words held
+to that file by a test that reads it. One dialog at a time, so **a question in it is asked
+in its row** - Find faces switched off with people named turns its row into
+`switchOffWarning` with Cancel and "Stop finding faces", the keyboard on Cancel - and the
+library is asked how many are named first (`face_data_summary`, off the window's thread):
+with none there is nothing to lose and nothing is asked. **Nothing stored is shown before
+it has been read**: the interval, the shuffle and the look-alikes are read as it opens, and
+their controls take no press until then, as the Svelte ones are disabled. The interval's
+field takes digits and is stored at Enter, at leaving the field and at the dialog closing
+- Escape closes it from inside the field - and shows what the library stored, which clamps;
+Enter is taken before egui's field sees it, so the caret stays. **The theme is put on the
+window at once** (`theme::apply::put`): egui's visuals and the title bar the system draws
+(`ViewportCommand::SetTheme`), at launch as at a choice, `System` being no theme of the
+window's own so that it follows the desktop. A theme the library will not store is kept for
+the session, as the Svelte store keeps it. About reads photon's memory as it is shown and
+every two seconds while it is (`MEMORY_POLL_MS`), and at no other time: Settings at any
+other section is a still window. Its words for what the figure covers are not the Svelte
+ones, which name a web view this window has none of. The section is painted by hand and
+scrolled by a number of its own, by the info panel's rules (`settings_view.rs` says which);
+a heading's room above it takes in the room already under what stands before it, as one
+CSS margin collapses into the next. Not tested: that the title bar is told the theme at
+launch (`egui_kittest` draws frames past the first before a test can read its output -
+the press is tested, and `put` itself). Folders, Tags, Statistics and Shortcuts are their
+heading and what can be said already, until the pull requests that build them.
+
+**What a review of Settings found, each with its test** (`tests/settings_edges.rs`).
+*A press on the scrim closes it whatever else the frame asked*: a tap - press and release
+in one frame - had the interval's field give up the keyboard and ask to be stored in that
+very frame, and the close was dropped for the ask (`Asked::Close` now goes with it, done
+after). *An answered question gives the keyboard back to the box*, as the system's `ask`
+does; on nothing, Space ticked nothing. *The interval's field opens with a history of its
+own*, the lesson every field here has learnt. *A question asked in a low window is
+scrolled into sight* with the keyboard on its Cancel. *A pinned theme is put on the title
+bar again whenever the system says the window's theme changed* (`keep_title_bar`): winit
+on Windows does not keep the theme it is told and puts the system's back at every
+`WM_SETTINGCHANGE` (read in winit 0.30.13's source, not seen run - the smoke checklist's).
+*Each opening of Settings has a number* (`Settings::opening`): the count of people named
+and the interval's answers act on the opening that asked - over another opening's field
+the stored interval does not write over what is being typed - and a count that lands
+after the dialog has closed still switches off when nobody is named, as the Svelte switch
+went on after its dialog closed. That last has no test: a read cannot be held back, and
+the count is one. Known and left: letters typed in the double click's deaf time after
+opening are dropped, which cannot happen while the field takes nothing before the stored
+interval is read.
 
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same

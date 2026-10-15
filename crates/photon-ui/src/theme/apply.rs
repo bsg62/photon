@@ -69,9 +69,57 @@ pub fn choose(ctx: &egui::Context, choice: ThemeChoice) {
     });
 }
 
+/// The user's choice put on the window: egui's visuals, and the title bar the system
+/// draws, which is the window's own and not egui's - pinned against the desktop's, a dark
+/// photon stood under a light title bar. `System` is no theme of the window's own, which
+/// is what lets the bar go on following the desktop.
+pub fn put(ctx: &egui::Context, choice: ThemeChoice) {
+    choose(ctx, choice);
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(match choice {
+        ThemeChoice::System => egui::SystemTheme::SystemDefault,
+        ThemeChoice::Light => egui::SystemTheme::Light,
+        ThemeChoice::Dark => egui::SystemTheme::Dark,
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The theme the window was told in a frame that puts `choice`.
+    fn told(choice: ThemeChoice) -> (Option<egui::SystemTheme>, ThemePreference) {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| put(ui.ctx(), choice));
+        output.textures_delta.clear();
+        let told = (output.viewport_output.get(&egui::ViewportId::ROOT)).and_then(|viewport| {
+            viewport.commands.iter().find_map(|command| match command {
+                egui::ViewportCommand::SetTheme(theme) => Some(*theme),
+                _ => None,
+            })
+        });
+        (told, ctx.options(|options| options.theme_preference))
+    }
+
+    // egui's visuals and the window's own title bar, each told the choice; `System` is
+    // the desktop's, for both.
+    #[test]
+    fn a_theme_put_is_put_on_the_title_bar_too() {
+        assert_eq!(
+            told(ThemeChoice::Dark),
+            (Some(egui::SystemTheme::Dark), ThemePreference::Dark)
+        );
+        assert_eq!(
+            told(ThemeChoice::Light),
+            (Some(egui::SystemTheme::Light), ThemePreference::Light)
+        );
+        assert_eq!(
+            told(ThemeChoice::System),
+            (
+                Some(egui::SystemTheme::SystemDefault),
+                ThemePreference::System
+            )
+        );
+    }
 
     // egui paints a field's placeholder in its "weak" text colour and in no other,
     // whatever the words handed to it say: every field here gives its placeholder the

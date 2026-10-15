@@ -193,11 +193,10 @@ impl PanelButton {
         self == PanelButton::AddFolder
     }
 
-    /// Whether it does anything yet. Adding a folder and the list of watched folders come
-    /// with a later part of the native interface: their buttons are drawn where they will
-    /// be, and take no press.
+    /// Whether it does anything yet. Adding a folder by typing its path comes with the
+    /// next part of Settings: its button is drawn where it will be, and takes no press.
     pub fn works(self) -> bool {
-        self == PanelButton::ShowHidden
+        self != PanelButton::AddFolder
     }
 }
 
@@ -642,11 +641,11 @@ mod tests {
         }
     }
 
-    // Adding a folder and the list of watched folders come later: drawn, and inactive.
+    // Adding a folder comes later: drawn, and inactive.
     #[test]
-    fn the_one_button_that_works_yet_is_the_one_that_shows_the_hidden_photos() {
+    fn every_button_works_but_the_one_that_adds_a_folder() {
         use PanelButton::{AddFolder, ShowHidden, WatchedFolders};
-        assert!(ShowHidden.works() && !AddFolder.works() && !WatchedFolders.works());
+        assert!(ShowHidden.works() && WatchedFolders.works() && !AddFolder.works());
         assert!(AddFolder.primary() && !ShowHidden.primary() && !WatchedFolders.primary());
     }
 

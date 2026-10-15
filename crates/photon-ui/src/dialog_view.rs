@@ -19,6 +19,8 @@ use crate::{
     export_view,
     icons::Icon,
     person_picker::{self, PersonPicker},
+    settings::Asked,
+    settings_view::SettingsView,
     tag_picker::{LIST, NO_KEYWORDS, NO_MATCH, TagPicker},
     text::paint_line,
     theme::{
@@ -37,6 +39,9 @@ use photon_core::library::NamedPerson;
 /// is the Svelte dialog's own width, which is what its five sizes need in a row.
 const WIDTH: f32 = 420.0;
 const WIDTH_EXPORT: f32 = 440.0;
+/// Settings is the Svelte dialog's size, or the window's less its margin.
+const WIDTH_SETTINGS: f32 = 720.0;
+const HEIGHT_SETTINGS: f32 = 520.0;
 const HEIGHT: f32 = 480.0;
 /// The room between the dialog's edge and what is in it, and between its parts.
 pub(crate) const PAD: f32 = S[3];
@@ -76,6 +81,8 @@ pub enum Done {
     Size(Option<u32>),
     /// The export is to run, to the destination that has passed.
     Export,
+    /// What was asked for in Settings, in the order it was.
+    Settings(Vec<Asked>),
 }
 
 #[derive(Default)]
@@ -88,6 +95,8 @@ pub struct DialogView {
     /// A button went down so soon after that it is the second press of a double click
     /// on whatever opened the dialog: until it comes up, nothing is done in the dialog.
     deaf: bool,
+    /// What Settings keeps from frame to frame: how far its section is scrolled.
+    settings: SettingsView,
 }
 
 fn field_id() -> Id {
@@ -170,8 +179,18 @@ pub(crate) fn button(ui: &mut egui::Ui, rect: Rect, id: Id, label: &str, look: L
 /// The cross at a dialog's top right corner, at `rect`: whether it was pressed. Made
 /// last, although it is drawn at the top: it is the last thing one wants to tab to.
 pub(crate) fn close(ui: &mut egui::Ui, rect: Rect, palette: &Palette) -> bool {
+    close_labelled(ui, rect, palette, CANCEL)
+}
+
+/// The cross, told to AccessKit as `label`.
+pub(crate) fn close_labelled(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    palette: &Palette,
+    label: &str,
+) -> bool {
     let closed = ui.interact(rect, Id::new("dialog-close"), Sense::click());
-    closed.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, CANCEL));
+    closed.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
     if closed.hovered() {
         ui.painter().rect_filled(rect, R[1], color(palette.hover));
     }
@@ -268,6 +287,7 @@ impl DialogView {
         let window = ctx.content_rect();
         let widest = match dialog {
             Dialog::Export(_) => WIDTH_EXPORT,
+            Dialog::Settings(_) => WIDTH_SETTINGS,
             Dialog::Confirm(_) | Dialog::Tags(_) | Dialog::Person(_) => WIDTH,
         };
         let width = widest.min(window.width() - 2.0 * PAD).max(0.0);
@@ -276,12 +296,15 @@ impl DialogView {
         let picker = match dialog {
             Dialog::Tags(picker) => Some(Picker::of_tags(picker, keywords)),
             Dialog::Person(picker) => Some(Picker::of_people(picker, people)),
-            Dialog::Confirm(_) | Dialog::Export(_) => None,
+            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Settings(_) => None,
         };
         let height = match (dialog, &picker) {
             (_, Some(picker)) => picker.height(window.height()),
             (Dialog::Confirm(confirm), _) => confirm_height(ui, confirm, inner),
             (Dialog::Export(export), _) => export_view::height(ui, export, inner, palette),
+            // As tall as the Svelte dialog, or the window less its margin: the section
+            // scrolls.
+            (Dialog::Settings(_), _) => HEIGHT_SETTINGS.min(window.height() - 2.0 * PAD).max(0.0),
             // (Each is a picker, above.)
             (Dialog::Tags(_) | Dialog::Person(_), None) => 0.0,
         };
@@ -328,6 +351,7 @@ impl DialogView {
                     StrokeKind::Outside,
                 );
                 let room = rect.shrink(PAD);
+                let settings_view = &mut self.settings;
                 done = match (dialog, &picker) {
                     (_, Some(picker)) => picker.show(ui, room, palette, opened),
                     (Dialog::Confirm(confirm), _) => {
@@ -335,6 +359,10 @@ impl DialogView {
                     }
                     (Dialog::Export(export), _) => {
                         export_view::show(ui, room, export, palette, opened)
+                    }
+                    // Settings draws its own header and list to the dialog's edge.
+                    (Dialog::Settings(settings), _) => {
+                        settings_view.show(ui, rect, settings, palette, opened)
                     }
                     (Dialog::Tags(_) | Dialog::Person(_), None) => Done::Open,
                 };
@@ -346,8 +374,20 @@ impl DialogView {
                 .then(|| input.pointer.interact_pos())
                 .flatten()
         });
-        if done == Done::Open && pressed.is_some_and(|at| !ground.contains(at)) {
-            done = Done::Closed;
+        if pressed.is_some_and(|at| !ground.contains(at)) {
+            done = match done {
+                Done::Open => Done::Closed,
+                // Settings may have asked for something in this very frame: its
+                // interval's field gives up the keyboard at a click elsewhere, and asks
+                // to be stored. A tap - its press and release in one frame - on the
+                // scrim did that, and the close was dropped for it. The close goes with
+                // what was asked, which is done first.
+                Done::Settings(mut asked) => {
+                    asked.push(Asked::Close);
+                    Done::Settings(asked)
+                }
+                done => done,
+            };
         }
         // The second press of a double click does nothing; what was typed stands.
         if deaf {
@@ -876,6 +916,17 @@ pub(crate) mod tests {
                     Done::Tick(apply) => export.tick(*apply),
                     Done::Size(max_edge) => export.size(*max_edge),
                     _ => {}
+                }
+            }
+            // And Settings is told which section is asked for and what its field holds,
+            // as the application tells it.
+            if let (Dialog::Settings(settings), Done::Settings(asked)) = (&mut self.dialog, &done) {
+                for asked in asked {
+                    match asked {
+                        Asked::Section(section) => settings.section = *section,
+                        Asked::Interval { text, .. } => settings.type_interval(text),
+                        _ => {}
+                    }
                 }
             }
             self.behind_clicked = clicked;

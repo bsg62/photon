@@ -52,6 +52,8 @@ pub mod search_help;
 pub mod select;
 pub mod select_view;
 pub mod selection;
+pub mod settings;
+pub mod settings_view;
 pub mod shell;
 pub mod side_menu;
 pub mod slideshow;
@@ -97,7 +99,8 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 54] = [
+    const STATE_MODULES: [(&str, &str); 55] = [
+        ("settings.rs", include_str!("settings.rs")),
         ("args.rs", include_str!("args.rs")),
         ("video/mod.rs", include_str!("video/mod.rs")),
         ("posters.rs", include_str!("posters.rs")),

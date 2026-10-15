@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn the_button_that_works_is_pressed_and_the_ones_to_come_take_no_press() {
+    fn the_buttons_that_work_are_pressed_and_the_one_to_come_takes_no_press() {
         let mut f = Fixture::new();
         f.frame(&hidden(), Vec::new());
         let (show_hidden, _) = f.button("Show hidden photos");
@@ -350,20 +350,23 @@ mod tests {
         let (add, _) = f.button("Add folder…");
         let (watched, _) = f.button("Watched folders…");
         assert_eq!(f.click(&looking(), add.center()), None);
-        assert_eq!(f.click(&looking(), watched.center()), None);
+        assert_eq!(
+            f.click(&looking(), watched.center()),
+            Some(PanelButton::WatchedFolders)
+        );
     }
 
-    // Drawn where they will be, and fainter than what can be pressed: the one that will
-    // be the way forward in its colour all the same.
+    // Drawn where it will be, and fainter than what can be pressed: the one that will be
+    // the way forward, in its colour all the same.
     #[test]
-    fn the_buttons_to_come_are_fainter_and_the_one_put_forward_is_in_the_accent() {
+    fn the_button_to_come_is_fainter_and_the_one_put_forward_is_in_the_accent() {
         let mut f = Fixture::new();
         let palette = palette(&f.ctx);
         f.frame(&looking(), Vec::new());
         let (_, add) = f.button("Add folder…");
         let (_, watched) = f.button("Watched folders…");
         assert_eq!(add, color(palette.accent).gamma_multiply(0.5));
-        assert_eq!(watched, color(palette.field).gamma_multiply(0.5));
+        assert_eq!(watched, color(palette.field));
         f.frame(&hidden(), Vec::new());
         let (_, show_hidden) = f.button("Show hidden photos");
         assert_eq!(show_hidden, color(palette.field));

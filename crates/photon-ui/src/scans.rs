@@ -193,6 +193,12 @@ impl Scans {
         self.faces = Some(event);
     }
 
+    /// The face pass's line while it runs, as the status bar words it: what Settings'
+    /// People section says under its box.
+    pub fn faces_line(&self) -> Option<String> {
+        face_line(self.faces.as_ref()).map(|line| line.label)
+    }
+
     /// Whether a pass is looking for faces now: a photo with none may not have been
     /// reached yet.
     pub fn looking_for_faces(&self) -> bool {

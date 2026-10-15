@@ -913,30 +913,40 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             false
         }
         What::AddFolder => {
-            // Drawn where it will be and fainter than what can be pressed: Settings, and
-            // their list of folders, come with a later part of the native interface.
-            // The words are laid out in their own colour: a galley is painted in the one
-            // it was laid out with, whatever it is handed afterwards.
-            let faint = 0.5;
-            let tint = text.gamma_multiply(faint);
-            let words = painter.layout_no_wrap(entry.label.clone(), fonts::regular(T[1]), tint);
+            // Settings, at their list of folders. The words are laid out in their own
+            // colour: a galley is painted in the one it was laid out with, whatever it is
+            // handed afterwards.
+            let words = painter.layout_no_wrap(entry.label.clone(), fonts::regular(T[1]), text);
             let button = Rect::from_min_size(
                 pos2(band.left() + YEAR_LEFT, middle - ADD_FOLDER / 2.0),
                 vec2(words.size().x + 2.0 * S[1], ADD_FOLDER),
             );
-            painter.rect_filled(button, R[2], color(palette.field).gamma_multiply(faint));
+            let response = ui.interact(
+                button,
+                ui.id().with(("sidebar", &entry.what)),
+                Sense::click(),
+            );
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &entry.label));
+            let ground = if response.hovered() {
+                palette.field_hover
+            } else {
+                palette.field
+            };
+            painter.rect_filled(button, R[2], color(ground));
+            if response.has_focus() {
+                painter.rect_stroke(
+                    button.expand(2.0),
+                    R[2] + 2.0,
+                    egui::Stroke::new(2.0, color(palette.accent)),
+                    egui::StrokeKind::Inside,
+                );
+            }
             painter.galley(
                 pos2(button.left() + S[1], middle - words.size().y / 2.0),
                 words,
-                tint,
+                text,
             );
-            ui.interact(
-                button,
-                ui.id().with(("sidebar", &entry.what)),
-                Sense::hover(),
-            )
-            .widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &entry.label));
-            false
+            response.clicked()
         }
         What::Note(_) | What::NoFolders => {
             let (left, above) = note_place(&entry.what);
@@ -1507,9 +1517,9 @@ mod tests {
 
     // A library that watches nothing: said where its folders would be listed - at their
     // inset, with air over the words, not as the note of the group above - and under it
-    // the button that will lead to where one is added, which takes no press yet.
+    // the button that leads to where one is added.
     #[test]
-    fn no_folders_is_said_in_the_folders_place_over_a_button_that_does_nothing_yet() {
+    fn no_folders_is_said_in_the_folders_place_over_a_button_to_settings() {
         let mut f = Fixture::new(0);
         f.world.no_folders = true;
         f.world.tallies.clear();
@@ -1532,14 +1542,11 @@ mod tests {
             "{button:?} under {band:?}"
         );
         assert!(button.left() > YEAR_LEFT);
-        assert_eq!(f.click(button.center()), None);
+        assert_eq!(f.click(button.center()), Some(What::AddFolder));
         assert_eq!(f.click(band.center()), None);
-        // Fainter than what can be pressed, its words as well as its ground.
+        // In the colour of what can be pressed, its words as well as its ground.
         let full = color(palette(&f.ctx).text);
-        assert_eq!(
-            f.tint_of("Add a folder in Settings…"),
-            full.gamma_multiply(0.5)
-        );
+        assert_eq!(f.tint_of("Add a folder in Settings…"), full);
     }
 
     // Its chevron folds the list; its label is the People page's, which is not built yet.
