@@ -157,7 +157,8 @@ pub const YEARS: &str = "Years";
 pub const CAMERAS: &str = "Cameras";
 pub const LENSES: &str = "Lenses";
 
-/// "3 without camera data.", said under the cameras when some have none.
+/// "3 without camera data.", said after the lists when some photos have no camera and
+/// others have one.
 pub fn without_camera(count: i64) -> String {
     format!(
         "{} without camera data.",

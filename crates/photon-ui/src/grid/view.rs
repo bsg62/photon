@@ -244,6 +244,9 @@ pub struct GridOutput {
     pub strip: bool,
     /// Whether a rubber band is being drawn: nothing opens over one.
     pub banding: bool,
+    /// Whether the primary button is held on the photos, which may still become a band:
+    /// nothing opens over that either, or it becomes one under what opened.
+    pub pressing: bool,
     /// Where the other button went down on a photo: the menu of the selection, which
     /// that photo is in - alone, if it was not in it before.
     pub menu: Option<egui::Pos2>,
@@ -459,6 +462,7 @@ impl GridView {
             top_folder: top_folder_id(&self.rows, data.index.sections(), top),
             strip: strip.is_some(),
             banding: self.band.is_some(),
+            pressing: self.press.is_some(),
             menu: self.menu.take(),
             asked: std::mem::take(&mut self.asks),
             header_menu: self.header_menu.take(),

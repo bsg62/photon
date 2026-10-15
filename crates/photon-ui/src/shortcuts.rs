@@ -217,56 +217,61 @@ mod tests {
     /// Parts of a chord that are not a key a handler names.
     const MODIFIERS: [&str; 5] = ["Mod", "Shift", "click", "wheel", "arrow"];
 
-    /// egui's name for a key as the list spells it; none for a name that is no key of the
-    /// list's kind - the grid's own `Key::Down` of a move, a sort's `Key::Size`.
-    fn listed(name: &str) -> Option<String> {
-        Some(
-            match name {
-                "ArrowLeft" => "←",
-                "ArrowRight" => "→",
-                "ArrowUp" => "↑",
-                "ArrowDown" => "↓",
-                "PageUp" => "PgUp",
-                "PageDown" => "PgDn",
-                "Escape" => "Esc",
-                "Period" => ".",
-                "Plus" => "+",
-                "Equals" => "=",
-                "Minus" => "-",
-                "Slash" => "/",
-                "Questionmark" => "?",
-                "Num0" => "0",
-                "Num1" | "Num2" | "Num3" | "Num4" => "1–4",
-                "Home" | "End" | "Enter" | "Backspace" | "Space" | "Tab" | "F11" => name,
-                letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_uppercase()) => {
-                    letter
-                }
-                _ => return None,
-            }
-            .to_owned(),
-        )
+    /// egui's name for a key as the list spells it. A name the list has no spelling for
+    /// is the name itself, which no row lists: a handler that answers `Key::Delete` is a
+    /// key the list lacks, not a name to pass over.
+    fn listed(name: &str) -> String {
+        match name {
+            "ArrowLeft" => "←",
+            "ArrowRight" => "→",
+            "ArrowUp" => "↑",
+            "ArrowDown" => "↓",
+            "PageUp" => "PgUp",
+            "PageDown" => "PgDn",
+            "Escape" => "Esc",
+            "Period" => ".",
+            "Plus" => "+",
+            "Equals" => "=",
+            "Minus" => "-",
+            "Slash" => "/",
+            "Questionmark" => "?",
+            "Num0" => "0",
+            "Num1" | "Num2" | "Num3" | "Num4" => "1–4",
+            _ => name,
+        }
+        .to_owned()
     }
 
     /// Every key a file's code names, read by line - a Windows checkout is CRLF - from
-    /// what is not a comment, and not its tests.
+    /// what is not a comment, and not its tests: the reading stops at the tests' module,
+    /// not at the first item only a test build has (`grid/view.rs` has one a third of
+    /// the way in). `Key::` is egui's, and not the end of another type's name - the
+    /// grid's `GridKey::Home` is a move, not the key.
     fn keys_in(source: &str) -> BTreeSet<String> {
         let mut keys = BTreeSet::new();
-        for line in source.lines() {
-            let code = line.trim();
-            if code.starts_with("#[cfg(test)]") {
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        for (n, code) in lines.iter().enumerate() {
+            let tests = lines[n + 1..].iter().find(|line| !line.is_empty());
+            if *code == "#[cfg(test)]" && tests.is_some_and(|next| next.starts_with("mod tests")) {
                 break;
             }
             if code.starts_with("//") {
                 continue;
             }
-            let mut rest = code;
+            let mut rest: &str = code;
             while let Some(at) = rest.find("Key::") {
+                let named = rest[..at]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|before| !before.is_ascii_alphanumeric() && before != '_');
                 rest = &rest[at + 5..];
                 let name: String = rest
                     .chars()
                     .take_while(char::is_ascii_alphanumeric)
                     .collect();
-                keys.extend(listed(&name));
+                if named && !name.is_empty() {
+                    keys.insert(listed(&name));
+                }
             }
         }
         keys
@@ -377,6 +382,27 @@ mod tests {
         assert_eq!(chord_label(&["Mod", "A"], false), ["Ctrl", "A"]);
         assert_eq!(chord_label(&["Mod", "A"], true), ["⌘", "A"]);
         assert_eq!(chord_label(&["Esc"], true), ["Esc"]);
+    }
+
+    // a test-only item in the middle of a file is not the end of its code:
+    // `grid/view.rs` has `#[cfg(test)] fn scroll_to` at its line 332, and every key read
+    // in the 950 lines of the grid's code after it went unseen.
+    #[test]
+    fn the_reading_goes_on_past_a_test_only_item() {
+        let source = "fn a() {}\n#[cfg(test)]\nfn helper() {}\nfn b() { let _ = Key::X; }\n";
+        assert!(keys_in(source).contains("X"));
+    }
+
+    // a key the reading has no name for is not dropped: a handler that answered
+    // `Key::Delete`, `Key::Num5` or `Key::F2` passed both checks.
+    #[test]
+    fn a_key_the_reading_cannot_name_is_not_passed_over() {
+        for name in ["Delete", "Num5", "F2", "Comma", "Insert"] {
+            assert!(
+                !keys_in(&format!("let _ = Key::{name};")).is_empty(),
+                "Key::{name} was read as no key"
+            );
+        }
     }
 
     #[test]

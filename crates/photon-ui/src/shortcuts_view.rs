@@ -15,8 +15,7 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Id, Key, Modifiers, Rect, Sense, Stroke, StrokeKind, UiBuilder, WidgetInfo, WidgetType,
-    pos2, vec2,
+    self, Id, Key, Rect, Sense, Stroke, StrokeKind, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// The column of keys beside what they do: narrow enough that the descriptions keep to
@@ -262,11 +261,28 @@ pub struct SheetView {
 
 impl SheetView {
     /// The sheet in `rect`, the dialog's whole ground. `?` closes what it opened, as
-    /// Escape does - the dialog's - and its cross.
+    /// Escape does - the dialog's - and its cross: at its press, as it opens it - a held
+    /// `?` shut the list at its first repeat - and not as a chord, which egui's
+    /// `consume_key` takes for the key whatever Alt is doing.
     pub(crate) fn show(&mut self, ui: &mut egui::Ui, rect: Rect, palette: &Palette) -> Done {
-        if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Questionmark))
-            || ui.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Questionmark))
-        {
+        let pressed = ui.input_mut(|input| {
+            let mut pressed = false;
+            input.events.retain(|event| match event {
+                egui::Event::Key {
+                    key: Key::Questionmark,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                    ..
+                } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
+                    pressed |= !repeat;
+                    false
+                }
+                _ => true,
+            });
+            pressed
+        });
+        if pressed {
             return Done::Closed;
         }
         let (header, cross) = header(ui, rect, SHEET_TITLE, palette);

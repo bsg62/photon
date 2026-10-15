@@ -1666,10 +1666,12 @@ impl SettingsView {
                     page.asked.push(Asked::Search(row.search.clone()));
                 }
             }
-            if title == stats::CAMERAS && counted.no_camera > 0 {
-                page.gap(S[2]);
-                page.hint(ui, &stats::without_camera(counted.no_camera), palette);
-            }
+        }
+        // After every list, as the Svelte section says it, and only where there are
+        // cameras to set the photos without one beside.
+        if counted.no_camera > 0 && !counted.cameras.is_empty() {
+            page.gap(S[2]);
+            page.hint(ui, &stats::without_camera(counted.no_camera), palette);
         }
     }
 
@@ -2337,7 +2339,9 @@ mod tests {
                 .is_some()
         );
         assert!(f.drew(crate::stats::LENSES).is_none(), "no lens, no list");
-        assert!(f.drew("1 without camera data.").is_some());
+        let note = f.drew("1 without camera data.").expect("the note");
+        let canon = f.drew("Canon EOS 5D").expect("the camera's row");
+        assert!(note.top() > canon.bottom(), "{note:?}");
         assert_eq!(
             click(&mut f, "2024"),
             [Asked::Search("from:2024 to:2024".to_owned())]
@@ -2346,6 +2350,18 @@ mod tests {
             click(&mut f, "Canon EOS 5D"),
             [Asked::Search("camera:\"Canon EOS 5D\"".to_owned())]
         );
+        // With lenses too, the note comes after them: after every list, as the Svelte
+        // section says it.
+        if let Counted::Counted(counted) = &mut the(&mut f).stats {
+            counted.lenses = vec![photon_core::library::LensCount {
+                lens: "EF 50mm f/1.8".to_owned(),
+                count: 2,
+            }];
+        }
+        f.frame(Vec::new());
+        let note = f.drew("1 without camera data.").expect("the note");
+        let lens = f.drew("EF 50mm f/1.8").expect("the lens's row");
+        assert!(note.top() > lens.bottom(), "{note:?} over {lens:?}");
     }
 
     // Shortcuts: the hint and the list, in one column.

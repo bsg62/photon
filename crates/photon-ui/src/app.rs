@@ -4245,12 +4245,19 @@ impl eframe::App for App {
 
         // `?`: the list of shortcuts, over whatever it was pressed in - the grid, the
         // viewer, compare - as long as nothing there has a use for the character: a text
-        // field, the viewer's keyword. Not over another dialog nor under a menu, and not
-        // under a held band, which has taken every key out of the frame by now. At its
-        // press, and a chord is not this key.
+        // field, the viewer's keyword, and an open dropdown, whose keys are its own. Not
+        // what merely holds the keyboard, which the splitter does after every drag. Not
+        // over another dialog nor under a menu, and not under a held band, which has
+        // taken every key out of the frame by now - nor over a press on the photos, which
+        // would become a band under the list (as Enter and `C` open nothing over it). At
+        // its press, and a chord is not this key.
+        let pressing = (self.last.as_ref()).is_some_and(|frame| frame.pressing);
         let asks_sheet = self.dialog.is_none()
             && self.menu.is_none()
-            && !ui.ctx().egui_wants_keyboard_input()
+            && !pressing
+            && !ui.ctx().text_edit_focused()
+            && !self.shell.lists_open()
+            && !(self.cropping().is_some() && self.viewer_view.ratio_open())
             && !self.viewer_typing()
             && ui.input_mut(|input| {
                 let mut asked = false;

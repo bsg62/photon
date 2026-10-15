@@ -329,6 +329,11 @@ impl Controls {
 }
 
 impl ViewerView {
+    /// Whether the crop tool's dropdown is open: its keys are its own.
+    pub fn ratio_open(&self) -> bool {
+        self.ratio.open()
+    }
+
     /// The picture the last frame drew at fit, and where: what a slideshow fades out as
     /// it goes on. None for a zoomed photo, and under the crop tool.
     pub fn drawn(&self) -> Option<(TextureHandle, Rect)> {
@@ -623,6 +628,13 @@ impl ViewerView {
             vec2(CLOSE, CLOSE),
         );
         let bar = crop_bar_place(ui, window);
+        // Under a dialog - the list of shortcuts opens over the tool - a handle held is
+        // let go of, as a pan held in compare is: the pointer moving on under the list
+        // moved the side it had. None is taken under it, the dialog taking a button going
+        // down out of the frame.
+        if data.paused {
+            crop.tool.end_drag();
+        }
         crop_view::show(
             ui,
             crop.tool,
@@ -790,6 +802,11 @@ impl ViewerView {
         if data.paused {
             self.press = None;
             self.wheel = 0.0;
+            // And the slider's drag is over, as when the window is left: it writes the
+            // zoom in place, which no answer dropped under the dialog undoes, and the
+            // button it holds may come up under the dialog unheard. (Read before the
+            // slider is drawn, so the frame the dialog opens in is covered too.)
+            self.let_go = true;
             return actions;
         }
         let size = (area.width, area.height);

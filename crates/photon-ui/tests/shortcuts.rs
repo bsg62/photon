@@ -340,3 +340,136 @@ fn a_click_in_the_frame_the_list_opens_closes_no_compare() {
         "compare closed under the list"
     );
 }
+
+// a press held on the photos may still become a band: no list opens over it, as
+// Enter and `C` open nothing over it (`GridView`'s `press`). Opened, the press became a
+// band under the list, selecting the photos the pointer went over behind it.
+#[test]
+fn no_list_opens_over_a_press_held_on_the_photos() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 6);
+    let from = tile(&harness, 0);
+    let to = tile(&harness, 4);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(button(from, true, Modifiers::NONE));
+    driver.act(&mut harness);
+    question_mark(&mut driver, &mut harness);
+    let opened = sheet(harness.state());
+    harness.event(egui::Event::PointerMoved(to));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let banding_under_sheet = sheet(harness.state())
+        && harness
+            .state()
+            .last_frame()
+            .is_some_and(|frame| frame.banding);
+    let selected = harness.state().selected().len();
+    harness.event(button(to, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert!(
+        !opened,
+        "the list opened over a held press (band under it: {banding_under_sheet}, \
+         {selected} selected behind it)"
+    );
+}
+
+fn question_event(repeat: bool, modifiers: Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key: Key::Questionmark,
+        physical_key: None,
+        pressed: true,
+        repeat,
+        modifiers,
+    }
+}
+
+// a `?` held down opens the list once, at its press, and its repeats close
+// nothing - every other key of this window that opens or toggles answers its press and
+// not its repeat. The list opened at the press and shut at the first repeat, half a
+// second later.
+#[test]
+fn a_held_question_mark_does_not_close_the_list_it_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 6);
+    harness.input_mut().events.extend([
+        question_event(false, Modifiers::SHIFT),
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(&mut harness);
+    assert!(sheet(harness.state()));
+    for _ in 0..3 {
+        harness.input_mut().events.extend([
+            question_event(true, Modifiers::SHIFT),
+            egui::Event::Text("?".to_owned()),
+        ]);
+        driver.act(&mut harness);
+    }
+    assert!(
+        sheet(harness.state()),
+        "a repeat of the held `?` closed the list"
+    );
+}
+
+// a chord is not the key that closes the list, as it is not the key that opens
+// it (`ShortcutSheet.svelte`: `?` with no Ctrl, Cmd or Alt). egui's `consume_key` ignores
+// an Alt held beside it.
+#[test]
+fn alt_question_mark_does_not_close_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 6);
+    question_mark(&mut driver, &mut harness);
+    assert!(sheet(harness.state()));
+    let alt = Modifiers::SHIFT | Modifiers::ALT;
+    harness.input_mut().events.push(question_event(false, alt));
+    driver.act(&mut harness);
+    assert!(sheet(harness.state()), "Alt+? closed the list");
+}
+
+// `?` is no key of the sidebar's splitter, which keeps the keyboard a drag gave it
+// so that the arrows move it afterwards: the list opens over the grid all the same, as it
+// does in the Svelte window with the splitter focused. Only a text field has a use for the
+// character (`opensShortcuts`).
+#[test]
+fn the_list_opens_with_the_splitter_holding_the_keyboard() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 6);
+    let edge = harness.get_by_label("Resize sidebar").rect().center();
+    harness.event(egui::Event::PointerMoved(edge));
+    harness.event(button(edge, true, Modifiers::NONE));
+    driver.act(&mut harness);
+    harness.event(egui::Event::PointerMoved(edge + egui::vec2(30.0, 0.0)));
+    driver.act(&mut harness);
+    harness.event(button(edge + egui::vec2(30.0, 0.0), false, Modifiers::NONE));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    question_mark(&mut driver, &mut harness);
+    assert!(
+        sheet(harness.state()),
+        "`?` did nothing after the splitter was dragged"
+    );
+}
+
+// An open dropdown of the top bar has the keys, `?` among them: the list of shortcuts does
+// not open over it, and the dropdown stays open.
+#[test]
+fn no_list_of_shortcuts_opens_over_an_open_dropdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 6);
+    harness
+        .get_by_label("Sort by: Date taken")
+        .click_accesskit();
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("Date modified").is_some());
+    question_mark(&mut driver, &mut harness);
+    assert!(
+        !sheet(harness.state()),
+        "the list of shortcuts opened over the dropdown"
+    );
+    assert!(harness.query_by_label("Date modified").is_some());
+}

@@ -346,7 +346,13 @@ impl App {
                         settings.stats = Counted::Failed;
                         self.toasts.error(said, now_ms);
                     }
-                    Err(_) => settings.stats = Counted::Failed,
+                    // A count that panicked carries no opening: it is this one's only while
+                    // this one waits for a count - `Latest` answers the last question, and
+                    // an opening that has not asked has none on its way.
+                    Err(_) if settings.stats == Counted::Counting => {
+                        settings.stats = Counted::Failed;
+                    }
+                    Err(_) => {}
                     // Counted for a Settings closed since.
                     Ok(_) => {}
                 }

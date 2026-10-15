@@ -760,3 +760,62 @@ fn the_tool_closes_with_the_grid_that_says_the_photo_is_another_picture() {
     });
     assert!(harness.state().cropping().is_none());
 }
+
+/// `?` pressed, in one frame with what it types, and let go of.
+fn question_mark(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        },
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(harness);
+    // Let go of: held, the next `?` would be its repeat.
+    harness.event(egui::Event::Key {
+        key: Key::Questionmark,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::SHIFT,
+    });
+    driver.act(harness);
+}
+
+fn sheet(app: &App) -> bool {
+    matches!(app.dialog(), Some(photon_ui::dialogs::Dialog::Shortcuts))
+}
+
+// An open ratio list has the keys, `?` among them: the list of shortcuts does not open
+// over it. A list left open by a tool that closed under it has no keys any more, and the
+// viewer's `?` is the list's again.
+#[test]
+fn no_list_of_shortcuts_opens_over_an_open_ratio_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::C);
+    driver.act(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    harness.get_by_label("Crop ratio: Free").click();
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("1:1").is_some(), "the list is open");
+    question_mark(&mut driver, &mut harness);
+    assert!(
+        !sheet(harness.state()),
+        "the list of shortcuts opened over the ratio's"
+    );
+    assert!(harness.query_by_label("1:1").is_some(), "the list is open");
+    let engine = harness.state().engine().clone();
+    commands::rotate_item(&engine, ids[0], true).unwrap();
+    driver.until(&mut harness, "the tool closed", |app| {
+        app.cropping().is_none() && edit(app) == Some((1, None))
+    });
+    driver.act(&mut harness);
+    question_mark(&mut driver, &mut harness);
+    assert!(sheet(harness.state()), "`?` in the viewer opened nothing");
+}
