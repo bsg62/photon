@@ -14,14 +14,14 @@ use photon_ui::{
     dialogs::Dialog,
     fixture::Fixture,
     settings::{
-        DISTANCES, FIND_FACES_BOX, INTERVAL_BEFORE, STOP_FINDING, Section, Settings,
+        DISTANCES, FIND_FACES_BOX, INTERVAL_BEFORE, Question, STOP_FINDING, Section, Settings,
         switch_off_warning,
     },
 };
 
 fn settings(app: &App) -> Option<&Settings> {
     match app.dialog() {
-        Some(Dialog::Settings(settings)) => Some(settings),
+        Some(Dialog::Settings(settings)) => Some(&**settings),
         _ => None,
     }
 }
@@ -236,7 +236,7 @@ fn find_faces_off_with_people_named_asks_first() {
         .click();
     driver.act(&mut harness);
     driver.until(&mut harness, "the question asked", |app| {
-        settings(app).is_some_and(|settings| settings.question() == Some(1))
+        settings(app).is_some_and(|settings| settings.question() == Some(&Question::SwitchOff(1)))
     });
     driver.act(&mut harness);
     assert!(harness.query_by_label(&switch_off_warning(1)).is_some());
@@ -330,6 +330,18 @@ fn the_empty_library_and_the_sidebar_open_settings_at_folders() {
         settings(harness.state()).map(|settings| settings.section),
         Some(Section::Folders)
     );
+    key(&mut driver, &mut harness, Key::Escape);
+    // "Add folder…" opens it there too, with the field a folder is typed in open.
+    driver.settle(&mut harness);
+    harness.get_by_label("Add folder…").click();
+    driver.act(&mut harness);
+    assert!(
+        settings(harness.state()).is_some_and(
+            |settings| settings.section == Section::Folders && settings.adding.is_some()
+        )
+    );
+    key(&mut driver, &mut harness, Key::Escape);
+    driver.act(&mut harness);
     key(&mut driver, &mut harness, Key::Escape);
 
     let other = tempfile::tempdir().unwrap();

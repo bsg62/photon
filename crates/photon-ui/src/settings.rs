@@ -8,7 +8,12 @@
 //! as the Svelte ones are disabled: a control that showed the default while the stored
 //! value was on its way would be a value the library does not hold.
 
-use photon_core::library::{GridTile, ThemeChoice};
+use crate::{
+    tag_manager::Renamer,
+    watched_list::{Adding, FolderRow},
+};
+use photon_core::library::{GridTile, TagRule, ThemeChoice};
+use std::collections::HashMap;
 
 /// The sections, in the list's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -180,6 +185,8 @@ pub struct Seen {
     pub find_faces: bool,
     /// The face pass's line while it runs.
     pub faces_line: Option<String>,
+    /// The watched folders, as their rows say them.
+    pub folders: Vec<FolderRow>,
 }
 
 impl Default for Seen {
@@ -189,6 +196,7 @@ impl Default for Seen {
             size: GridTile::Medium,
             find_faces: false,
             faces_line: None,
+            folders: Vec::new(),
         }
     }
 }
@@ -224,9 +232,36 @@ pub enum Asked {
     Distance(i64),
     /// The Find faces box, ticked or not.
     FindFaces(bool),
-    /// The question answered: switch off, deleting the people named; or keep them.
-    SwitchOff,
-    KeepFaces,
+    /// The question in a row answered, with what it offers or with Cancel.
+    Yes,
+    No,
+    /// A watched folder scanned again.
+    Rescan(i64),
+    /// "Remove…" on a folder's row: its row asks.
+    RemoveFolder {
+        id: i64,
+        path: String,
+    },
+    /// "Add folder…": the field a path is typed in opens.
+    AddOpen,
+    /// What the field holds now.
+    AddPath(String),
+    /// The path that has passed is to be added: Enter, or "Add".
+    AddSend,
+    /// The field closes: Escape, or its Cancel.
+    AddClose,
+    /// What the tags' filter holds now.
+    Filter(String),
+    /// "Rename" on a keyword's row, what its field holds, Enter, and Escape or the field
+    /// left.
+    RenameStart(String),
+    RenameType(String),
+    RenameCommit,
+    RenameCancel,
+    /// "Remove…" on a keyword's row: its row asks.
+    RemoveTag(String),
+    /// "Restore" on a change.
+    Restore(String),
     /// The dialog closed by a press on the scrim in a frame that asked for something
     /// else as well: done after it.
     Close,
@@ -235,6 +270,46 @@ pub enum Asked {
 /// The interval's field holds at most this many digits: the library clamps to a minute,
 /// and a field that took any number of them would hold a number no `i64` is.
 const INTERVAL_DIGITS: usize = 4;
+
+/// What is asked in a row - one dialog at a time, so a question is asked where it arises
+/// and not in a dialog of its own, and one row at a time: asking another is the first
+/// one's Cancel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Question {
+    /// Find faces switched off with this many people named.
+    SwitchOff(i64),
+    RemoveFolder {
+        id: i64,
+        path: String,
+    },
+    RemoveTag(String),
+    /// A keyword renamed onto one that is there, or listed under Changes: the words of
+    /// the question, which the renamer holds.
+    Rename(String),
+}
+
+impl Question {
+    /// What the question says.
+    pub fn words(&self) -> String {
+        match self {
+            Question::SwitchOff(named) => switch_off_warning(*named),
+            Question::RemoveFolder { path, .. } => crate::watched_list::remove_question(path),
+            Question::RemoveTag(tag) => crate::tag_manager::remove_question(tag),
+            Question::Rename(words) => words.clone(),
+        }
+    }
+
+    /// The button that does what is asked about.
+    pub fn yes(&self) -> &'static str {
+        match self {
+            Question::SwitchOff(_) => STOP_FINDING,
+            Question::RemoveFolder { .. } => crate::watched_list::REMOVE_YES,
+            Question::RemoveTag(_) => crate::tag_manager::REMOVE_YES,
+            Question::Rename(words) if words.starts_with("Merge") => crate::tag_manager::MERGE_YES,
+            Question::Rename(_) => crate::tag_manager::RENAME_YES,
+        }
+    }
+}
 
 /// The open dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,8 +324,19 @@ pub struct Settings {
     /// The library is being asked how many people are named, before Find faces is
     /// switched off.
     counting: bool,
-    /// The People row's question: how many people switching off would delete.
-    question: Option<i64>,
+    /// The question a row asks.
+    question: Option<Question>,
+    /// What the tags' filter holds.
+    pub filter: String,
+    /// The keyword being renamed in its row.
+    pub renamer: Renamer,
+    /// The field a folder to add is typed in, while it is open.
+    pub adding: Option<Adding>,
+    /// The changes made to keywords so far, and each watched folder's count of photos:
+    /// read as the dialog opens and at every change of the library's data. None until
+    /// read.
+    pub rules: Option<Vec<TagRule>>,
+    pub counts: HashMap<i64, i64>,
     pub memory: Option<Memory>,
     /// Which opening of Settings this is, in the session: what an answer to something
     /// asked in it is told apart by from one asked in a Settings closed since.
@@ -267,6 +353,11 @@ impl Settings {
             interval: String::new(),
             counting: false,
             question: None,
+            filter: String::new(),
+            renamer: Renamer::default(),
+            adding: None,
+            rules: None,
+            counts: HashMap::new(),
             memory: None,
             opening: 0,
         }
@@ -353,7 +444,7 @@ impl Settings {
     /// Find faces unticked: whether the library is to be asked how many people are
     /// named. Not while it is being asked already, nor with the question up.
     pub fn ask_off(&mut self) -> bool {
-        if self.counting || self.question.is_some() {
+        if self.counting || matches!(self.question, Some(Question::SwitchOff(_))) {
             return false;
         }
         self.counting = true;
@@ -365,7 +456,7 @@ impl Settings {
     pub fn named(&mut self, named: i64) -> bool {
         self.counting = false;
         if named > 0 {
-            self.question = Some(named);
+            self.ask(Question::SwitchOff(named));
             false
         } else {
             true
@@ -377,14 +468,23 @@ impl Settings {
         self.counting = false;
     }
 
-    /// The row's question, while it is asked: how many people switching off deletes.
-    pub fn question(&self) -> Option<i64> {
-        self.question
+    /// The question a row asks, while it is asked.
+    pub fn question(&self) -> Option<&Question> {
+        self.question.as_ref()
     }
 
-    /// The question answered, either way.
-    pub fn answered(&mut self) {
-        self.question = None;
+    /// A row asks `question`, in the place of any other: a rename's own question,
+    /// replaced, is that rename declined.
+    pub fn ask(&mut self, question: Question) {
+        if let Some(Question::Rename(_)) = self.question {
+            self.renamer.declined();
+        }
+        self.question = Some(question);
+    }
+
+    /// The question answered, either way: what it was.
+    pub fn answered(&mut self) -> Option<Question> {
+        self.question.take()
     }
 }
 
@@ -449,6 +549,39 @@ mod tests {
             )),
             "people.ts no longer says the switch-off warning"
         );
+    }
+
+    // A question says its words and offers its own button; another question in its
+    // place, over a rename's, is that rename declined - its name typed stays, and the
+    // field takes typing again.
+    #[test]
+    fn a_question_in_the_place_of_a_renames_declines_it() {
+        let mut settings = read();
+        assert_eq!(Question::SwitchOff(2).yes(), STOP_FINDING);
+        assert_eq!(
+            Question::RemoveFolder {
+                id: 1,
+                path: "/p".to_owned()
+            }
+            .words(),
+            "Remove “/p” from photon? Your files stay where they are."
+        );
+        let tags = [photon_core::library::TagCount {
+            tag: "lake".to_owned(),
+            count: 1,
+            total: 1,
+        }];
+        settings.renamer.start("hiking");
+        settings.renamer.type_in("lake");
+        let crate::tag_manager::Committed::Asks(words) = settings.renamer.commit(&tags, &[]) else {
+            panic!("a merge asks");
+        };
+        settings.ask(Question::Rename(words));
+        assert_eq!(settings.question().map(Question::yes), Some("Merge"));
+        settings.ask(Question::RemoveTag("lake".to_owned()));
+        assert_eq!(settings.renamer.asking(), None);
+        settings.renamer.type_in("lakes");
+        assert_eq!(settings.renamer.text(), "lakes");
     }
 
     #[test]
@@ -573,7 +706,7 @@ mod tests {
 
         assert!(settings.ask_off());
         assert!(!settings.named(2));
-        assert_eq!(settings.question(), Some(2));
+        assert_eq!(settings.question(), Some(&Question::SwitchOff(2)));
         assert!(!settings.ask_off(), "asked again under the question");
         settings.answered();
         assert_eq!(settings.question(), None);

@@ -192,12 +192,6 @@ impl PanelButton {
     pub fn primary(self) -> bool {
         self == PanelButton::AddFolder
     }
-
-    /// Whether it does anything yet. Adding a folder by typing its path comes with the
-    /// next part of Settings: its button is drawn where it will be, and takes no press.
-    pub fn works(self) -> bool {
-        self != PanelButton::AddFolder
-    }
 }
 
 /// What the library itself says where its photos would be.
@@ -641,11 +635,9 @@ mod tests {
         }
     }
 
-    // Adding a folder comes later: drawn, and inactive.
     #[test]
-    fn every_button_works_but_the_one_that_adds_a_folder() {
+    fn adding_a_folder_is_the_one_put_forward() {
         use PanelButton::{AddFolder, ShowHidden, WatchedFolders};
-        assert!(ShowHidden.works() && WatchedFolders.works() && !AddFolder.works());
         assert!(AddFolder.primary() && !ShowHidden.primary() && !WatchedFolders.primary());
     }
 

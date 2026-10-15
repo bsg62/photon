@@ -90,33 +90,27 @@ pub fn show(ui: &mut egui::Ui, place: Rect, panel: &Panel) -> Option<PanelButton
     for (button, width) in panel.buttons.iter().zip(labels) {
         let rect = Rect::from_min_size(pos2(left, top), vec2(width, BUTTON_HEIGHT));
         left = rect.right() + S[1];
-        let works = button.works();
-        let sense = if works {
-            Sense::click()
-        } else {
-            Sense::hover()
-        };
-        let response = ui.interact(rect, ui.id().with(("empty-library", *button)), sense);
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, works, button.label()));
+        let response = ui.interact(
+            rect,
+            ui.id().with(("empty-library", *button)),
+            Sense::click(),
+        );
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, button.label()));
         let (fill, tint) = if button.primary() {
             (palette.accent, palette.on_accent)
-        } else if works && response.hovered() {
+        } else if response.hovered() {
             (palette.field_hover, palette.text)
         } else {
             (palette.field, palette.text)
         };
-        // What cannot be pressed yet is there, and fainter than what can.
-        let faint = if works { 1.0 } else { 0.5 };
-        ui.painter()
-            .rect_filled(rect, R[2], color(fill).gamma_multiply(faint));
+        ui.painter().rect_filled(rect, R[2], color(fill));
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
             button.label(),
             fonts::regular(T[2]),
-            color(tint).gamma_multiply(faint),
+            color(tint),
         );
-        // One that does nothing yet senses no click.
         if response.clicked() {
             pressed = Some(*button);
         }
@@ -336,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn the_buttons_that_work_are_pressed_and_the_one_to_come_takes_no_press() {
+    fn each_button_is_pressed_and_the_room_beside_them_presses_nothing() {
         let mut f = Fixture::new();
         f.frame(&hidden(), Vec::new());
         let (show_hidden, _) = f.button("Show hidden photos");
@@ -349,23 +343,25 @@ mod tests {
         f.frame(&looking(), Vec::new());
         let (add, _) = f.button("Add folder…");
         let (watched, _) = f.button("Watched folders…");
-        assert_eq!(f.click(&looking(), add.center()), None);
+        assert_eq!(
+            f.click(&looking(), add.center()),
+            Some(PanelButton::AddFolder)
+        );
         assert_eq!(
             f.click(&looking(), watched.center()),
             Some(PanelButton::WatchedFolders)
         );
     }
 
-    // Drawn where it will be, and fainter than what can be pressed: the one that will be
-    // the way forward, in its colour all the same.
+    // The one put forward is in the accent.
     #[test]
-    fn the_button_to_come_is_fainter_and_the_one_put_forward_is_in_the_accent() {
+    fn the_button_put_forward_is_in_the_accent() {
         let mut f = Fixture::new();
         let palette = palette(&f.ctx);
         f.frame(&looking(), Vec::new());
         let (_, add) = f.button("Add folder…");
         let (_, watched) = f.button("Watched folders…");
-        assert_eq!(add, color(palette.accent).gamma_multiply(0.5));
+        assert_eq!(add, color(palette.accent));
         assert_eq!(watched, color(palette.field));
         f.frame(&hidden(), Vec::new());
         let (_, show_hidden) = f.button("Show hidden photos");

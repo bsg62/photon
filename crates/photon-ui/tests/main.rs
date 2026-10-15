@@ -25,6 +25,7 @@ mod search;
 mod selection;
 mod settings;
 mod settings_edges;
+mod settings_lists;
 mod shell;
 mod side;
 mod slideshow;

@@ -215,6 +215,18 @@ impl Scans {
         awaited || self.settling || self.scans.values().any(|scan| !scan.done)
     }
 
+    /// How many files the running scan of `watched` has seen, while one runs.
+    pub fn seen_by(&self, watched: i64) -> Option<u64> {
+        (self.scans.get(&watched))
+            .filter(|scan| !scan.done)
+            .map(|scan| scan.files_seen)
+    }
+
+    /// Whether `watched` relies on periodic rescans, as its last report said.
+    pub fn degraded(&self, watched: i64) -> bool {
+        self.degraded.get(&watched).copied().unwrap_or(false)
+    }
+
     pub fn is_scanning(&self, watched: i64) -> bool {
         self.scans.get(&watched).is_some_and(|scan| !scan.done)
     }
