@@ -3029,11 +3029,29 @@ preview is not cached is an empty square with a figure. They are let go of when 
 closes. A name box is a field of its own for each group, Enter read and taken before it is
 drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"
 coloured, being a merge. The corrections (a person's suggestions, rename, merge, delete,
-ignoring, showing more) are the next pull request's, their buttons in place and taking no
-press. A test holds the page's read back by renaming `detected_faces` from a second
+ignoring, showing more) are the next pull request's, their buttons - "Show more" among
+them - in place and taking no press. A test holds the page's read back by renaming `detected_faces` from a second
 connection, the faces' seam (`tests/people.rs`); `native-shot` draws the page
 (`native-people-*`), its faces written through the library's own calls after the launch's
 scan.
+
+**What a review of the People page found, each with its test** (`tests/people.rs`,
+`people_view.rs`). *A write is no way out of the page*: the album on screen deleted from its
+sidebar menu sent `go` to All photos, which left the page - it is `ask_step` now; and Escape
+in the search box empties it and leaves the page where it is, as the Svelte box does (only
+typing asks for the grid). *What the keyboard moves to is brought into sight*, once, as it
+gets there and before the page is laid out (egui moves the keyboard at the end of the
+frame, and at a wrap round from the last box to the first in the frame after): a name box
+is drawn in sight or out of it and a face half in sight takes the keyboard, so Tab walked on
+into groups below the window's edge. *A crop is let go of once the page no longer lists
+it* under that key, not only when the page closes. *A line of controls wraps* (`Line`): a
+group's offer, box and Ignore, and a person's buttons under a long name. *"Show more" stands
+in its place* under every strip of a group with more faces. A test that reads where egui
+drew a widget after a frame reads the frame before it: egui swaps its two passes at the end
+of one (`Context::end_pass`), and `read_response` answers from the older. Not tested, for
+want of a seam: a write that panicked puts back every group hidden for a write on its way
+(`forget_writes`), and a face's photo asked for under the page is not opened once the page
+has been left for another view while its step was on its way (`take_open`).
 
 **Settings' Folders and Tags** (`watched_list.rs`, `tag_manager.rs` - `settings.ts`,
 `tags.ts` and `createTagRenamer`, with their tests' cases). **A question is asked in its

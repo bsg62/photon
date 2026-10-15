@@ -21,8 +21,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, ColorImage, Id, Key, Modifiers, Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle,
-    TextureOptions, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
+    self, ColorImage, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
+    TextureHandle, TextureOptions, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
 use photon_core::library::{PageFace, PageGroup};
 use std::collections::{HashMap, HashSet};
@@ -72,6 +72,8 @@ pub struct PeopleView {
     /// The face last clicked, and when: a second click on it within a double click's
     /// time opens its photo.
     clicked: Option<(i64, f64)>,
+    /// What had the keyboard when the page was last drawn.
+    focused: Option<Id>,
 }
 
 impl PeopleView {
@@ -114,6 +116,30 @@ impl PeopleView {
         let palette = palette(ui.ctx());
         // The page's padding, `--s-4`.
         let inner = rect.shrink(S[3]);
+        // What the keyboard has just been taken to is brought into sight, as a browser
+        // brings it: a name box is drawn in sight or out of it (egui lets go of a field
+        // that is not drawn) and a face half in sight takes the keyboard, so Tab walked on
+        // into groups below the window's edge, and what was typed next and its Enter named
+        // a group nobody could see. Once, as it gets there, so that the wheel can take the
+        // page away from it after; and before the page is laid out, from where it was last
+        // drawn, since egui moves the keyboard at the end of the frame Tab is pressed in.
+        let focused = ui.memory(|memory| memory.focused());
+        if focused != self.focused {
+            self.focused = focused;
+            let at = focused
+                .and_then(|id| ui.ctx().read_response(id))
+                .map(|r| r.rect);
+            if let Some(at) = at.filter(|at| rect.x_range().contains(at.center().x)) {
+                if at.top() < inner.top() {
+                    self.column.reveal = at.top() - inner.top() - S[2];
+                } else if at.bottom() > inner.bottom() {
+                    self.column.reveal = at.bottom() - inner.bottom() + S[4];
+                }
+                if self.column.reveal != 0.0 {
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
         let mut page = self.column.begin(ui, rect, inner);
         let mut actions = Vec::new();
         ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
@@ -158,8 +184,68 @@ impl PeopleView {
             draw.ignored(model, &mut self.ignored);
         });
         self.column.end(ui, &page, rect, inner, palette);
+        // A crop is let go of once the page no longer lists its face under that key - its
+        // photo turned or renamed, its face gone - and not only when the page closes: kept,
+        // every key a face had while the page stood open was a texture held.
+        if let Some(page) = data.model.page() {
+            let listed = listed(page);
+            self.textures.retain(|of, _| listed.contains(of));
+            self.missing.retain(|of| listed.contains(of));
+        }
         actions
     }
+}
+
+/// Where the next thing of a line of controls goes: on from the last, or at the start of
+/// the next line where the room runs out, as a wrapping flex line lays them out.
+struct Line {
+    left: f32,
+    right: f32,
+    x: f32,
+    top: f32,
+    /// The foot of the line, and of all before it.
+    bottom: f32,
+}
+
+impl Line {
+    fn new(left: f32, top: f32, width: f32) -> Self {
+        Self {
+            left,
+            right: left + width,
+            x: left,
+            top,
+            bottom: top,
+        }
+    }
+
+    /// The place of a thing `width` wide and `height` tall.
+    fn place(&mut self, width: f32, height: f32) -> Pos2 {
+        if self.x > self.left && self.x + width > self.right {
+            self.x = self.left;
+            self.top = self.bottom + S[1];
+        }
+        let at = pos2(self.x, self.top);
+        self.x += width + S[1];
+        self.bottom = self.bottom.max(self.top + height);
+        at
+    }
+
+    fn bottom(&self) -> f32 {
+        self.bottom
+    }
+}
+
+/// Every face the page lists, by its id and its photo's key.
+fn listed(page: &photon_core::library::PeoplePage) -> HashSet<CropOf> {
+    let groups = (page.unnamed.iter())
+        .chain(&page.suggestions)
+        .chain(&page.people)
+        .chain(&page.ignored_groups);
+    (groups.flat_map(|group| &group.faces))
+        .chain(&page.single_faces)
+        .chain(&page.ignored_faces)
+        .map(|face| (face.id, face.thumb_key.clone()))
+        .collect()
 }
 
 /// One frame of drawing the page.
@@ -311,6 +397,20 @@ impl Draw<'_, '_> {
     /// sight, and an empty square until it is cut or where it cannot be. A double click on
     /// a face, or Enter on it, opens its photo.
     fn strip(&mut self, faces: &[PageFace], count: i64, label: &str, suggestion: bool) {
+        self.strip_of(faces, count, label, suggestion, false);
+    }
+
+    /// A strip as `strip` draws it, and - for a group's, which pages through the group -
+    /// "Show more" under it where the group has more faces than it shows: in its place,
+    /// taking no press until the next pull request, so that nothing moves when it does.
+    fn strip_of(
+        &mut self,
+        faces: &[PageFace],
+        count: i64,
+        label: &str,
+        suggestion: bool,
+        pages: bool,
+    ) {
         if faces.is_empty() {
             return;
         }
@@ -332,6 +432,29 @@ impl Draw<'_, '_> {
         let rows = faces.len().div_ceil(across);
         self.page
             .put(top + rows as f32 * (FACE + FACE_GAP) - FACE_GAP);
+        let left_over = usize::try_from(count)
+            .unwrap_or(0)
+            .saturating_sub(faces.len());
+        if pages && left_over > 0 {
+            self.page.gap(S[1]);
+            let font = fonts::regular(T[2]);
+            let row = self.page.row(line_height(self.ui, &font));
+            self.page.put(row.bottom());
+            if self.page.sees(row) {
+                let words = format!(
+                    "Show more ({} left)",
+                    crate::grid::labels::grouped(left_over)
+                );
+                let place = self.page.painter.text(
+                    row.left_center(),
+                    egui::Align2::LEFT_CENTER,
+                    &words,
+                    font,
+                    color(self.palette.text_dim),
+                );
+                self.label(place, &words);
+            }
+        }
     }
 
     fn face(
@@ -412,14 +535,10 @@ impl Draw<'_, '_> {
         model: &PeoplePage,
         names: &mut HashMap<i64, String>,
         group: i64,
-        left: f32,
+        at: Pos2,
     ) -> f32 {
         let id = Id::new(("people-name", group));
-        let top = self.page.y;
-        let rect = Rect::from_min_size(
-            pos2(left, top),
-            vec2(FIELD_WIDTH.min(self.page.width), CONTROL),
-        );
+        let rect = Rect::from_min_size(at, vec2(FIELD_WIDTH.min(self.page.width), CONTROL));
         // Read before the field is drawn and taken out of the frame: egui's field gives the
         // keyboard up at an Enter it sees, and an Escape left in the frame is another's.
         let held = self.ui.memory(|memory| memory.has_focus(id));
@@ -544,29 +663,31 @@ impl Draw<'_, '_> {
     ) {
         let strip = Strip::Unnamed(group.id);
         self.card(|draw| {
-            draw.strip(
-                model.faces(strip),
-                model.count(strip),
-                "Unnamed group",
-                false,
-            );
+            let (faces, count) = (model.faces(strip), model.count(strip));
+            draw.strip_of(faces, count, "Unnamed group", false, true);
             draw.page.gap(S[1]);
-            let top = draw.page.y;
-            let mut left = draw.page.left;
+            // Picasa's offer, the box and Ignore go on to the next line where the page is
+            // too narrow for them, as the Svelte `.line` wraps.
+            let mut line = Line::new(draw.page.left, draw.page.y, draw.page.width);
             if let Some(offer) = &group.offer {
                 let words = format!("Yes, this is {}", offer.name);
-                if draw.inline_button(&mut left, top, &words, Look::Primary) {
+                let at = line.place(button_width(draw.ui, &words), CONTROL);
+                if draw.inline_button(&mut at.x.clone(), at.y, &words, Look::Primary) {
                     draw.actions.push(PeopleAction::Name {
                         group: group.id,
                         name: offer.name.clone(),
                     });
                 }
             }
-            let field_left = left;
-            let bottom = draw.name_box(model, names, group.id, field_left);
-            left = field_left + FIELD_WIDTH + S[1];
-            draw.inline_button(&mut left, top, "Ignore", Look::Off);
-            draw.page.put(bottom.max(top + CONTROL));
+            // The box with room for the line under it whether or not anything is said
+            // there: a line that came at the first letter typed and went at Enter moved
+            // every card under it as a name was typed, the export dialog's lesson.
+            let hint = line_height(draw.ui, &fonts::regular(T[1])) + 2.0;
+            let at = line.place(FIELD_WIDTH.min(draw.page.width), CONTROL + hint);
+            draw.name_box(model, names, group.id, at);
+            let at = line.place(button_width(draw.ui, "Ignore"), CONTROL);
+            draw.inline_button(&mut at.x.clone(), at.y, "Ignore", Look::Off);
+            draw.page.put(line.bottom());
             if let Some(offer) = &group.offer {
                 draw.page.gap(S[1]);
                 draw.hint(&format!(
@@ -593,12 +714,8 @@ impl Draw<'_, '_> {
                     crate::grid::labels::grouped(usize::try_from(model.count(strip)).unwrap_or(0));
                 draw.name_line(&name, &format!("{count} to check"));
                 draw.page.gap(S[1]);
-                draw.strip(
-                    model.faces(strip),
-                    model.count(strip),
-                    &format!("Suggested faces for {name}"),
-                    true,
-                );
+                let label = format!("Suggested faces for {name}");
+                draw.strip_of(model.faces(strip), model.count(strip), &label, true, true);
                 draw.page.gap(S[1]);
                 draw.button("Confirm all", Look::Off);
             });
@@ -623,17 +740,24 @@ impl Draw<'_, '_> {
             };
             self.card(|draw| {
                 let top = draw.page.y;
-                draw.name_line(&name, &faces);
-                // Rename, Merge into… and Delete, at the right of the line.
+                let used = draw.name_line(&name, &faces);
+                // Rename, Merge into… and Delete, at the right of the line - or of the next
+                // one, where the name leaves them no room, as the Svelte `.line` wraps.
                 let labels = ["Rename", "Merge into…", "Delete"];
                 let widths: f32 = labels.iter().map(|l| button_width(draw.ui, l) + S[1]).sum();
                 let mut left = draw.page.left + draw.page.width - widths + S[1];
+                let mut top = top;
+                if used + S[1] > left {
+                    top += CONTROL + S[1];
+                    left = left.max(draw.page.left);
+                }
                 for label in labels {
                     draw.inline_button(&mut left, top, label, Look::Off);
                 }
                 draw.page.put(draw.page.y.max(top + CONTROL));
                 draw.page.gap(S[1]);
-                draw.strip(model.faces(strip), n, &format!("Faces of {name}"), false);
+                let label = format!("Faces of {name}");
+                draw.strip_of(model.faces(strip), n, &label, false, true);
             });
         }
     }
@@ -657,12 +781,8 @@ impl Draw<'_, '_> {
             for group in &groups {
                 let strip = Strip::Ignored(group.id);
                 draw.page.gap(S[1]);
-                draw.strip(
-                    model.faces(strip),
-                    model.count(strip),
-                    "Ignored group",
-                    false,
-                );
+                let (faces, count) = (model.faces(strip), model.count(strip));
+                draw.strip_of(faces, count, "Ignored group", false, true);
                 draw.page.gap(S[1]);
                 draw.button("Stop ignoring", Look::Off);
             }
@@ -677,17 +797,28 @@ impl Draw<'_, '_> {
     }
 
     /// A name in bold and a dim count beside it, on one line.
-    fn name_line(&mut self, name: &str, count: &str) {
+    /// Answers where the line's words end.
+    fn name_line(&mut self, name: &str, count: &str) -> f32 {
         let row = self.page.row(CONTROL);
         self.page.put(row.bottom());
+        let bold = fonts::semibold(self.ui.ctx(), T[2]);
+        let (painter, white) = (&self.page.painter, egui::Color32::WHITE);
+        let named = painter
+            .layout_no_wrap(name.to_owned(), bold.clone(), white)
+            .size()
+            .x;
+        let counted = (painter.layout_no_wrap(count.to_owned(), fonts::regular(T[2]), white))
+            .size()
+            .x;
+        let end = row.left() + named + S[1] + counted;
         if !self.page.sees(row) {
-            return;
+            return end;
         }
         let at = self.page.painter.text(
             row.left_center(),
             egui::Align2::LEFT_CENTER,
             name,
-            fonts::semibold(self.ui.ctx(), T[2]),
+            bold,
             color(self.palette.text),
         );
         self.label(at, name);
@@ -699,6 +830,7 @@ impl Draw<'_, '_> {
             color(self.palette.text_dim),
         );
         self.label(place, &format!("{name}: {count}"));
+        end
     }
 
     /// A summary that folds what is under it, as `<details>` does: whether it is open.
@@ -781,6 +913,8 @@ mod tests {
         finds_faces: bool,
         time: f64,
         texts: Vec<(String, Rect)>,
+        /// The window's width.
+        width: f32,
     }
 
     impl Fixture {
@@ -798,12 +932,13 @@ mod tests {
                 finds_faces: true,
                 time: 0.0,
                 texts: Vec::new(),
+                width: 1000.0,
             }
         }
 
         fn frame(&mut self, events: Vec<Event>) -> Vec<PeopleAction> {
             let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 800.0))),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -927,6 +1062,172 @@ mod tests {
         assert!(f.drew("Unnamed").is_none());
         let open = f.drew("Open Settings").unwrap().center();
         assert_eq!(f.click(open), [PeopleAction::OpenSettings]);
+    }
+
+    fn tab() -> Event {
+        Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    // Tab walks the keyboard through the page, and what it lands on is in sight. A
+    // name box is drawn in sight or out of it, so Tab from the first group's box went on
+    // into the boxes of groups below the window's edge, the page standing still: the
+    // caret, the hint and the group were nowhere to be seen, and Enter named a group the
+    // user could not see. A browser scrolls a field the keyboard is taken to into view.
+    #[test]
+    fn tab_lands_on_nothing_out_of_sight() {
+        let groups: Vec<PageGroup> = (1..=30)
+            .map(|n| group(n, vec![face(2 * n), face(2 * n + 1)], None))
+            .collect();
+        let page = Page {
+            unnamed_count: groups.len() as i64,
+            unnamed: groups,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        let field = f.drew("Add a name").expect("the first box").center();
+        f.click(field);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0));
+        for n in 0..60 {
+            f.frame(vec![tab()]);
+            // A few frames for it to settle: egui moves the keyboard in the frame of the
+            // Tab, or - wrapping round from the last box to the first - in the one after;
+            // the page is moved in the frame after that; and egui swaps its two passes at
+            // the end of a frame (`Context::end_pass`), so `read_response` answers from the
+            // frame before the last one drawn.
+            for _ in 0..3 {
+                f.frame(Vec::new());
+            }
+            let Some(id) = f.ctx.memory(|memory| memory.focused()) else {
+                continue;
+            };
+            let rect = f.ctx.read_response(id).map(|response| response.rect);
+            assert!(
+                rect.is_some_and(|rect| screen.contains_rect(rect)),
+                "after {} Tabs the keyboard is on {rect:?}, out of sight",
+                n + 1
+            );
+        }
+    }
+
+    // a crop is let go of once the page no longer lists it under that key - its
+    // photo turned or rewritten, its face gone - and not only when the page closes. Kept,
+    // every key a face has had while the page stood open is a texture of 144 by 144.
+    #[test]
+    fn a_crop_of_a_key_no_longer_listed_is_let_go_of() {
+        let page = Page {
+            unnamed: vec![group(1, vec![face(1), face(2)], None)],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        let old: CropOf = (1, face(1).thumb_key);
+        let side = CROP_PX as usize;
+        f.view.took(
+            &f.ctx,
+            vec![(old.clone(), Made::Pixels(vec![0; side * side * 4]))],
+        );
+        f.frame(Vec::new());
+        assert!(f.view.holds_crop(&old));
+        // The photo turned: the face is listed under its new key.
+        let mut turned = face(1);
+        turned.thumb_key = "00000000000000ff".to_owned();
+        let number = f.model.reload(1.0);
+        f.model.loaded(
+            number,
+            Page {
+                unnamed: vec![group(1, vec![turned, face(2)], None)],
+                unnamed_count: 1,
+                ..Page::default()
+            },
+        );
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert!(!f.view.holds_crop(&old), "the crop of the old key is kept");
+    }
+
+    // a group's line - Picasa's offer, the name box, Ignore - wraps where the page
+    // is narrow, as the Svelte `.line` does (`flex-wrap: wrap`). Laid out in one row from
+    // the card's left, a long offer pushed the box and Ignore past the card's right edge
+    // and out of the window: a sidebar dragged wide, or a window put beside another.
+    #[test]
+    fn a_groups_line_stays_inside_a_narrow_page() {
+        let page = Page {
+            unnamed: vec![group(
+                1,
+                vec![face(1), face(2)],
+                Some("Alexandra Konstantinidou"),
+            )],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.width = 420.0;
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        // Past the edge it is not drawn at all (`inline_button` draws only in sight).
+        let ignore = f.drew("Ignore");
+        assert!(
+            ignore.is_some_and(|ignore| ignore.right() <= f.width),
+            "Ignore is at {ignore:?}, not inside the window's {}",
+            f.width
+        );
+    }
+
+    // the module says showing more is drawn in its place and takes no press, "so
+    // that nothing moves when they start to work". A strip of 12 of a group's 20 faces has
+    // no "Show more" at all: the next pull request adds a line under every long strip, and
+    // every card below it moves.
+    #[test]
+    fn show_more_stands_in_its_place() {
+        let faces: Vec<PageFace> = (1..=12).map(face).collect();
+        let mut long = group(1, faces, None);
+        long.face_count = 20;
+        let page = Page {
+            unnamed: vec![long],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert!(
+            f.drew("Show more (8 left)").is_some(),
+            "no Show more in its place"
+        );
+    }
+
+    // A person's Rename, Merge into… and Delete stand at the right of their line, and go
+    // on to the next line where a long name leaves them no room, as the Svelte `.line`
+    // wraps: placed from the right regardless, they lay over the name.
+    #[test]
+    fn a_persons_buttons_go_under_a_long_name() {
+        let name = "Alexandra Konstantinidou-Papadopoulou";
+        let mut person = group(5, vec![face(1)], None);
+        person.name = Some(name.to_owned());
+        let page = Page {
+            people: vec![person],
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.width = 420.0;
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let named = f.drew(name).expect("the name");
+        let rename = f.drew("Rename").expect("Rename");
+        assert!(
+            rename.top() > named.bottom() || rename.left() > named.right(),
+            "Rename at {rename:?} lies over the name at {named:?}"
+        );
+        let delete = f.drew("Delete").expect("Delete");
+        assert!(delete.right() <= f.width, "{delete:?}");
     }
 
     // The words are the Svelte page's.

@@ -198,6 +198,12 @@ impl PeoplePage {
         }
     }
 
+    /// The writes on their way are not to be heard of - one panicked, and its answer
+    /// names nothing: every group still hidden for one comes back.
+    pub fn forget_writes(&mut self) {
+        self.hidden.retain(|_, ended| ended.is_some());
+    }
+
     fn shown(&self, group: &PageGroup) -> bool {
         !self.hidden.contains_key(&group.id)
     }

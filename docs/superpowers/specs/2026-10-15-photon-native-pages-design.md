@@ -109,7 +109,8 @@ window's thread, one cut at a time per core as `FACE_CROPS` bounds them, each pr
 decoded once for all its faces (`ThumbCache`'s last eight). A crop is a texture held by its
 face's id and thumbnail key - a key names one picture, so a crop kept is never stale - and
 let go of when the page closes. A face whose preview is not cached shows an empty square,
-and is asked for again when its photo's thumbnail is.
+and is asked for again when the page next opens - as the Svelte strip keeps a crop that
+failed until it is mounted again (decided in the PR's review).
 
 - **PR 5**: the page's sections and their first strips - groups to name, the photos with
   one face, people, ignored groups and faces - with their counts; naming a group (the name

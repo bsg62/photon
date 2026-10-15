@@ -3691,8 +3691,9 @@ impl App {
                 self.leave_people();
                 self.search.typed(now_ms);
             }
+            // Escape in the box empties it and leaves the page where it is, as the Svelte
+            // box does: only typing is asking for the grid.
             Action::Search(SearchAction::Clear) => {
-                self.leave_people();
                 self.search.clear();
                 self.search_for(String::new());
             }
@@ -4074,8 +4075,10 @@ impl App {
                             view: View::Album,
                             arg: album.to_string(),
                         };
+                        // Under the page, if it is open: the user is not asking for the grid,
+                        // and the Svelte delete switches no page.
                         if self.nav.target() == shown {
-                            self.go(Step::View(View::All));
+                            self.ask_step(Step::View(View::All));
                         }
                     }
                 }
@@ -4152,9 +4155,17 @@ impl App {
                     self.toasts.error(said, now_ms);
                 }
                 Ok(Err(Unwritten::Said(said))) => self.toasts.error(said, now_ms),
-                Err(_) => self
-                    .toasts
-                    .error("photon could not store that change.", now_ms),
+                // A write that panicked says which it was no more: what the People page
+                // hid for writes on their way comes back, as a refusal puts it back, and
+                // the page is read again.
+                Err(_) => {
+                    if let Some(model) = &mut self.page {
+                        model.forget_writes();
+                    }
+                    self.read_people(now_ms);
+                    self.toasts
+                        .error("photon could not store that change.", now_ms);
+                }
             }
         }
         answered

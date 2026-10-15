@@ -120,6 +120,14 @@ impl App {
         }
     }
 
+    /// The page read again, at once, after one of its writes.
+    pub(super) fn read_people(&mut self, now: f64) {
+        if let Some(model) = &mut self.page {
+            let ask = model.reload(now);
+            self.people_read.ask(ask);
+        }
+    }
+
     /// Does what was pressed on the page.
     pub(super) fn people_act(&mut self, action: PeopleAction) {
         match action {
@@ -154,9 +162,13 @@ impl App {
         }
     }
 
-    /// Opens the photo a jump to it found in the grid now on screen, or says it is gone.
+    /// Opens the photo a jump to it found in the grid now on screen, or says it is gone -
+    /// while the page it was asked from is still open: left meanwhile for another view, the
+    /// viewer would open over a grid the user went elsewhere from.
     pub(super) fn take_open(&mut self, now: f64) {
-        if let Some(id) = self.opening.take() {
+        if let Some(id) = self.opening.take()
+            && self.page.is_some()
+        {
             if self.index.position_of(id).is_some() {
                 self.open_viewer(id);
             } else {
