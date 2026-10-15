@@ -9,3 +9,11 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 [profile.ci]
 # Every failure of a run, not only the first: a run is ten minutes on Windows.
 fail-fast = false
+
+# The system's video backends' tests (`tests/video`) each have the machine to themselves: a
+# player is the system's, and on macOS' runner of three cores, beside the whole-app tests,
+# one had not got under way in five seconds and another took seven to play three. (Applied
+# in every profile: the default profile's overrides follow a profile's own.)
+[[profile.default.overrides]]
+filter = 'binary(video)'
+threads-required = 'num-cpus'
