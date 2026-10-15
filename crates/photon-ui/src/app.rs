@@ -31,6 +31,7 @@ use crate::{
     search_bar::{SearchAction, SearchBarData},
     search_box::{SearchBox, saved_search_for},
     selection::Selection,
+    settings::{self, Section},
     shell::{Action, Shell, ShellData},
     side_menu::{self, FolderFacts, SideAction},
     sidebar::{
@@ -62,7 +63,7 @@ use eframe::egui;
 use jiff::tz::TimeZone;
 use photon_core::{
     grid::{GridEntry, GridIndex, GridView as View},
-    library::{Folder, GridTile, NamedItems, NamedPerson, WatchedFolder},
+    library::{Folder, GridTile, NamedItems, NamedPerson, ThemeChoice, WatchedFolder},
     media::MediaKind,
     sort::Sort,
 };
@@ -72,6 +73,9 @@ use photon_engine::{
     error::AppError,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
+
+mod settings_dialog;
+use settings_dialog::{SettingWrite, SettingWrote};
 
 /// How long a thumbnail that has not been built is waited for, as `protocol.rs`'s
 /// `THUMB_TIMEOUT` bounds the same wait.
@@ -165,6 +169,16 @@ pub struct App {
     /// The slideshow's interval, in seconds, and whether it shuffles: read once at each
     /// show's start, off this thread.
     show_settings: Latest<(), (Option<i64>, bool)>,
+    /// The theme the user chose, as put on the window.
+    theme: ThemeChoice,
+    /// What Settings shows of the stored settings, read as it opens.
+    settings_read: Latest<(), Result<settings::Stored, String>>,
+    /// photon's memory, read every two seconds while Settings shows About, and when it
+    /// was last asked for.
+    memory_read: Latest<(), Option<settings::Memory>>,
+    memory_asked: Option<f64>,
+    /// How many people the user has named, read before face detection is switched off.
+    face_count: Latest<(), Result<i64, String>>,
     /// Compare, while it is open.
     compare: Option<Comparing>,
     /// Compare, its photos read, to be put up at the end of the frame.
@@ -418,6 +432,8 @@ enum Write {
         apply: bool,
         was: bool,
     },
+    /// A setting changed in Settings.
+    Setting(SettingWrite),
 }
 
 /// A write that was made.
@@ -486,6 +502,8 @@ enum Wrote {
     },
     /// A setting stored that nothing on screen is read from.
     Stored,
+    /// A setting of Settings stored, as the library made it.
+    Setting(SettingWrote),
 }
 
 /// A write the library refused, and what it said.
@@ -515,6 +533,12 @@ enum Unwritten {
     },
     /// An edit the library would not store: the crop tool stays open, to be put right.
     Edit {
+        said: String,
+    },
+    /// A setting of Settings the library would not store; the interval's field, if it
+    /// was the interval, shows what it holds.
+    Setting {
+        interval: bool,
         said: String,
     },
 }
@@ -584,7 +608,9 @@ impl App {
         // what `app.rs` in the Tauri shell reads the theme in `setup` to avoid - and the
         // grid laid itself out twice. `Engine::open` has just read two settings from the
         // same table on this thread. A read that fails leaves the defaults.
-        theme::apply::choose(&ctx, commands::theme(&engine).unwrap_or_default());
+        // And the title bar the system draws, which is the window's own.
+        let theme = commands::theme(&engine).unwrap_or_default();
+        theme::apply::put(&ctx, theme);
         let size = commands::grid_tile(&engine).unwrap_or_default();
         engine.startup(pictures);
 
@@ -814,6 +840,7 @@ impl App {
                         }
                         Ok(Wrote::Watched { folders, refused })
                     }
+                    Write::Setting(write) => settings_dialog::store(&engine, write),
                     Write::ExportApplyEdits { apply, was } => {
                         commands::set_export_apply_edits(&engine, apply)
                             .map(|()| Wrote::Stored)
@@ -971,6 +998,23 @@ impl App {
             },
             repaint(&ctx),
         );
+        let settings_read = Latest::spawn(
+            "settings",
+            {
+                let engine = engine.clone();
+                move |()| settings_dialog::read(&engine)
+            },
+            repaint(&ctx),
+        );
+        let memory_read = Latest::spawn("memory", |()| settings_dialog::memory(), repaint(&ctx));
+        let face_count = Latest::spawn(
+            "named count",
+            {
+                let engine = engine.clone();
+                move |()| settings_dialog::named(&engine)
+            },
+            repaint(&ctx),
+        );
         let people = Latest::spawn(
             "named people",
             {
@@ -1079,6 +1123,11 @@ impl App {
             crops: 0,
             ctx: ctx.clone(),
             show_settings,
+            theme,
+            settings_read,
+            memory_read,
+            memory_asked: None,
+            face_count,
             fullscreen_asked: None,
             fullscreen_pending: None,
             compare: None,
@@ -1710,12 +1759,22 @@ impl App {
             Dialog::Tags(_) => (self.held.collections().tags.iter())
                 .map(|tag| tag.tag.clone())
                 .collect(),
-            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Person(_) => Vec::new(),
+            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Person(_) | Dialog::Settings(_) => {
+                Vec::new()
+            }
         };
         let done = (self.dialog_view).show(ui, dialog, &keywords, self.named.as_deref());
         match (done, &mut self.dialog) {
             (Done::Open, _) => {}
-            (Done::Closed, _) => self.dialog = None,
+            (Done::Closed, _) => {
+                if let Some(Dialog::Settings(settings)) = self.dialog.take() {
+                    self.settings_closed(settings);
+                }
+                self.dialog = None;
+            }
+            (Done::Settings(asked), Some(Dialog::Settings(_))) => {
+                self.settings_asked(ui.ctx(), asked);
+            }
             (Done::Typed(text), Some(Dialog::Tags(picker))) => picker.type_in(text),
             (Done::Typed(text), Some(Dialog::Person(picker))) => picker.type_in(text),
             // Closed before its write, as the keyword picker is. The name is written as
@@ -1779,7 +1838,8 @@ impl App {
                 | Done::Path(_)
                 | Done::Tick(_)
                 | Done::Size(_)
-                | Done::Export,
+                | Done::Export
+                | Done::Settings(_),
                 _,
             ) => {}
         }
@@ -3387,6 +3447,8 @@ impl App {
                 self.layout_store.ask(self.layout);
             }
             Action::Row(What::NewAlbum) => self.rename.start(Of::NewAlbum, ""),
+            // The button under "No folders yet.": Settings' list of folders.
+            Action::Row(What::AddFolder) => self.open_settings(Section::Folders),
             Action::Named(Named::Typed(text)) => self.rename.type_in(text),
             Action::Named(Named::Cancel) => self.rename.cancel(),
             Action::Named(Named::Commit) => self.store_name(),
@@ -3422,8 +3484,10 @@ impl App {
             Action::Dismiss(id) => self.toasts.dismiss(id),
             Action::Sort(sort) => self.go(Step::Sort(sort)),
             Action::Panel(PanelButton::ShowHidden) => self.go(Step::View(View::Hidden)),
-            // Drawn where they will be, and not answered yet (`PanelButton::works`).
-            Action::Panel(PanelButton::AddFolder | PanelButton::WatchedFolders) => {}
+            Action::Panel(PanelButton::WatchedFolders) => self.open_settings(Section::Folders),
+            Action::Settings => self.open_settings(Section::Folders),
+            // Drawn where it will be, and not answered yet (`PanelButton::works`).
+            Action::Panel(PanelButton::AddFolder) => {}
             // Applied first and stored second, so the press is answered at once. A size
             // the library would not store is kept for this session all the same: going
             // back would answer a disk error with the whole grid laid out again.
@@ -3499,7 +3563,7 @@ impl App {
 
     /// Takes what the tasks have answered since the last frame, and says whether any had.
     fn take_answers(&mut self, now_ms: f64) -> bool {
-        let mut answered = false;
+        let mut answered = self.settings_answers(now_ms);
         if let Some(read) = self.folder_list.answer() {
             answered = true;
             if let Ok(Some(list)) = read {
@@ -3772,6 +3836,11 @@ impl App {
                     }
                 }
                 Ok(Ok(Wrote::Stored)) => {}
+                Ok(Ok(Wrote::Setting(wrote))) => self.setting_written(wrote),
+                Ok(Err(Unwritten::Setting { interval, said })) => {
+                    self.setting_refused(interval);
+                    self.toasts.error(said, now_ms);
+                }
                 Ok(Err(Unwritten::Edits { was, said })) => {
                     if let Some(Dialog::Export(export)) = &mut self.dialog {
                         export.put_back(was);
@@ -4079,6 +4148,7 @@ impl eframe::App for App {
         // A dialog, before anything else is drawn: nothing behind it reads a key, and it
         // takes them out of the frame when it has read its own (`dialog_view.rs`).
         let under_dialog = self.dialog.is_some();
+        self.settings_frame(ui.ctx(), now);
         self.show_dialog(ui);
         if under_dialog && self.dialog.is_none() {
             self.overlay_closed = Some(now);

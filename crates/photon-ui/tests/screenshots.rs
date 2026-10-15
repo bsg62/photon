@@ -1254,3 +1254,68 @@ fn native_viewer_quality() {
         .unwrap();
     println!("wrote {}", out.join("native-viewer-quality.png").display());
 }
+
+/// Settings opened by the gear, at the section called `label`, once what it shows has
+/// been read.
+fn settings_at(harness: &mut Harness<'_>, label: &str) {
+    harness.get_by_label("Settings").click();
+    until(harness, "Settings read", |app| {
+        matches!(app.dialog(), Some(photon_ui::dialogs::Dialog::Settings(settings))
+            if settings.stored().is_some())
+    });
+    // Past a double click's time of its first frame, which a press in it would be the
+    // second press of.
+    for _ in 0..30 {
+        harness.step();
+    }
+    let nodes = harness.query_all_by_role_and_label(egui::accesskit::Role::Button, label);
+    let node = (nodes.into_iter())
+        .find(|node| node.rect().left() > 140.0 && node.rect().top() > 80.0)
+        .expect("the section's row");
+    node.click();
+    for _ in 0..5 {
+        harness.step();
+    }
+    harness.event(egui::Event::PointerGone);
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_appearance_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-settings-appearance-light.png",
+        |harness| settings_at(harness, "Appearance"),
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_people_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-settings-people-dark.png",
+        |harness| settings_at(harness, "People"),
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_slideshow_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-settings-slideshow-dark.png",
+        |harness| settings_at(harness, "Slideshow"),
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_about_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-settings-about-light.png",
+        |harness| settings_at(harness, "About"),
+    );
+}

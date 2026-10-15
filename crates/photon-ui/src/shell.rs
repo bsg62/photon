@@ -88,6 +88,8 @@ pub enum Action {
     Size(GridTile),
     /// A button of the empty library's panel.
     Panel(PanelButton),
+    /// The gear: Settings.
+    Settings,
     /// The splitter moved to `width`. `store` when the user has let go of it or moved it
     /// by a key: a width is stored when it was chosen, not at every point on the way.
     Width {
@@ -275,16 +277,16 @@ impl Shell {
         ) {
             actions.push(Action::ToggleSidebar);
         }
-        // Settings come with a later part of the native interface: the gear is drawn where
-        // it will be, so nothing moves when it starts to work, and takes no press yet.
         let gear = Button {
             icon: Icon::Settings,
             label: "Settings",
             hint: None,
-            enabled: false,
+            enabled: true,
         };
         let gear_at = at(rect.right() - S[1] - BUTTON);
-        bar_button(ui, gear_at, "settings", &gear, palette);
+        if bar_button(ui, gear_at, "settings", &gear, palette) {
+            actions.push(Action::Settings);
+        }
         // The grid's own controls, left of the gear, as wide as what they offer.
         let controls_left = gear_at.left() - S[1] - controls_bar::width(ui);
 
@@ -855,7 +857,8 @@ mod tests {
                     | Action::RowMenu { .. }
                     | Action::Named(_)
                     | Action::Search(_)
-                    | Action::Panel(_) => {}
+                    | Action::Panel(_)
+                    | Action::Settings => {}
                 }
             }
             actions
@@ -1328,13 +1331,13 @@ mod tests {
         assert!(large.right() < 800.0 - S[1] - BUTTON);
     }
 
-    // The gear is where it will be and takes no press: Settings are a later part.
+    // The gear opens Settings.
     #[test]
-    fn the_gear_is_drawn_and_does_nothing_yet() {
+    fn the_gear_asks_for_settings() {
         let mut f = Fixture::new();
         f.frame(Vec::new());
         let gear = pos2(1280.0 - S[1] - BUTTON / 2.0, TOP_BAR / 2.0);
-        assert_eq!(f.click(gear), []);
+        assert_eq!(f.click(gear), [Action::Settings]);
     }
 
     #[test]

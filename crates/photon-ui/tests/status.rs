@@ -253,10 +253,10 @@ fn a_library_that_watches_nothing_offers_a_folder() {
     assert!(add.accesskit_node().is_disabled());
     assert!(harness.query_by_label("Watched folders…").is_none());
     // And the sidebar says there is no folder, where its folders would be listed, over
-    // a button that is not one yet.
+    // the button to Settings' list of folders.
     assert!(harness.query_by_label("No folders yet.").is_some());
     let settings = harness.get_by_label("Add a folder in Settings…");
-    assert!(settings.accesskit_node().is_disabled());
+    assert!(!settings.accesskit_node().is_disabled());
     assert_eq!(harness.state().photo_count().as_deref(), Some("0 photos"));
     // With nothing reporting, the window is still.
     driver.settle(&mut harness);
@@ -290,12 +290,14 @@ fn a_library_whose_drive_is_away_says_it_cannot_reach_it() {
             .all(|text| *text == LOOKING),
         "{panels:#?}"
     );
-    // Both buttons are there, and neither does anything yet.
+    // Both buttons are there: the list of watched folders, and adding one, which does
+    // nothing yet.
     driver.settle(&mut harness);
     driver.frames_in(&mut harness, 0.5);
-    for label in ["Add folder…", "Watched folders…"] {
-        assert!(harness.get_by_label(label).accesskit_node().is_disabled());
-    }
+    let add = harness.get_by_label("Add folder…");
+    assert!(add.accesskit_node().is_disabled());
+    let watched = harness.get_by_label("Watched folders…");
+    assert!(!watched.accesskit_node().is_disabled());
 }
 
 /// The library under `dir`, with its write lock taken: whatever the engine writes next
