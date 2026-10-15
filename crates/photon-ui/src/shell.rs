@@ -65,6 +65,10 @@ pub struct ShellData<'a> {
     pub panel: Option<&'a Panel>,
     /// The line shown in the middle of the content in place of photos.
     pub notice: Option<&'a str>,
+    /// Whether the grid's own controls are drawn: not under the People page, where they
+    /// would sort and size a grid no one can see. Their room is kept, so that the search
+    /// box and the gear stay where they are.
+    pub grid_controls: bool,
     /// A line under the photos, in a band of its own at the content's foot: the photos
     /// are given what is left, so it lies over none of them. Empty, the band's room alone.
     pub foot: Option<&'a str>,
@@ -314,6 +318,11 @@ impl Shell {
         let done = self.search.show(ui, room, search, &data.search);
         actions.extend(done.into_iter().map(Action::Search));
 
+        if !data.grid_controls {
+            // A list left open would hold the keys of a control nobody can see.
+            self.controls.close();
+            return;
+        }
         // After the search box: a key a list of theirs used is taken out of the frame's
         // input, and the box has read its own by then.
         let controls = ControlsData {
@@ -738,6 +747,7 @@ mod tests {
             layout_gen: 0,
             zone: &jiff::tz::TimeZone::UTC,
             no_folders: false,
+            people: false,
         });
         list
     }
@@ -846,6 +856,7 @@ mod tests {
                 lines: &self.lines,
                 panel: self.panel.as_ref(),
                 notice: self.notice.as_deref(),
+                grid_controls: true,
                 foot: self.foot.as_deref(),
                 toasts: self.toasts.held(),
             };

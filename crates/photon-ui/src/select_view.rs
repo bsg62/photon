@@ -100,6 +100,11 @@ impl SelectView {
         self.select.open()
     }
 
+    /// Closes the list, for a control that is not drawn.
+    pub fn close(&mut self) {
+        self.select.close();
+    }
+
     /// Draws the control in `rect` and, while it is open, its list under it. Answers the
     /// option chosen, when it is another than the one held.
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect, data: &SelectData<'_>) -> Option<usize> {

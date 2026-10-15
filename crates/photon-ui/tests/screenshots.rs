@@ -1399,3 +1399,99 @@ fn native_settings_statistics_light() {
         },
     );
 }
+
+/// The People page over a library with two groups to name and a single face: faces placed
+/// on six photos through the library's own calls, each group's a vector of its own so that
+/// its grouping puts them together, and Find faces switched on through the engine last -
+/// every photo is looked at by then, and the pass it asks for finds nothing to do.
+fn people(harness: &mut Harness<'_>, db: &Path) {
+    use photon_core::{
+        face_detect::{DETECTOR_VERSION, Detection, Rect},
+        face_embed::{DIM, EMBEDDER_VERSION},
+    };
+    let shown = harness.state().shown();
+    let groups = [&shown[0..3], &shown[3..5], &shown[5..6]];
+    let lib = Library::open(db).unwrap();
+    lib.set_face_detection(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let photos = loop {
+        let photos = lib.face_candidates(0, 100, DETECTOR_VERSION).unwrap();
+        let ready = |id: &i64| photos.iter().any(|photo| photo.id == *id);
+        if shown[0..6].iter().all(ready) {
+            break photos;
+        }
+        assert!(Instant::now() < deadline, "never: the photos' previews");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let face = Detection {
+        rect: Rect {
+            left: 0.35,
+            top: 0.3,
+            right: 0.55,
+            bottom: 0.6,
+        },
+        landmarks: [(0.0, 0.0); 5],
+        score: 0.9,
+    };
+    let batch: Vec<_> = (photos.into_iter())
+        .map(|photo| {
+            let faces = if shown[0..6].contains(&photo.id) {
+                vec![face.clone()]
+            } else {
+                Vec::new()
+            };
+            (photo, faces)
+        })
+        .collect();
+    lib.write_face_batch(&batch, DETECTOR_VERSION).unwrap();
+    let candidates = lib.embed_candidates(0, 100, EMBEDDER_VERSION).unwrap();
+    let batch: Vec<_> = (candidates.into_iter())
+        .map(|candidate| {
+            let group = (groups.iter())
+                .position(|group| group.contains(&candidate.item_id))
+                .unwrap();
+            let mut vector = [0.0_f32; DIM];
+            vector[group] = 1.0;
+            let faces = (candidate.faces.iter())
+                .map(|(id, _)| (*id, Some(vector)))
+                .collect();
+            (candidate, faces)
+        })
+        .collect();
+    lib.write_embeddings(&batch, EMBEDDER_VERSION).unwrap();
+    lib.group_ungrouped_faces(&|| false).unwrap();
+    let engine = harness.state().engine().clone();
+    photon_engine::commands::set_face_detection(&engine, true).unwrap();
+    // A grouping run announces a change of the data, which the sidebar's "to name" reads.
+    engine.refresh_grid().unwrap();
+    until(harness, "the groups to name counted", |app| {
+        app.collections().to_name == 2
+    });
+    harness.get_by_label("People").click();
+    harness.step();
+    until(harness, "the page read", |app| {
+        app.people_page()
+            .is_some_and(|page| page.unnamed().len() == 2)
+    });
+    let faces: Vec<(i64, String)> = (harness.state().people_page().unwrap().unnamed().iter())
+        .flat_map(|group| group.faces.iter())
+        .map(|face| (face.id, face.thumb_key.clone()))
+        .collect();
+    until(harness, "the crops", |app| {
+        (faces.iter()).all(|(face, key)| app.people_crop(*face, key))
+    });
+    harness.step();
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_people_light() {
+    shot_over(ThemeChoice::Light, "native-people-light.png", people);
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_people_dark() {
+    shot_over(ThemeChoice::Dark, "native-people-dark.png", people);
+}

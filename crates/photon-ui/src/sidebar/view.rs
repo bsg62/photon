@@ -55,7 +55,7 @@ const NOTE_BELOW: f32 = 6.0;
 /// right under the last group's heading, they read as that group's - "Tags: No folders
 /// yet." - which a picture showed.
 const NO_FOLDERS_ABOVE: f32 = 12.0;
-/// The button under them, which takes no press yet: as tall as this, in a row.
+/// The button under them, to Settings' folders: as tall as this, in a row.
 const ADD_FOLDER: f32 = 24.0;
 /// Where a year's heading starts, and where its line's middle is under the room above it.
 const YEAR_LEFT: f32 = 14.0;
@@ -323,8 +323,8 @@ impl SidebarView {
                     drawn = Some(naming.of.clone());
                 }
                 _ => {
-                    if draw(ui, &frame, band, entry) {
-                        shown.clicked = Some(entry.what.clone());
+                    if let Some(clicked) = draw(ui, &frame, band, entry) {
+                        shown.clicked = Some(clicked);
                     }
                 }
             }
@@ -747,7 +747,10 @@ fn field(
     named
 }
 
-fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool {
+/// Draws `entry` in `band`. Answers what a click on it asks for: the entry itself, or the
+/// People page for the label half of People's heading.
+fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> Option<What> {
+    let clicked = |yes: bool| yes.then(|| entry.what.clone());
     let palette = frame.palette;
     let painter = frame.painter;
     let text = color(palette.text);
@@ -796,15 +799,15 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 fonts::regular(T[2]),
                 text,
             );
-            pressable && response.clicked()
+            clicked(pressable && response.clicked())
         }
         What::Group(group) => {
             let open = entry.detail == Detail::Open(true);
             // People's heading is two things, the fold and the page, laid out to sit
-            // exactly where a one-button heading puts its chevron and its icon. The page
-            // comes with a later part of the native interface: its label is drawn where it
-            // will be, and takes no press yet. The other headings fold where they are
-            // clicked, anywhere along the row.
+            // exactly where a one-button heading puts its chevron and its icon: the
+            // chevron folds, the rest of the row - the label and its count - opens the
+            // page, and is where the user is while the page is open. The other headings
+            // fold where they are clicked, anywhere along the row.
             let people = *group == Group::People;
             let fold_end = row.left() + S[1] + SMALL_ICON + S[0];
             let pressed = if people {
@@ -825,6 +828,24 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             };
             if response.hovered() {
                 painter.rect_filled(pressed, R[2], color(palette.hover));
+            }
+            let mut page = false;
+            if people {
+                let label = Rect::from_min_max(pos2(fold_end, row.top()), row.max);
+                let shown = ui.interact(
+                    label,
+                    ui.id().with(("sidebar", &What::PeoplePage)),
+                    Sense::click(),
+                );
+                shown.widget_info(|| {
+                    WidgetInfo::selected(WidgetType::Button, true, entry.active, &entry.label)
+                });
+                if entry.active {
+                    painter.rect_filled(label, R[2], color(palette.accent_soft));
+                } else if shown.hovered() {
+                    painter.rect_filled(label, R[2], color(palette.hover));
+                }
+                page = shown.clicked();
             }
             let chevron = if open {
                 Icon::ChevronDown
@@ -847,7 +868,10 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 font,
                 dim,
             );
-            response.clicked()
+            if page {
+                return Some(What::PeoplePage);
+            }
+            clicked(response.clicked())
         }
         What::Album(_) | What::Search { .. } | What::Person(_) | What::Tag(_) | What::Folder(_) => {
             // A folder is a place in the grid, never the view shown: it says neither.
@@ -887,7 +911,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 let at = square(left + used + S[1] + S[0], SMALL_ICON);
                 Icon::Images.paint(ui, at, SMALL_ICON, false, dim);
             }
-            response.clicked()
+            clicked(response.clicked())
         }
         What::NewAlbum => {
             // Fainter than a row that names something, until the pointer is on it.
@@ -903,14 +927,14 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 fonts::regular(T[2]),
                 tint,
             );
-            response.clicked()
+            clicked(response.clicked())
         }
         What::Year(_) => {
             let font = fonts::semibold(ui.ctx(), T[0]);
             let at = (band.left() + YEAR_LEFT, band.top() + YEAR_MIDDLE);
             let room = band.right() - band.left() - 2.0 * YEAR_LEFT;
             paint_line(ui, painter, at, room, &entry.label, font, dim);
-            false
+            None
         }
         What::AddFolder => {
             // Settings, at their list of folders. The words are laid out in their own
@@ -946,7 +970,7 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
                 words,
                 text,
             );
-            response.clicked()
+            clicked(response.clicked())
         }
         What::Note(_) | What::NoFolders => {
             let (left, above) = note_place(&entry.what);
@@ -956,8 +980,10 @@ fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> bool
             // Words, and said as words to whoever reads the window without seeing it.
             ui.interact(band, ui.id().with(("sidebar", &entry.what)), Sense::hover())
                 .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &entry.label));
-            false
+            None
         }
+        // No entry of its own: what a click on the label half of People's heading answers.
+        What::PeoplePage => None,
     }
 }
 
@@ -1093,6 +1119,7 @@ mod tests {
                 layout_gen: 1,
                 zone: &TimeZone::UTC,
                 no_folders: self.no_folders,
+                people: false,
             });
             list
         }
@@ -1551,7 +1578,7 @@ mod tests {
 
     // Its chevron folds the list; its label is the People page's, which is not built yet.
     #[test]
-    fn people_fold_at_their_chevron_and_their_label_takes_no_press() {
+    fn people_fold_at_their_chevron_and_their_label_opens_the_page() {
         let mut f = Fixture::new(1);
         f.frame(Vec::new());
         let people = What::Group(Group::People);
@@ -1560,7 +1587,7 @@ mod tests {
             f.click(pos2(INSET + S[1] + 6.0, row.y)),
             Some(people.clone())
         );
-        assert_eq!(f.click(pos2(120.0, row.y)), None);
+        assert_eq!(f.click(pos2(120.0, row.y)), Some(What::PeoplePage));
         // Another heading folds wherever it is clicked.
         let tags = What::Group(Group::Tags);
         let row = f.middle(&tags);
@@ -1612,16 +1639,24 @@ mod tests {
         f.pointer(all);
         f.frame(Vec::new());
         assert_eq!(f.filled(hover), []);
-        // People's heading is lit at its chevron alone: its label takes no press.
+        // People's heading is two buttons, each lit alone: the fold at its chevron, the
+        // page along the rest.
         let people = f.middle(&What::Group(Group::People));
         f.pointer(pos2(INSET + S[1] + 6.0, people.y));
         f.frame(Vec::new());
         let lit = f.filled(hover);
         assert_eq!(lit.len(), 1);
         assert!(lit[0].width() < 40.0, "{:?}", lit[0]);
+        let fold = lit[0];
         f.pointer(pos2(120.0, people.y));
         f.frame(Vec::new());
-        assert_eq!(f.filled(hover), []);
+        let lit = f.filled(hover);
+        assert_eq!(lit.len(), 1);
+        assert!(
+            lit[0].left() >= fold.right() - 0.5,
+            "{:?} beside {fold:?}",
+            lit[0]
+        );
     }
 
     #[test]
