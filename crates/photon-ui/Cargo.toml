@@ -59,6 +59,10 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # A video's poster encoded for the engine (`posters.rs`), and the tests' pictures read
 # back. photon-core's version.
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# The People page's crops, which the engine cuts as WebP for the route that serves them
+# (`ThumbCache::face_crop`), decoded by the library that encoded them: photon-core's,
+# vendored and compiled in already.
+webp = "0.3.1"
 
 # Windows' setting of how many lines a notch of the mouse wheel scrolls (`wheel.rs`): the
 # bindings winit already brings, at its version. Declarations only; the call is the

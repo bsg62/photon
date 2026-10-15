@@ -157,6 +157,8 @@ pub struct Shown {
 pub enum Target {
     Folder(i64),
     Photo(i64),
+    /// A photo to open in the viewer: a face's, from the People page.
+    Open(i64),
 }
 
 /// Somewhere to go, in the grid of the step numbered `after`.
@@ -515,7 +517,7 @@ mod tests {
     fn jump_at(nav: &mut Nav, version: u64) -> Option<i64> {
         (nav.adopt(version).and_then(|shown| shown.jump)).map(|to| match to {
             Target::Folder(folder) => folder,
-            Target::Photo(photo) => panic!("a jump to the photo {photo}"),
+            Target::Photo(photo) | Target::Open(photo) => panic!("a jump to the photo {photo}"),
         })
     }
 

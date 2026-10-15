@@ -24,6 +24,7 @@ pub mod empty_panel;
 pub mod events;
 pub mod export_dialog;
 pub mod export_view;
+pub mod face_crops;
 pub mod fixture;
 pub mod folder_drop;
 pub mod grid {
@@ -41,6 +42,8 @@ pub mod icons;
 pub mod menu;
 pub mod menu_view;
 pub mod nav;
+pub mod people_page;
+pub mod people_view;
 pub mod person_picker;
 pub mod playback;
 pub mod posters;
@@ -105,7 +108,9 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 60] = [
+    const STATE_MODULES: [(&str, &str); 62] = [
+        ("face_crops.rs", include_str!("face_crops.rs")),
+        ("people_page.rs", include_str!("people_page.rs")),
         ("copies.rs", include_str!("copies.rs")),
         ("shortcuts.rs", include_str!("shortcuts.rs")),
         ("stats.rs", include_str!("stats.rs")),

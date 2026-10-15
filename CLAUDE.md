@@ -3000,6 +3000,41 @@ count is tested). A tile's copies mark is left off in Duplicates and here
 (`copies::marked`), where every photo has copies; the marks are painted as images, which no
 frame test reads, so the rule is held by its function's test and the wiring by nothing.
 
+**The People page is not a view of the grid, here as in the Svelte UI** (`people_page.rs`,
+a state module - `createPeoplePage` with its tests' cases and `nameChoice`;
+`people_view.rs` - `PeoplePage.svelte`, `FaceStrip.svelte`, `NameBox.svelte`;
+`app/people.rs`; `face_crops.rs`). The views' queue, `Nav` and the selection know nothing
+of it: it is `App::page`, drawn in the grid's place under the sidebar and the top bar,
+whose sort and size controls are not drawn over it (their room kept, their lists shut).
+The grid is not drawn under it and keeps its place. It opens from the label half of
+People's heading (`What::PeoplePage`, the chevron still folding), which is then where the
+user is and no view's row is; it is left by any view asked for through `App::go` - every
+step but a sort - by a folder, by All photos, and by typing in the search box. **A read of
+it is numbered when it is asked** (`PeoplePage::reload`), not when it runs, as the Svelte
+model numbers its fetch: a group named is hidden at once and stays hidden until a read
+asked after the write's end lands, so a read asked before cannot put it back; library
+changes read it at once and then at most once a second (`CHANGE_GAP_MS`), and its own
+writes are never held back. A reload keeps the order of the groups on screen. **A face's
+photo opens in the viewer over the page** (`open_face`): in the grid on screen when it holds
+it and no step is on its way, else in All photos, asked for under the page
+(`App::ask_step`, which `go` is with the page's leaving in front) and the photo found in its
+grid (`Target::Open`, `take_open`) - or "That photo is no longer in the library." A double
+click on a face is two plain clicks on it, not egui's: egui counts the click before as
+well, and the click on People a moment before made it a triple, no double to egui. Enter on
+a face opens it too. **The crops are cut off the window's thread** by the engine's own
+`ThumbCache::face_crop` - the route's WebP, decoded with libwebp (`webp`, at photon-core's
+version, the one dependency the page added) - one cutter a core as `FACE_CROPS` bounds the
+route, each asked for when its face is first in sight and once an opening; a face whose
+preview is not cached is an empty square with a figure. They are let go of when the page
+closes. A name box is a field of its own for each group, Enter read and taken before it is
+drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"
+coloured, being a merge. The corrections (a person's suggestions, rename, merge, delete,
+ignoring, showing more) are the next pull request's, their buttons in place and taking no
+press. A test holds the page's read back by renaming `detected_faces` from a second
+connection, the faces' seam (`tests/people.rs`); `native-shot` draws the page
+(`native-people-*`), its faces written through the library's own calls after the launch's
+scan.
+
 **Settings' Folders and Tags** (`watched_list.rs`, `tag_manager.rs` - `settings.ts`,
 `tags.ts` and `createTagRenamer`, with their tests' cases). **A question is asked in its
 row, one at a time** (`settings::Question`: switching face detection off, removing a

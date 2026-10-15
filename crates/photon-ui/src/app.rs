@@ -12,6 +12,7 @@ use crate::{
     empty::{self, GridState, LibraryFacts, Panel, PanelButton},
     events::{Event, UiEvents},
     export_dialog::{self, ExportDialog, Job},
+    face_crops::Crops,
     folder_drop::{self, FolderDrop, Watched},
     grid::{
         labels::folder_label,
@@ -23,6 +24,8 @@ use crate::{
     menu::Item,
     menu_view::{MenuView, Outcome},
     nav::{self, Landed, LastFolder, Nav, Place, Step, Target},
+    people_page::{self, PeoplePage},
+    people_view::{PeopleData, PeopleView},
     person_picker::{self, PersonPicker},
     playback::Playing,
     posters::PosterWorker,
@@ -75,6 +78,7 @@ use photon_engine::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
+mod people;
 mod settings_dialog;
 use settings_dialog::{SettingWrite, SettingWrote};
 
@@ -294,6 +298,16 @@ pub struct App {
     /// A photo to select and bring into sight in the next frame drawn: a copy located
     /// from the viewer's info panel.
     locating: Option<i64>,
+    /// A photo to open in the viewer, looked up in the grid the next frame draws: a
+    /// face's, from the People page, in a grid switched to All photos for it.
+    opening: Option<i64>,
+    /// The People page, while it is on screen (`app/people.rs`).
+    page: Option<PeoplePage>,
+    people_view: PeopleView,
+    people_read: Latest<u64, people::Read>,
+    /// The library's data changed since the page last heard of it.
+    people_changed: bool,
+    face_crops: Crops,
     /// The folder at the top of All photos, as photon remembers it.
     last_folder: LastFolder,
     /// Stores the folder remembered, off this thread, the latest alone.
@@ -350,6 +364,11 @@ enum Picked {
 
 /// Something to write to the library.
 enum Write {
+    /// A group of the People page named (`commands::name_person`).
+    NameGroup {
+        group: i64,
+        name: String,
+    },
     /// The search in the box, under a name: the bookmark.
     SaveSearch {
         name: String,
@@ -466,6 +485,10 @@ enum Write {
 
 /// A write that was made.
 enum Wrote {
+    /// A group of the People page named.
+    GroupNamed {
+        group: i64,
+    },
     Search,
     TileSize,
     /// How many stars were written, of how many asked, and of which photos.
@@ -536,6 +559,11 @@ enum Wrote {
 
 /// A write the library refused, and what it said.
 enum Unwritten {
+    /// A group's name refused: in words the user can act on when the group is gone.
+    GroupName {
+        group: i64,
+        said: String,
+    },
     Search {
         query: String,
         said: String,
@@ -790,6 +818,21 @@ impl App {
                     }) => commands::name_items(&engine, &ids, &name)
                         .map(Wrote::NamedItems)
                         .map_err(|err| Unwritten::Said(err.message)),
+                    Write::NameGroup { group, name } => {
+                        commands::name_person(&engine, group, &name)
+                            .map(|_| Wrote::GroupNamed { group })
+                            .map_err(|err| Unwritten::GroupName {
+                                group,
+                                // The group is gone - a grouping run emptied it, another write
+                                // merged it away - and the library's "that is not a named
+                                // person" reads as the user's mistake.
+                                said: if err.kind == "notAPerson" {
+                                    people_page::STALE_GROUP.to_owned()
+                                } else {
+                                    err.message
+                                },
+                            })
+                    }
                     Write::AlbumNew { name, sent } => commands::create_album(&engine, &name)
                         .map(|_| Wrote::Named { sent })
                         .map_err(|err| Unwritten::Name {
@@ -1058,6 +1101,15 @@ impl App {
             },
             repaint(&ctx),
         );
+        let people_read = Latest::spawn(
+            "people page",
+            {
+                let engine = engine.clone();
+                move |number: u64| people::read(&engine, number)
+            },
+            repaint(&ctx),
+        );
+        let face_crops = Crops::of(engine.clone(), repaint(&ctx));
         let stats_read = Latest::spawn(
             "statistics",
             {
@@ -1246,6 +1298,12 @@ impl App {
             going: None,
             showing: None,
             locating: None,
+            opening: None,
+            page: None,
+            people_view: PeopleView::default(),
+            people_read,
+            people_changed: false,
+            face_crops,
             last_folder,
             remembering,
             today: today(&zone),
@@ -3275,6 +3333,7 @@ impl App {
         match to {
             Target::Folder(folder) => self.go_to_folder(folder),
             Target::Photo(id) => self.locating = Some(id),
+            Target::Open(id) => self.opening = Some(id),
         }
     }
 
@@ -3513,6 +3572,17 @@ impl App {
     /// query: a search half typed is dropped, or it would land after the switch and
     /// replace the grid that was asked for, and the box is emptied as the switch is made.
     pub fn go(&mut self, step: Step) {
+        // A view asked for is the grid asked for: the People page is left. A sort moves no
+        // view (and its controls are not drawn over the page).
+        if !matches!(step, Step::Sort(_)) {
+            self.leave_people();
+        }
+        self.ask_step(step);
+    }
+
+    /// Asks for `step` as `go` does, and leaves the People page where it is: the step to
+    /// All photos that opens a face's photo under it.
+    fn ask_step(&mut self, step: Step) {
         if let Step::Search(query) = step {
             self.search.search(&query);
             self.search_for(query);
@@ -3556,6 +3626,7 @@ impl App {
         // A search typed and not yet sent would land after the jump and replace the
         // grid that was jumped in.
         self.search.cancel();
+        self.leave_people();
         if let Some(home) = self.nav.home_of_folders() {
             self.go(home);
         }
@@ -3570,6 +3641,7 @@ impl App {
     /// photos the user is at their own place, and the click asks for nothing: not a jump
     /// to the top of the folder they are in the middle of.
     fn return_to_all(&mut self) {
+        self.leave_people();
         let home = Step::View(View::All);
         if !self.nav.wants(&home) {
             self.search.clear();
@@ -3614,8 +3686,13 @@ impl App {
 
     fn act(&mut self, action: Action, now_ms: f64) {
         match action {
-            Action::Search(SearchAction::Typed) => self.search.typed(now_ms),
+            // Typing in the box is asking for the grid: it leaves the People page.
+            Action::Search(SearchAction::Typed) => {
+                self.leave_people();
+                self.search.typed(now_ms);
+            }
             Action::Search(SearchAction::Clear) => {
+                self.leave_people();
                 self.search.clear();
                 self.search_for(String::new());
             }
@@ -3635,6 +3712,7 @@ impl App {
                 self.layout_store.ask(self.layout);
             }
             Action::Row(What::NewAlbum) => self.rename.start(Of::NewAlbum, ""),
+            Action::Row(What::PeoplePage) => self.open_people(now_ms),
             // The button under "No folders yet.": Settings' list of folders.
             Action::Row(What::AddFolder) => self.open_settings(Section::Folders),
             Action::Named(Named::Typed(text)) => self.rename.type_in(text),
@@ -3747,6 +3825,9 @@ impl App {
         // And an album made, a face named, a keyword renamed: the sidebar lists them.
         if data_changed {
             self.collecting.ask(());
+            // The People page reads every visible face, at most once a second
+            // (`PeoplePage::changed`).
+            self.people_changed = true;
             // Settings' counts of photos and its changes to keywords are read again with
             // the sidebar's lists, while it is open.
             if matches!(self.dialog, Some(Dialog::Settings(_))) {
@@ -3887,6 +3968,11 @@ impl App {
                 // The engine announces no data change for a search saved: the lists are
                 // read again because this side knows it wrote one.
                 Ok(Ok(Wrote::Search)) => self.collecting.ask(()),
+                Ok(Ok(Wrote::GroupNamed { group })) => self.group_named(group, true, now_ms),
+                Ok(Err(Unwritten::GroupName { group, said })) => {
+                    self.toasts.error(said, now_ms);
+                    self.group_named(group, false, now_ms);
+                }
                 Ok(Ok(Wrote::TileSize)) => {}
                 Ok(Err(Unwritten::Search { query, said })) => {
                     self.search.save_refused(&query);
@@ -4323,6 +4409,7 @@ impl eframe::App for App {
         // A task's answer asked for this frame as an engine's report does: the frame is
         // not one the grid drew by itself.
         let reported = self.take_answers(now) || reported;
+        let reported = self.people_answers(ui.ctx(), now) || reported;
         self.adopt();
         let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before
@@ -4333,6 +4420,7 @@ impl eframe::App for App {
         }
         self.take_folder();
         self.take_photo();
+        self.take_open(now);
         // Nothing reports the moment the engine has started its first scans: it is asked
         // for, a few times a second, for as long as the launch takes and no longer.
         if self.scans.starting() {
@@ -4499,6 +4587,7 @@ impl eframe::App for App {
             layout_gen: self.layout_gen,
             zone: &self.zone,
             no_folders: self.scans.known() && self.watched.is_empty(),
+            people: self.page.is_some(),
         });
         // The folder the grid was in when it was last drawn. The grid is drawn after the
         // sidebar and takes its place then, so this is a frame behind, which the end of
@@ -4537,16 +4626,33 @@ impl eframe::App for App {
             count: count.as_deref(),
             selected: self.selection.len(),
             lines: &lines,
-            panel: panel.as_ref(),
-            notice: notice.as_deref(),
-            foot: foot.as_deref(),
+            // The page is drawn in the grid's place, and nothing the grid would say.
+            panel: panel.as_ref().filter(|_| self.page.is_none()),
+            notice: notice.as_deref().filter(|_| self.page.is_none()),
+            grid_controls: self.page.is_none(),
+            foot: foot.as_deref().filter(|_| self.page.is_none()),
             toasts,
         };
         let (view, thumbs, selection) = (&mut self.view, &mut self.thumbs, &mut self.selection);
-        let mut output = None;
-        let actions = self.shell.show(ui, &shell, &mut self.search.text, |ui| {
-            output = Some(view.show(ui, &data, thumbs, selection));
+        let progress = self.scans.faces_line();
+        let people = self.page.as_ref().map(|model| PeopleData {
+            model,
+            finds_faces: self.engine.face_detection(),
+            progress: progress.as_deref(),
         });
+        let (people_view, crops) = (&mut self.people_view, &mut self.face_crops);
+        let mut output = None;
+        let mut pressed = Vec::new();
+        let actions = self
+            .shell
+            .show(ui, &shell, &mut self.search.text, |ui| match &people {
+                Some(people) => pressed = people_view.show(ui, ui.max_rect(), people, crops),
+                None => output = Some(view.show(ui, &data, thumbs, selection)),
+            });
+        let pressed = if under_dialog { Vec::new() } else { pressed };
+        for action in pressed {
+            self.people_act(action);
+        }
         // What lies under a dialog does nothing. egui keeps the pointer from it through
         // the dialog's own ground, which it finds under the pointer only from the frame
         // after the one the dialog is first drawn in: in that first frame a click that
@@ -4639,7 +4745,10 @@ impl eframe::App for App {
         // menu, a dialog or a held band come since it was asked for - its photos are
         // four reads of the library, which on a slow share take a while - keep the
         // window, and the answer is dropped.
-        let free = self.viewer.is_none() && self.menu.is_none() && self.dialog.is_none();
+        let free = self.viewer.is_none()
+            && self.menu.is_none()
+            && self.dialog.is_none()
+            && self.page.is_none();
         let banding = self.last.as_ref().is_some_and(|frame| frame.banding);
         if let Some(landed) = self.compare_landed.take()
             && free

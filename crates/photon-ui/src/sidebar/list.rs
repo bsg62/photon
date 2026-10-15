@@ -75,6 +75,9 @@ pub enum What {
     /// that will open Settings' list of folders. Not a button yet.
     NoFolders,
     AddFolder,
+    /// The People page: the label half of People's heading, beside the fold. Not an entry
+    /// of its own; what a click on that half answers.
+    PeoplePage,
 }
 
 impl What {
@@ -93,7 +96,8 @@ impl What {
             | What::Folder(_)
             | What::Note(_)
             | What::NoFolders
-            | What::AddFolder => None,
+            | What::AddFolder
+            | What::PeoplePage => None,
         }
     }
 }
@@ -219,6 +223,9 @@ pub struct Sources<'a> {
     /// Whether the watched folders have been read and there are none. Before they have
     /// been read an empty list is "not read yet", and says nothing.
     pub no_folders: bool,
+    /// Whether the People page is on screen: then People's heading is where the user is,
+    /// and no view's row is - the grid under the page is not to be seen.
+    pub people: bool,
 }
 
 /// What a list was built from, as far as that can change: compared, never read.
@@ -232,6 +239,7 @@ struct Key {
     held: u64,
     layout_gen: u64,
     no_folders: bool,
+    people: bool,
 }
 
 impl Sources<'_> {
@@ -245,6 +253,7 @@ impl Sources<'_> {
             held: self.held.generation,
             layout_gen: self.layout_gen,
             no_folders: self.no_folders,
+            people: self.people,
         }
     }
 }
@@ -462,6 +471,11 @@ fn entries(sources: &Sources<'_>) -> Vec<Entry> {
         entries.push(plain(What::NoFolders, NO_FOLDERS, None, false, ""));
         entries.push(plain(What::AddFolder, ADD_FOLDER, None, false, ""));
     }
+    if sources.people {
+        for entry in &mut entries {
+            entry.active = entry.what == What::Group(Group::People);
+        }
+    }
     entries
 }
 
@@ -627,6 +641,7 @@ mod tests {
         layout_gen: u64,
         zone: TimeZone,
         no_folders: bool,
+        people: bool,
     }
 
     impl World {
@@ -655,6 +670,7 @@ mod tests {
                 layout_gen: 1,
                 zone: TimeZone::UTC,
                 no_folders: false,
+                people: false,
             }
         }
 
@@ -670,6 +686,7 @@ mod tests {
                 layout_gen: self.layout_gen,
                 zone: &self.zone,
                 no_folders: self.no_folders,
+                people: self.people,
             }
         }
 
@@ -943,6 +960,23 @@ mod tests {
     }
 
     // Refined by a word it is another search, and the saved one is not where the user is.
+    // While the People page is on screen its heading is where the user is, and no view's
+    // row: the grid under the page is not to be seen.
+    #[test]
+    fn the_people_page_marks_peoples_heading_and_nothing_else() {
+        let mut world = World::new();
+        world.at = Place {
+            view: GridView::Album,
+            arg: "4".to_owned(),
+        };
+        world.people = true;
+        let active: Vec<What> = (world.list().entries.into_iter())
+            .filter(|entry| entry.active)
+            .map(|entry| entry.what)
+            .collect();
+        assert_eq!(active, [What::Group(Group::People)]);
+    }
+
     #[test]
     fn a_saved_search_is_active_only_when_the_search_is_exactly_its_query() {
         let mut world = World::new();

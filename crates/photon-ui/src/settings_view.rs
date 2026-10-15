@@ -251,15 +251,15 @@ pub(crate) fn header(ui: &egui::Ui, rect: Rect, title: &str, palette: &Palette) 
 /// A text field of Settings at `rect`: its ground, its words, its placeholder. The field
 /// is drawn in sight or out of it - egui lets go of a field that is not drawn - and the
 /// rest only in sight.
-struct Field<'a> {
-    id: Id,
-    text: &'a str,
-    placeholder: &'a str,
-    label: &'a str,
-    refused: bool,
+pub(crate) struct Field<'a> {
+    pub(crate) id: Id,
+    pub(crate) text: &'a str,
+    pub(crate) placeholder: &'a str,
+    pub(crate) label: &'a str,
+    pub(crate) refused: bool,
 }
 
-fn text_field(
+pub(crate) fn text_field(
     ui: &mut egui::Ui,
     page: &Page,
     rect: Rect,

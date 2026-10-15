@@ -123,6 +123,12 @@ impl ControlsBar {
         self.sort.open() || self.group.open()
     }
 
+    /// Closes the lists, for controls that are not drawn.
+    pub fn close(&mut self) {
+        self.sort.close();
+        self.group.close();
+    }
+
     /// Draws the controls from `left`, centred on `middle`. Answers what the user chose.
     pub fn show(
         &mut self,
