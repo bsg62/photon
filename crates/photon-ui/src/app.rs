@@ -23,6 +23,7 @@ use crate::{
     menu_view::{MenuView, Outcome},
     nav::{Landed, LastFolder, Nav, Place, Step, Target},
     person_picker::{self, PersonPicker},
+    posters::{PosterWorker, Posters},
     probe::{Facts, Move, Outside, Probe, Report},
     rename::{Commit, Of, Rename},
     scans::Scans,
@@ -82,6 +83,9 @@ const LAUNCH_POLL: Duration = Duration::from_millis(50);
 /// seconds a write waits for the library's lock, and short enough that a folder on a
 /// share that has gone does not keep the window open.
 const WRITES_PATIENCE: Duration = Duration::from_secs(10);
+/// How long a closing window waits for the poster worker to answer the job it has: it
+/// hears it is to stop within a quarter of a second, whatever it is doing.
+const POSTERS_PATIENCE: Duration = Duration::from_secs(1);
 
 pub struct App {
     engine: Arc<Engine>,
@@ -188,6 +192,11 @@ pub struct App {
     /// the window is made and whenever it comes back to the front (`system_wheel`).
     wheel: fn() -> Notch,
     notch: Notch,
+    /// What makes the videos' posters: the system's framework, or a test's stand-in.
+    posters: Arc<dyn Posters>,
+    /// The thread that makes them, from the first frame until the window closes - started
+    /// there and not here so that a test can say what makes them (`with_posters`).
+    poster_worker: Option<PosterWorker>,
     /// The path in the export's field, asked about off this thread: with the text that
     /// was asked about, since the field has been typed in since.
     checking: Latest<String, (String, Result<String, String>)>,
@@ -1067,6 +1076,8 @@ impl App {
             fell: Vec::new(),
             wheel: system_wheel,
             notch,
+            posters: Arc::new(crate::posters::System),
+            poster_worker: None,
             checking,
             edits,
             exports,
@@ -1109,6 +1120,13 @@ impl App {
     pub fn with_wheel(mut self, wheel: fn() -> Notch) -> Self {
         self.wheel = wheel;
         self.notch = wheel();
+        self
+    }
+
+    /// Videos' posters made by `posters` in place of the system's framework: for a test,
+    /// which has none of its own to count on.
+    pub fn with_posters(mut self, posters: Arc<dyn Posters>) -> Self {
+        self.posters = posters;
         self
     }
 
@@ -3735,6 +3753,14 @@ impl App {
             if !self.writes.finish(WRITES_PATIENCE) {
                 tracing::warn!("the window closed before every change was stored");
             }
+            // Before the engine goes, so that a poster being made is answered as not made
+            // this session: left unanswered, its claim is counted at the next launch as
+            // a window that died opening the video, and two such deaths fail it for good.
+            if let Some(worker) = self.poster_worker.as_mut()
+                && !worker.finish(POSTERS_PATIENCE)
+            {
+                tracing::warn!("the window closed while a video's poster was being made");
+            }
             self.engine.shutdown();
         }
     }
@@ -3759,6 +3785,12 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.poster_worker.is_none() && !self.closed {
+            self.poster_worker = Some(PosterWorker::start(
+                self.engine.clone(),
+                self.posters.clone(),
+            ));
+        }
         // Whether this frame was asked for from outside the grid: by the engine, which
         // reported, or by the person, whose mouse or keys are in the frame's input.
         let touched = ui.input(|input| !input.events.is_empty());

@@ -41,6 +41,7 @@ pub mod menu;
 pub mod menu_view;
 pub mod nav;
 pub mod person_picker;
+pub mod posters;
 pub mod probe;
 pub mod rename;
 pub mod scans;
@@ -95,9 +96,10 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 52] = [
+    const STATE_MODULES: [(&str, &str); 53] = [
         ("args.rs", include_str!("args.rs")),
         ("video/mod.rs", include_str!("video/mod.rs")),
+        ("posters.rs", include_str!("posters.rs")),
         ("compare.rs", include_str!("compare.rs")),
         ("controls.rs", include_str!("controls.rs")),
         ("crop.rs", include_str!("crop.rs")),

@@ -2804,6 +2804,35 @@ there, on all three. Each runner's nextest step names the codecs it is expected 
 (`PHOTON_VIDEO_EXPECTS`), and a test that would pass over one of those fails instead:
 nextest prints nothing of a test that passed.
 
+**A video's poster is made by the window** (`posters.rs`, a state module): the engine's list
+of videos waiting for one, its claims and its crash-loop guard were built for the web view's
+thumbnailer and are used as they stand. A thread started at the first frame opens the
+session with what `can_play` says - told it can play where it cannot, every video would be
+asked of a decoder that is not there, and failed for good wherever the system calls that
+broken rather than unsupported - and takes jobs one at a time: the poster at
+`video::poster_time` of the library's length, made on a thread of its own so that a decoder
+that hangs is left behind at fifteen seconds and one that panics fails that video alone,
+fitted within the preview's 1600 pixels and handed over as a JPEG. **One at a time includes
+a decoder left behind**: the next job waits for it (`run`'s `behind`) - a source reader on a
+share that has stopped answering never returns, and each video timed out beside the last
+left one more open for the session. **Known, and left**: photo decodes and poster decodes
+now share one process, and each crash-loop guard counts a death of the process against
+what it had in flight - so a decoder that aborts photon (rav1d, the OOM killer) twice while
+a video's poster is being made fails that video's poster for good, and the reverse; a fix is
+photon-core's guard, not this worker's. **What
+a failure is reported as is the web view's rule** (`answer`, `video-thumbnailer.svelte.ts`):
+the system's lack, a picture of no size and the window closing are `Unsupported`, which
+keeps the video waiting for a session that can; the file's failure is `Decode`, fifteen
+seconds `Timeout`. **The window answers the job it has before the engine goes**
+(`App::close`, `PosterWorker::finish`): a claim left unanswered is counted at the next
+launch as a window that died opening the video, and two of those fail it for good. Its
+tests drive a stand-in for the system's framework that answers by the file's name
+(`tests/posters.rs`), with the time a poster may take as short as a test can wait
+(`Posters::patience`); **every other test of the whole application launches with a stand-in
+that plays nothing** (`common::no_posters`), since a file called a video is decoded on a
+runner with decoders and not on one without, and each system calls the same unreadable
+file something else.
+
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same
 moment `native-shot` crashed inside the Vulkan loader about once in four runs
