@@ -49,8 +49,8 @@ pub fn photo_count(grid: &GridState) -> Option<String> {
 
 /// The line an empty view shows in place of its photos. All photos and Recent have none
 /// here: an empty library says why in a panel of its own. Nor has the view of a photo's
-/// copies, which nothing native opens yet. An album and a person are named from the lists
-/// the sidebar holds.
+/// copies, which says what became of its photo (`copies::notice`, from the application).
+/// An album and a person are named from the lists the sidebar holds.
 pub fn view_notice(grid: &GridState, place: &Place, collections: &Collections) -> Option<String> {
     if let Some(failure) = build_failure(grid) {
         return Some(failure);

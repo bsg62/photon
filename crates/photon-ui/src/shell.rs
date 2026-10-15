@@ -12,6 +12,7 @@ use crate::{
     grid::labels::grouped,
     icons::Icon,
     search_bar::{SearchAction, SearchBar, SearchBarData},
+    settings_view::line_height,
     sidebar::{
         list::{List, What},
         view::{Named, Naming, SidebarData, SidebarView},
@@ -64,6 +65,9 @@ pub struct ShellData<'a> {
     pub panel: Option<&'a Panel>,
     /// The line shown in the middle of the content in place of photos.
     pub notice: Option<&'a str>,
+    /// A line under the photos, in a band of its own at the content's foot: the photos
+    /// are given what is left, so it lies over none of them. Empty, the band's room alone.
+    pub foot: Option<&'a str>,
     pub toasts: &'a [Toast],
 }
 
@@ -209,9 +213,15 @@ impl Shell {
         }
         status_bar(ui, rect_of(found.status_bar, window), data, palette);
 
-        let place = rect_of(found.content, window);
+        let mut place = rect_of(found.content, window);
         ui.painter_at(place)
             .rect_filled(place, 0.0, color(palette.surface));
+        if let Some(text) = data.foot {
+            let band = line_height(ui, &fonts::regular(T[2])) + 2.0 * S[3];
+            let foot = Rect::from_min_max(pos2(place.left(), place.bottom() - band), place.max);
+            place.max.y = foot.top();
+            self::foot(ui, foot, text, palette);
+        }
         ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
             ui.set_clip_rect(place.intersect(ui.clip_rect()));
             content(ui);
@@ -581,6 +591,28 @@ fn notice(ui: &egui::Ui, place: Rect, text: &str, palette: &Palette) {
     );
 }
 
+/// The line under the photos, at the start of its band. Not where the Svelte grid's
+/// `.lone` stands - after the photos, scrolled with them and seen at their end - but at
+/// the content's foot, in sight whatever is scrolled: the native grid lays out photos and
+/// headers and nothing after them.
+fn foot(ui: &egui::Ui, place: Rect, text: &str, palette: &Palette) {
+    if text.is_empty() {
+        return;
+    }
+    let painter = ui.painter_at(place);
+    paint_line(
+        ui,
+        &painter,
+        (place.left() + S[3], place.center().y),
+        place.width() - 2.0 * S[3],
+        text,
+        fonts::regular(T[2]),
+        color(palette.text_dim),
+    );
+    ui.interact(place, Id::new("grid-foot"), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+}
+
 /// The messages, the newest lowest, over the bottom right of the window. Answers the one
 /// whose button was pressed.
 pub(crate) fn toasts(
@@ -731,6 +763,7 @@ mod tests {
         list: List,
         toasts: Toasts,
         notice: Option<String>,
+        foot: Option<String>,
         lines: Vec<Line>,
         panel: Option<Panel>,
         selected: usize,
@@ -765,6 +798,7 @@ mod tests {
                 list: list(&counts, &Place::of(GridView::All)),
                 toasts: Toasts::default(),
                 notice: None,
+                foot: None,
                 lines: Vec::new(),
                 panel: None,
                 selected: 0,
@@ -812,6 +846,7 @@ mod tests {
                 lines: &self.lines,
                 panel: self.panel.as_ref(),
                 notice: self.notice.as_deref(),
+                foot: self.foot.as_deref(),
                 toasts: self.toasts.held(),
             };
             let (shell, mut actions) = (&mut self.shell, Vec::new());
@@ -1466,6 +1501,34 @@ mod tests {
         assert!(
             (line.center().y - f.content.center().y).abs() < 8.0,
             "{line:?}"
+        );
+    }
+
+    // The line under a Copies view's photos stands in a band of its own at the content's
+    // foot, and the photos have what is above it: it lies over none of them, at the end of
+    // the grid as anywhere.
+    #[test]
+    fn the_line_under_the_photos_has_a_band_of_its_own() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let whole = f.content;
+        f.foot = Some("No other copies of a.jpg any more.".to_owned());
+        f.frame(Vec::new());
+        let line = f
+            .drew("No other copies of a.jpg any more.")
+            .expect("the line is drawn");
+        assert_eq!(f.content.top(), whole.top());
+        assert_eq!(f.content.bottom(), f.clip.bottom());
+        assert!(
+            f.content.bottom() <= line.top(),
+            "{:?} over {line:?}",
+            f.content
+        );
+        assert!(line.bottom() <= whole.bottom(), "{line:?}");
+        // At the start of the band, as the Svelte grid's line is.
+        assert!(
+            (line.left() - whole.left() - S[3]).abs() < 2.0,
+            "{line:?} in {whole:?}"
         );
     }
 

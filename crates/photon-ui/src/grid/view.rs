@@ -136,6 +136,8 @@ pub struct GridData<'a> {
     /// Whether the keys may be the grid's at all: not while something lies open over the
     /// photos that has no keyboard of its own to say so with (the search box's help).
     pub keys: bool,
+    /// Whether a photo with copies is marked so (`copies::marked`).
+    pub copies_marked: bool,
 }
 
 /// A key the grid answers, read from the frame's input.
@@ -1159,6 +1161,10 @@ impl GridView {
                         settled &= marked || texture.is_some();
                         marks += usize::from(marked);
                         let selected = selection.is_selected(entry.id);
+                        let entry = &photon_core::grid::GridEntry {
+                            has_copies: entry.has_copies && data.copies_marked,
+                            ..*entry
+                        };
                         tile::paint(&clipped, rect, entry, texture, marked, selected, palette);
                     }
                 }
@@ -1532,6 +1538,7 @@ mod tests {
                 zone: &TimeZone::UTC,
                 library: self.library,
                 keys: true,
+                copies_marked: true,
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
             let selection = &mut self.selection;

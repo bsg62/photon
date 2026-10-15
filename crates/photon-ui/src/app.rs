@@ -3,6 +3,7 @@
 use crate::{
     compare::{self, Compare},
     compare_view::{CompareAction, CompareData, CompareView, PaneData},
+    copies::{self, CopiesOf},
     crop_tool::CropTool,
     dialog_view::{DialogView, Done},
     dialogs::{Confirm, Dialog, Subject},
@@ -21,7 +22,7 @@ use crate::{
     icons,
     menu::Item,
     menu_view::{MenuView, Outcome},
-    nav::{Landed, LastFolder, Nav, Place, Step, Target},
+    nav::{self, Landed, LastFolder, Nav, Place, Step, Target},
     person_picker::{self, PersonPicker},
     playback::Playing,
     posters::PosterWorker,
@@ -69,7 +70,7 @@ use photon_core::{
 };
 use photon_engine::{
     commands::{self, FolderList, ViewerItem},
-    engine::{Engine, EngineConfig},
+    engine::{Engine, EngineConfig, NOT_BUILT},
     error::AppError,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
@@ -132,6 +133,10 @@ pub struct App {
     /// photo in sight, whom a typed name still joins.
     people: Latest<(), Option<Vec<NamedPerson>>>,
     named: Option<Vec<NamedPerson>>,
+    /// How many copies the library has of the one photo a tile's menu was opened on:
+    /// asked as it opens, and its item there once the answer is in, for that photo alone.
+    copy_counts: Latest<i64, (i64, Option<usize>)>,
+    menu_copies: Option<(i64, usize)>,
     /// When a dialog last closed or an item of a menu was last picked, on the frame's
     /// clock: what the click that did it may be the first of.
     overlay_closed: Option<f64>,
@@ -267,7 +272,14 @@ pub struct App {
     /// hidden at once (Picasa's flags, a folder hidden) said for a round trip that photon
     /// had found none.
     counted: bool,
-    counting: Latest<u64, Counts>,
+    /// The grid the counts were read with: what the Copies view says of its photo is
+    /// said only beside that grid.
+    counted_at: u64,
+    /// Whether the band under the photos was drawn with its line the last time the line
+    /// was known (`foot_shown`), and whether the last frame drew the band at all.
+    footed: bool,
+    foot_drawn: bool,
+    counting: Latest<u64, (Counts, u64)>,
     collecting: Latest<(), Option<Collections>>,
     /// The sidebar's entries, built again only when what they are built from has moved.
     list: List,
@@ -664,6 +676,7 @@ impl App {
                         Step::Album(id) => commands::set_album_view(&engine, id),
                         Step::Person(key) => commands::set_person_view(&engine, &key),
                         Step::Tag(tag) => commands::set_tag_view(&engine, &tag),
+                        Step::Copies(id) => commands::set_copies_view(&engine, id),
                         // The one setter whose error does not mean "nothing moved": the
                         // engine sorts first and stores second (`Engine::set_sort`), so
                         // a sort it could not store is published all the same. That is
@@ -889,13 +902,19 @@ impl App {
                 let engine = engine.clone();
                 move |layout_gen: u64| {
                     let info = commands::grid_info(&engine, Some(layout_gen));
-                    Counts {
+                    let counts = Counts {
                         starred: info.starred_count,
                         duplicates: info.duplicate_count,
                         hidden: info.hidden_count,
                         videos: info.video_count,
-                        copies_of: info.copies_of.map(|photo| photo.file_name),
-                    }
+                        copies_of: info.copies_of.map(|photo| CopiesOf {
+                            id: photo.id,
+                            file_name: photo.file_name,
+                            gone: photo.gone,
+                            hidden: photo.hidden,
+                        }),
+                    };
+                    (counts, info.version)
                 }
             },
             repaint(&ctx),
@@ -1067,6 +1086,14 @@ impl App {
             },
             repaint(&ctx),
         );
+        let copy_counts = Latest::spawn(
+            "copy count",
+            {
+                let engine = engine.clone();
+                move |id: i64| (id, commands::copy_count(&engine, id).ok())
+            },
+            repaint(&ctx),
+        );
         let video_paths = Latest::spawn(
             "video path",
             {
@@ -1155,6 +1182,8 @@ impl App {
             dialog_view: DialogView::default(),
             people,
             named: None,
+            copy_counts,
+            menu_copies: None,
             overlay_closed: None,
             deleting: Vec::new(),
             viewer: None,
@@ -1207,6 +1236,9 @@ impl App {
             stale: false,
             counts: Counts::default(),
             counted: false,
+            counted_at: NOT_BUILT,
+            footed: false,
+            foot_drawn: false,
             counting,
             collecting,
             list: List::default(),
@@ -1698,6 +1730,15 @@ impl App {
     fn open_menu(&mut self, ctx: &egui::Context, at: egui::Pos2, of: MenuOf) {
         self.menu = Some(Open { at, of });
         self.menu_view.reset();
+        // The one photo's copies are counted for its menu, a round trip that the menu
+        // does not wait for: its item is put in when the answer is in.
+        self.menu_copies = None;
+        if of == MenuOf::Selection
+            && self.selection.len() == 1
+            && let Some(id) = self.selection.deciding(&self.index)
+        {
+            self.copy_counts.ask(id);
+        }
         // The keys are the menu's from now on: whatever had the keyboard gives it
         // up, or a text field would go on blinking its caret under the menu.
         if let Some(focused) = ctx.memory(|memory| memory.focused()) {
@@ -2907,6 +2948,7 @@ impl App {
             let step = match &link {
                 InfoAction::Search(query) => Some(Step::Search(query.clone())),
                 InfoAction::Person(key) => Some(Step::Person(key.clone())),
+                InfoAction::ShowCopies(id) => Some(Step::Copies(*id)),
                 _ => None,
             };
             if step.as_ref().is_some_and(|step| !self.nav.wants(step)) {
@@ -2917,6 +2959,7 @@ impl App {
             match link {
                 // A copy the panel lists is never a hidden photo.
                 InfoAction::Locate(id) => self.locate(id, false),
+                InfoAction::ShowCopies(id) => self.show_copies(id),
                 _ => step.into_iter().for_each(|step| self.go(step)),
             }
         }
@@ -3217,6 +3260,16 @@ impl App {
         }
     }
 
+    /// The Copies view of a photo, with the photo selected in it and brought into sight,
+    /// as the Svelte `showCopies` lands it: the view first, since an offset means
+    /// something only in the grid it is looked up in.
+    fn show_copies(&mut self, id: i64) {
+        self.go(Step::Copies(id));
+        if let Some(to) = self.nav.jump(Target::Photo(id)) {
+            self.arrive(to);
+        }
+    }
+
     /// Goes where a jump leads, in the grid the next frame draws.
     fn arrive(&mut self, to: Target) {
         match to {
@@ -3271,6 +3324,11 @@ impl App {
             finds_faces: self.engine.face_detection(),
             mac: cfg!(target_os = "macos"),
             exporting: self.exporting,
+            // Offered for the photo it was counted for, while that is the one photo the
+            // menu is of: a menu of several becomes a menu of one when a grid takes the
+            // others away, and a count asked for an earlier menu can land in a later one.
+            copies: (self.menu_copies)
+                .filter(|(id, _)| self.selection.deciding(&self.index) == Some(*id)),
         })
     }
 
@@ -3297,6 +3355,10 @@ impl App {
             // what each is.
             TileAction::Compare => {
                 self.open_compare(ids);
+                return;
+            }
+            TileAction::ShowCopies(id) => {
+                self.show_copies(id);
                 return;
             }
             // And so does the person dialog, whose title says how many photos.
@@ -3335,7 +3397,8 @@ impl App {
             | TileAction::AddKeyword
             | TileAction::RemoveKeyword
             | TileAction::Export
-            | TileAction::AddToPerson => return,
+            | TileAction::AddToPerson
+            | TileAction::ShowCopies(_) => return,
         };
         self.writes.push(write);
     }
@@ -3397,6 +3460,49 @@ impl App {
     /// about the view being gone to.
     pub fn notice(&self) -> Option<String> {
         empty::view_notice(&self.grid, self.nav.settled(), self.held.collections())
+            .or_else(|| (self.copies_notice()).filter(|_| empty::show_empty_notice(&self.grid)))
+    }
+
+    /// The line under the photos of a Copies view that holds some: that its photo is
+    /// hidden, or is the only one left.
+    pub fn foot(&self) -> Option<String> {
+        (self.copies_notice()).filter(|_| self.grid.len > 0 && empty::grid_built(&self.grid))
+    }
+
+    /// The band under the photos as this frame draws it: the line, or - while the line
+    /// for the grid on screen is not known yet, a round trip after the grid - the band's
+    /// room and no words, if the frame before had it. Every rebuild of the view is a new
+    /// grid, a star or a thumbnail as much as a purge: gone and back at each, the band gave
+    /// the photos its room and took it again, and a grid scrolled to its end was left a
+    /// band short of it. The words are not kept, being of the grid before.
+    fn foot_shown(&mut self) -> Option<String> {
+        let copies = nav::copies_of(self.nav.settled()).is_some();
+        let shown = if copies && self.grid.len > 0 && self.counted_at != self.grid.version {
+            self.footed.then(String::new)
+        } else {
+            let line = self.foot();
+            self.footed = line.is_some();
+            line
+        };
+        self.foot_drawn = shown.is_some();
+        shown
+    }
+
+    /// Whether the last frame drew the band under the photos, with or without its words.
+    pub fn foot_drawn(&self) -> bool {
+        self.foot_drawn
+    }
+
+    /// What the Copies view on screen says of its photo (`copies::notice`), from what
+    /// the library said of the photo with this very grid, or nothing: read with the grid
+    /// before, a photo just purged was "no other copies any more" for a round trip, of a
+    /// photo whose copies are all still there.
+    fn copies_notice(&self) -> Option<String> {
+        let shown = nav::copies_of(self.nav.settled())?;
+        let of = (self.counts.copies_of.as_ref())
+            .filter(|of| of.id == shown && self.counted_at == self.grid.version);
+        let first = self.index.rows(0, 1).first().map(|entry| entry.id);
+        of.and_then(|of| copies::notice(Some(of), self.grid.len, first))
     }
 
     /// Asks for `step`, unless it leads to where the user already is. What a click on a
@@ -3671,7 +3777,11 @@ impl App {
         }
         if let Some(counts) = self.counting.answer() {
             answered = true;
-            if let Ok(counts) = counts {
+            if let Ok((mut counts, version)) = counts {
+                self.counted_at = version;
+                // The name the view was opened with stays once the library has none.
+                counts.copies_of =
+                    copies::keep_name(self.counts.copies_of.as_ref(), counts.copies_of);
                 self.counts = counts;
                 self.counted = true;
             }
@@ -3714,6 +3824,13 @@ impl App {
             answered = true;
             if let Ok(Some(people)) = answer {
                 self.named = Some(people);
+            }
+        }
+        // A failed count is no item, as in the Svelte menu: the other items still work.
+        if let Some(answer) = self.copy_counts.answer() {
+            answered = true;
+            if let Ok((id, Some(count))) = answer {
+                self.menu_copies = Some((id, count));
             }
         }
         for (_, answer) in self.exports.answers() {
@@ -4355,6 +4472,8 @@ impl eframe::App for App {
             return;
         }
 
+        // Before the grid's data borrows the index: it remembers whether it drew the band.
+        let foot = self.foot_shown();
         let data = GridData {
             layout_gen: self.layout_gen,
             index: &self.index,
@@ -4365,6 +4484,7 @@ impl eframe::App for App {
             // The panel that lists what the search box understands lies over the
             // photos, and has no keyboard of its own.
             keys: !self.shell.search_help_open(),
+            copies_marked: copies::marked(self.nav.settled().view),
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.
@@ -4419,6 +4539,7 @@ impl eframe::App for App {
             lines: &lines,
             panel: panel.as_ref(),
             notice: notice.as_deref(),
+            foot: foot.as_deref(),
             toasts,
         };
         let (view, thumbs, selection) = (&mut self.view, &mut self.thumbs, &mut self.selection);
