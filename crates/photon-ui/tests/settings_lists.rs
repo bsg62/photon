@@ -77,6 +77,13 @@ fn press(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
     press_near(driver, harness, label, None);
 }
 
+/// A folder's path as the library stores it: on a Mac a temporary directory is under
+/// `/var`, which is a link to `/private/var`, and the library keeps where a path leads.
+fn stored(path: &std::path::Path) -> String {
+    let path = photon_core::paths::canonicalize(path).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
 fn watched(app: &App) -> Vec<String> {
     app.watched()
         .iter()
@@ -105,7 +112,7 @@ fn a_folder_is_added_by_its_typed_path() {
         "the folder watched and its photos shown",
         |app| app.photos() == 3 && settings(app).is_some_and(|settings| settings.adding.is_none()),
     );
-    assert!(watched(harness.state()).contains(&more.to_str().unwrap().to_owned()));
+    assert!(watched(harness.state()).contains(&stored(&more)));
 }
 
 // A folder the library will not watch - inside one it watches already - keeps its path in
@@ -427,7 +434,7 @@ fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id
         .collect();
     assert_eq!(
         watched,
-        [more.to_str().unwrap().to_owned()],
+        [stored(&more)],
         "the folder just added was removed by a second Remove… of the folder before it"
     );
 }

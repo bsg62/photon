@@ -150,13 +150,11 @@ fn a_pane_unstarred_in_starred_says_it_is_no_longer_starred() {
     assert_eq!(starred_panes(harness.state()), [true, true]);
     key(&mut driver, &mut harness, Key::S);
     driver.until(&mut harness, "one left in Starred", |app| app.photos() == 1);
-    driver.settle(&mut harness);
-    driver.act(&mut harness);
-    assert_eq!(
-        starred_panes(harness.state()),
-        [false, true],
-        "the library has a.jpg unstarred; its pane still says starred"
-    );
+    // Waited for, since the write's answer comes apart from the grid: before, the pane
+    // said "starred" for good.
+    driver.until(&mut harness, "a.jpg's pane unstarred", |app| {
+        starred_panes(app) == [false, true]
+    });
 }
 
 // And `S` again on that pane stars it back: read from the stale star, it wrote "unstar"
@@ -168,16 +166,16 @@ fn s_twice_on_a_pane_in_starred_stars_it_back() {
     compare(&mut driver, &mut harness, &[0, 1]);
     key(&mut driver, &mut harness, Key::S);
     driver.until(&mut harness, "one left in Starred", |app| app.photos() == 1);
-    driver.settle(&mut harness);
+    // The pane says so once the write's own answer is in, which comes apart from the
+    // grid: a second S before it is a second "unstar", as the pane still says starred.
+    driver.until(&mut harness, "the pane unstarred", |app| {
+        !starred_panes(app)[0]
+    });
     key(&mut driver, &mut harness, Key::S);
-    driver.settle(&mut harness);
-    driver.act(&mut harness);
-    driver.settle(&mut harness);
-    driver.act(&mut harness);
-    assert_eq!(
-        harness.state().photos(),
-        2,
-        "the second S did not star a.jpg back: the grid of Starred holds one photo"
+    driver.until(
+        &mut harness,
+        "the second S stars a.jpg back into Starred",
+        |app| app.photos() == 2,
     );
 }
 
@@ -591,8 +589,10 @@ fn a_star_refused_for_a_pane_the_grid_does_not_hold_leaves_it_as_it_was() {
     compare(&mut driver, &mut harness, &[0, 1]);
     key(&mut driver, &mut harness, Key::S);
     driver.until(&mut harness, "one left in Starred", |app| app.photos() == 1);
-    driver.settle(&mut harness);
-    assert!(!starred_panes(harness.state())[0]);
+    // The write's own answer, which comes apart from the grid, is what the pane says.
+    driver.until(&mut harness, "the pane unstarred", |app| {
+        !starred_panes(app)[0]
+    });
     // The folder made read-only: the INI's write is refused.
     let mut readonly = std::fs::metadata(&folder).unwrap().permissions();
     readonly.set_mode(0o555);
