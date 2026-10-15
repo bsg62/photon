@@ -184,6 +184,8 @@ pub struct App {
     /// Settings' counts of photos for each watched folder and the changes made to
     /// keywords, read as it opens and at every change of the library's data.
     settings_lists: Latest<(), Result<settings_dialog::Lists, String>>,
+    /// The library counted for Statistics, with the opening of Settings that asked.
+    stats_read: Latest<u64, (u64, Result<photon_core::library::LibraryStats, String>)>,
     /// The path in Settings' field for a folder to add, asked about off this thread:
     /// with the text that was asked about.
     adding_check: Latest<String, (String, Result<String, String>)>,
@@ -1037,6 +1039,17 @@ impl App {
             },
             repaint(&ctx),
         );
+        let stats_read = Latest::spawn(
+            "statistics",
+            {
+                let engine = engine.clone();
+                move |opening| {
+                    let counted = commands::library_stats(&engine).map_err(|err| err.message);
+                    (opening, counted)
+                }
+            },
+            repaint(&ctx),
+        );
         let adding_check = Latest::spawn(
             "folder to add",
             |text: String| {
@@ -1164,6 +1177,7 @@ impl App {
             removing: Vec::new(),
             settings_lists,
             adding_check,
+            stats_read,
             fullscreen_asked: None,
             fullscreen_pending: None,
             compare: None,
@@ -1795,9 +1809,11 @@ impl App {
             Dialog::Tags(_) => (self.held.collections().tags.iter())
                 .map(|tag| tag.tag.clone())
                 .collect(),
-            Dialog::Confirm(_) | Dialog::Export(_) | Dialog::Person(_) | Dialog::Settings(_) => {
-                Vec::new()
-            }
+            Dialog::Confirm(_)
+            | Dialog::Export(_)
+            | Dialog::Person(_)
+            | Dialog::Settings(_)
+            | Dialog::Shortcuts => Vec::new(),
         };
         let tags = &self.held.collections().tags;
         let done = (self.dialog_view).show(ui, dialog, &keywords, tags, self.named.as_deref());
@@ -3032,14 +3048,21 @@ impl App {
 
     /// One frame of compare: what it asks the tasks for, what it draws, and what the
     /// user did in it.
-    fn show_compare(&mut self, ui: &mut egui::Ui, now: f64) {
+    fn show_compare(&mut self, ui: &mut egui::Ui, now: f64, under_dialog: bool) {
         let Some(mut open) = self.compare.take() else {
             return;
         };
         let ctx = ui.ctx().clone();
+        // Under a dialog - the shortcut sheet is the one that opens over compare - compare
+        // is deaf, as the viewer is: the dialog takes the keys and a button going down out
+        // of the frame, not the wheel, and the frames it opens and closes in are its own.
+        let under_dialog = under_dialog || self.dialog.is_some();
         // Tab is compare's, between its panes: egui's walk of the keyboard is called off -
-        // a message's button over the panes would take it.
-        ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        // a message's button over the panes would take it. Not under a dialog, whose own
+        // walk it is then.
+        if !under_dialog {
+            ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        }
         // What the grid on screen says of a pane's photo, where it holds it: its star -
         // written from compare and come back with the rebuild, or changed elsewhere - and
         // its key, another once it is turned or rewritten elsewhere, whose full picture
@@ -3116,7 +3139,8 @@ impl App {
             focus: open.compare.focus(),
         };
         let mut zoom = *open.compare.zoom();
-        let actions = self.compare_view.show(ui, &data, &mut zoom);
+        let actions = self.compare_view.show(ui, &data, &mut zoom, under_dialog);
+        let actions = if under_dialog { Vec::new() } else { actions };
         drop(data);
         drop(levels);
         *open.compare.zoom_mut() = zoom;
@@ -4219,6 +4243,43 @@ impl eframe::App for App {
             self.dropped(dropped);
         }
 
+        // `?`: the list of shortcuts, over whatever it was pressed in - the grid, the
+        // viewer, compare - as long as nothing there has a use for the character: a text
+        // field, the viewer's keyword, and an open dropdown, whose keys are its own. Not
+        // what merely holds the keyboard, which the splitter does after every drag. Not
+        // over another dialog nor under a menu, and not under a held band, which has
+        // taken every key out of the frame by now - nor over a press on the photos, which
+        // would become a band under the list (as Enter and `C` open nothing over it). At
+        // its press, and a chord is not this key.
+        let pressing = (self.last.as_ref()).is_some_and(|frame| frame.pressing);
+        let asks_sheet = self.dialog.is_none()
+            && self.menu.is_none()
+            && !pressing
+            && !ui.ctx().text_edit_focused()
+            && !self.shell.lists_open()
+            && !(self.cropping().is_some() && self.viewer_view.ratio_open())
+            && !self.viewer_typing()
+            && ui.input_mut(|input| {
+                let mut asked = false;
+                input.events.retain(|event| match event {
+                    egui::Event::Key {
+                        key: egui::Key::Questionmark,
+                        pressed: true,
+                        repeat,
+                        modifiers,
+                        ..
+                    } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
+                        asked |= !repeat;
+                        false
+                    }
+                    _ => true,
+                });
+                asked
+            });
+        if asks_sheet {
+            self.open_dialog(Dialog::Shortcuts);
+        }
+
         // A dialog, before anything else is drawn: nothing behind it reads a key, and it
         // takes them out of the frame when it has read its own (`dialog_view.rs`).
         let under_dialog = self.dialog.is_some();
@@ -4271,7 +4332,7 @@ impl eframe::App for App {
 
         // Compare takes the whole window as the viewer does.
         if self.compare.is_some() {
-            self.show_compare(ui, now);
+            self.show_compare(ui, now, under_dialog);
             if self.drop.hovering() {
                 drop_card::show(ui.ctx(), folder_drop::CARD);
             }

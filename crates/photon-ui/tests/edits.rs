@@ -671,3 +671,43 @@ fn the_tools_picture_that_cannot_be_made_is_said_and_not_asked_for_again() {
     assert_eq!(harness.state().pictures_asked(), asked + 1);
     assert_eq!(harness.state().toasts().len(), 1);
 }
+
+// a handle held when `?` opens the list over the crop tool is let go of, as a
+// pan held in compare is: the pointer moving on under the list moves no side.
+#[test]
+fn a_handle_held_when_the_list_opens_moves_nothing_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::C);
+    driver.act(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    let from = pos2(995.0, 350.0);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.event(button(from, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.event(egui::Event::PointerMoved(pos2(900.0, 350.0)));
+    driver.act(&mut harness);
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        },
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(&mut harness);
+    assert!(matches!(
+        harness.state().dialog(),
+        Some(photon_ui::dialogs::Dialog::Shortcuts)
+    ));
+    let held = harness.state().cropping().unwrap().rect().right;
+    harness.event(egui::Event::PointerMoved(pos2(600.0, 350.0)));
+    driver.act(&mut harness);
+    harness.event(button(pos2(600.0, 350.0), PointerButton::Primary, false));
+    driver.act(&mut harness);
+    let right = harness.state().cropping().unwrap().rect().right;
+    assert_eq!(right, held, "the crop's side moved under the list");
+}

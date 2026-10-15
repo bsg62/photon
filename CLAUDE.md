@@ -2924,8 +2924,49 @@ scrolled by a number of its own, by the info panel's rules (`settings_view.rs` s
 a heading's room above it takes in the room already under what stands before it, as one
 CSS margin collapses into the next. Not tested: that the title bar is told the theme at
 launch (`egui_kittest` draws frames past the first before a test can read its output -
-the press is tested, and `put` itself). Statistics and Shortcuts are their heading, until
-the pull request that builds them.
+the press is tested, and `put` itself).
+
+**Statistics, the shortcut list and the `?` sheet** (`stats.rs`, `shortcuts.rs`,
+`shortcuts_view.rs` - `stats.ts`, `shortcuts.ts`, `ShortcutList.svelte` and
+`ShortcutSheet.svelte`). Statistics is counted when its section is first shown and not
+before, nor again while Settings is open (a failed count is asked again when the section
+is left and come back to); a row closes Settings and is a search, made as a sidebar row's
+is (`App::go`, the search box told). **The keys are listed in one place, `shortcuts.rs`**,
+the Svelte list less what this window does not answer yet (copying and Reveal, sub-project
+7), and a test reads the native handlers' sources - `Key::…` in the files its
+`ANSWERED_IN` names, read by line, not their tests - and fails on a key a handler answers
+that the list lacks and on a listed key nothing answers. A handler in a new file is added
+there with its group; the wording no test checks. **`?` opens the list as a dialog of the
+dialog layer** (`Dialog::Shortcuts`), over the grid, the viewer or compare - not over
+another dialog, nor under a menu, nor where a text field or the viewer's keyword has the
+keyboard (`?` is a character there), nor under a held band, which has taken every key out
+of the frame before it is read. `?` closes it, as Escape does. **Compare is deaf under a
+dialog, as the viewer is** - the sheet is the first dialog that can open over it: a pan
+held when it opens is let go of (the pointer moving on under the sheet panned the photos),
+egui's Tab walk is not called off, and what compare answers in the frames the dialog opens
+and closes in is dropped (a click on its cross in the very frame `?` opened the sheet
+closed compare under it). The list is drawn in two columns in the sheet, the groups in
+their order and split where the columns come out nearest the same height, and in one in
+Settings; Settings' section and the sheet's body are one scrolled column
+(`settings_view::Column`).
+
+**What a review of the shortcuts found, each with its test** (`tests/shortcuts.rs` and
+beside the gestures). *`?` opens nothing over a press held on the photos*
+(`GridOutput::pressing`): a press may still become a band, and it did, under the list,
+selecting behind it - the rule Enter and `C` already had. *The gate is a text field and an
+open dropdown, not whatever holds the keyboard*: `egui_wants_keyboard_input` is any focus,
+and the splitter keeps it after every drag, so `?` did nothing after the sidebar was
+resized; a dropdown's keys are its own (`Shell::lists_open`, the crop tool's ratio while
+the tool is open). *A drag held when a dialog opens is let go of*: the crop tool's handle
+(`end_drag` under `paused`) and the zoom's slider (`let_go`, set in the paused frame
+before the slider is drawn, and kept after the list is shut with the button still down -
+by `?`, since egui ends a drag at Escape itself) went on following the pointer under the
+list. *The sheet closes at `?`'s press, and not at a chord*: a held `?` shut it at its
+first repeat, and egui's `consume_key` takes Alt+`?` for the key. *The list's tripwire
+reads the whole of a file's code*: it stopped at the first `#[cfg(test)]` (a third of
+the way into `grid/view.rs`), dropped a key it had no spelling for (`Key::Delete` was no
+key to it), and read `GridKey::Home` as the key. Now it stops at the tests' module, a name
+it cannot spell is a key no row lists, and `Key::` is egui's only after no letter.
 
 **Settings' Folders and Tags** (`watched_list.rs`, `tag_manager.rs` - `settings.ts`,
 `tags.ts` and `createTagRenamer`, with their tests' cases). **A question is asked in its

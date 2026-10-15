@@ -12,7 +12,7 @@ use crate::{
     tag_manager::Renamer,
     watched_list::{Adding, FolderRow},
 };
-use photon_core::library::{GridTile, TagRule, ThemeChoice};
+use photon_core::library::{GridTile, LibraryStats, TagRule, ThemeChoice};
 use std::collections::HashMap;
 
 /// The sections, in the list's order.
@@ -262,6 +262,8 @@ pub enum Asked {
     RemoveTag(String),
     /// "Restore" on a change.
     Restore(String),
+    /// A row of Statistics: Settings closes, and this is searched for.
+    Search(String),
     /// The dialog closed by a press on the scrim in a frame that asked for something
     /// else as well: done after it.
     Close,
@@ -311,6 +313,16 @@ impl Question {
     }
 }
 
+/// What Statistics has of the library.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Counted {
+    #[default]
+    NotAsked,
+    Counting,
+    Counted(Box<LibraryStats>),
+    Failed,
+}
+
 /// The open dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -338,6 +350,11 @@ pub struct Settings {
     pub rules: Option<Vec<TagRule>>,
     pub counts: HashMap<i64, i64>,
     pub memory: Option<Memory>,
+    /// The library counted, for Statistics: read when the section is first shown and not
+    /// before - it reads every photo, and most openings of Settings are for something
+    /// else - and not again while the dialog is open: it is a look at the library, not a
+    /// gauge. A failed count is asked again when the section is left and come back to.
+    pub stats: Counted,
     /// Which opening of Settings this is, in the session: what an answer to something
     /// asked in it is told apart by from one asked in a Settings closed since.
     pub opening: u64,
@@ -359,6 +376,7 @@ impl Settings {
             rules: None,
             counts: HashMap::new(),
             memory: None,
+            stats: Counted::NotAsked,
             opening: 0,
         }
     }

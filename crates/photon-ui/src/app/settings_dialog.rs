@@ -7,7 +7,9 @@ use super::{App, Unwritten, Write, Wrote};
 use crate::{
     dialogs::Dialog,
     export_dialog,
-    settings::{About, Asked, MEMORY_POLL_MS, Memory, Question, Section, Seen, Settings, Stored},
+    settings::{
+        About, Asked, Counted, MEMORY_POLL_MS, Memory, Question, Section, Seen, Settings, Stored,
+    },
     tag_manager::{Committed, Rename},
     theme, watched_list,
 };
@@ -273,6 +275,16 @@ impl App {
             faces_line: self.scans.faces_line(),
             folders,
         };
+        // Statistics are counted when the section is first shown; a count that failed
+        // is asked again when it is left and come back to.
+        if settings.section == Section::Statistics {
+            if settings.stats == Counted::NotAsked {
+                settings.stats = Counted::Counting;
+                self.stats_read.ask(settings.opening);
+            }
+        } else if settings.stats == Counted::Failed {
+            settings.stats = Counted::NotAsked;
+        }
         if settings.section == Section::About {
             let due = self
                 .memory_asked
@@ -321,6 +333,29 @@ impl App {
                 && let Some(adding) = &mut settings.adding
             {
                 adding.checked(&asked, answer);
+            }
+        }
+        if let Some(answer) = self.stats_read.answer() {
+            answered = true;
+            if let Some(Dialog::Settings(settings)) = &mut self.dialog {
+                match answer {
+                    Ok((opening, Ok(counted))) if opening == settings.opening => {
+                        settings.stats = Counted::Counted(Box::new(counted));
+                    }
+                    Ok((opening, Err(said))) if opening == settings.opening => {
+                        settings.stats = Counted::Failed;
+                        self.toasts.error(said, now_ms);
+                    }
+                    // A count that panicked carries no opening: it is this one's only while
+                    // this one waits for a count - `Latest` answers the last question, and
+                    // an opening that has not asked has none on its way.
+                    Err(_) if settings.stats == Counted::Counting => {
+                        settings.stats = Counted::Failed;
+                    }
+                    Err(_) => {}
+                    // Counted for a Settings closed since.
+                    Ok(_) => {}
+                }
             }
         }
         if let Some(memory) = self.memory_read.answer() {
@@ -495,6 +530,15 @@ impl App {
                 }
                 return;
             }
+            // A row of Statistics: Settings closes and the row is searched for, as a
+            // sidebar row's search is - the search box told first.
+            if let Asked::Search(query) = asked {
+                if let Some(Dialog::Settings(settings)) = self.dialog.take() {
+                    self.settings_closed(*settings);
+                }
+                self.go(crate::nav::Step::Search(query));
+                return;
+            }
             let Some(Dialog::Settings(settings)) = &mut self.dialog else {
                 return;
             };
@@ -614,7 +658,7 @@ impl App {
                 Asked::RemoveTag(tag) => settings.ask(Question::RemoveTag(tag)),
                 Asked::Restore(tag) => self.push_setting(SettingWrite::RestoreTag(tag)),
                 // (Taken before the dialog is borrowed, above.)
-                Asked::Close => {}
+                Asked::Close | Asked::Search(_) => {}
             }
         }
     }

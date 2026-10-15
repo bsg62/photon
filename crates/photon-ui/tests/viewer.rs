@@ -2131,7 +2131,7 @@ fn a_copy_is_found_in_all_photos_from_hidden() {
 
 /// The right arrow pressed and let go of within one frame, and that frame.
 fn arrow_in_a_frame(driver: &mut Driver, harness: &mut Harness<'_>) {
-    for pressed in [true, false] {
+    for pressed in [false, true, false] {
         harness.input_mut().events.push(egui::Event::Key {
             key: Key::ArrowRight,
             physical_key: None,
@@ -2785,5 +2785,73 @@ fn a_keyword_the_photo_already_has_rebuilds_nothing() {
         harness.state().version(),
         version,
         "the grid was built again for a keyword the photo had"
+    );
+}
+
+// the zoom's slider held when `?` opens the list over the viewer is let go of, as
+// a pan held in compare is: the pointer moving on under the list zooms nothing.
+#[test]
+fn the_slider_held_when_the_list_opens_zooms_nothing_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    driver.act(&mut harness);
+    let slider = harness.get_by_label("Zoom").rect();
+    let middle = slider.center();
+    harness.event(egui::Event::PointerMoved(middle));
+    harness.event(button(middle, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        },
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(&mut harness);
+    assert!(matches!(
+        harness.state().dialog(),
+        Some(photon_ui::dialogs::Dialog::Shortcuts)
+    ));
+    let held = zoom(&harness);
+    let further = egui::pos2(slider.right() - 2.0, middle.y);
+    harness.event(egui::Event::PointerMoved(further));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let under = zoom(&harness);
+    assert_eq!(under, held, "the slider zoomed the photo under the list");
+    // Nor once the list is shut with the button still down - by `?`: egui itself ends a
+    // drag at Escape - the drag being over when the list opened, and the button maybe
+    // come up under it unheard.
+    for pressed in [false, true, false] {
+        harness.event(egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        });
+        driver.act(&mut harness);
+    }
+    driver.act(&mut harness);
+    assert!(harness.state().dialog().is_none());
+    harness.event(egui::Event::PointerMoved(egui::pos2(
+        slider.left() + 2.0,
+        middle.y,
+    )));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    harness.event(button(further, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert_eq!(
+        zoom(&harness),
+        held,
+        "the slider followed again after the list"
     );
 }

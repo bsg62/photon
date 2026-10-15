@@ -120,6 +120,11 @@ fn rect_of(area: Area, window: Rect) -> Rect {
 }
 
 impl Shell {
+    /// Whether a dropdown of the top bar's controls is open: its keys are its own.
+    pub fn lists_open(&self) -> bool {
+        self.controls.open()
+    }
+
     /// Where the sidebar's list is.
     pub fn sidebar_position(&self) -> f64 {
         self.sidebar.position()
