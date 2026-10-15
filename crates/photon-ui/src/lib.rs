@@ -65,6 +65,7 @@ pub mod sidebar {
     pub mod rows;
     pub mod view;
 }
+pub mod tag_manager;
 pub mod tag_picker;
 pub mod tasks;
 pub mod text;
@@ -93,13 +94,16 @@ pub mod viewer_levels;
 pub mod viewer_menu;
 pub mod viewer_view;
 pub mod viewer_zoom;
+pub mod watched_list;
 pub mod wheel;
 pub mod window_layout;
 
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 55] = [
+    const STATE_MODULES: [(&str, &str); 57] = [
+        ("watched_list.rs", include_str!("watched_list.rs")),
+        ("tag_manager.rs", include_str!("tag_manager.rs")),
         ("settings.rs", include_str!("settings.rs")),
         ("args.rs", include_str!("args.rs")),
         ("video/mod.rs", include_str!("video/mod.rs")),

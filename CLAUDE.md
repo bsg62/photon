@@ -1664,9 +1664,9 @@ that holds the launch waits in real time instead. **What the Svelte UI's
 before the engine is opened, so no report is sent before someone listens.
 
 **The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
-All photos and Recent alone; every other view has its one line. "Add folder…" is drawn
-fainter and senses no click until Settings' typed path (`PanelButton::works`); "Watched
-folders…" opens Settings at its folders; and "Or
+All photos and Recent alone; every other view has its one line. "Add folder…" opens
+Settings at its folders with the field a path is typed in open, "Watched folders…" at
+its folders; and "Or
 drop a folder onto this window." stands under them only where a drop can arrive
 (`LibraryFacts::drops`, below): a line that offered one where none arrives would be
 false, not inactive. The block is centred, so a longer sentence
@@ -2924,8 +2924,56 @@ scrolled by a number of its own, by the info panel's rules (`settings_view.rs` s
 a heading's room above it takes in the room already under what stands before it, as one
 CSS margin collapses into the next. Not tested: that the title bar is told the theme at
 launch (`egui_kittest` draws frames past the first before a test can read its output -
-the press is tested, and `put` itself). Folders, Tags, Statistics and Shortcuts are their
-heading and what can be said already, until the pull requests that build them.
+the press is tested, and `put` itself). Statistics and Shortcuts are their heading, until
+the pull request that builds them.
+
+**Settings' Folders and Tags** (`watched_list.rs`, `tag_manager.rs` - `settings.ts`,
+`tags.ts` and `createTagRenamer`, with their tests' cases). **A question is asked in its
+row, one at a time** (`settings::Question`: switching face detection off, removing a
+folder, removing a keyword, a rename onto a keyword that is there or listed under Changes),
+answered by `Asked::Yes` or `No`; asking another is the first one's Cancel - over a
+rename's own, that rename declined - and when it is answered the keyboard goes back to
+what asked (`SettingsView::back_to`). **Escape is the dialog's close unless Settings has
+a use for it** (`settings_view::claims_escape`, asked by the dialog before it takes the
+key): a question's Cancel, the keyword's field and the folder's field giving up, a filter
+that holds something emptied. The three fields claim Escape in their `EventFilter` - left
+to egui it takes the keyboard away at the start of the frame, before anyone can see whose
+it was - with all four of its fields said. **"Add folder…" is a typed path** until the
+picker: the field opens with the keyboard, is asked about as it is typed off the window's
+thread (`check_folder`, the export field's rules, the text as it stands first), and is
+added by Enter or "Add" through `commands::add_folder`; the library's refusal - inside a
+folder already watched - stands under the field, which keeps the path. A folder added is
+in the list on hand at once and counts as being scanned (`Scans::added`), as a dropped one
+does, and a folder dropped on the window while the field is open is put in the field and
+watched by nothing. A folder's row says its count of photos only once that is read, where
+the Svelte list says "0 photos" until it is; its Rescan takes no press while it is
+scanned (`rescan_folder` does nothing then and says nothing back); Reveal is in its place.
+**The counts and the changes are read again at every change of the library's data** while
+Settings is open (`settings_lists`), so a keyword removed from elsewhere, or a scan, shows
+in it. A keyword is renamed in its row (`Renamer`): its field opens with its name chosen,
+so what is typed replaces it; Enter stores, Escape and leaving the field give it up;
+while a rename is on its way the field takes nothing and is not given up; the answer
+closes it only if it is still the field that sent it, and a refusal leaves the name with
+the library's words. The keywords can be thousands: a row out of sight costs its height
+and nothing else. Nothing here writes outside `library.db`: a folder removed keeps its
+files, and a keyword's rename or removal is a rule applied as keywords are read.
+
+**What a review of Folders and Tags found, each with its test** (`tests/settings_lists.rs`).
+*A folder whose removal is on its way offers nothing* (`App::removing`, `FolderRow::going`)
+until the folder list read after the answer: a watched folder's number is handed out again
+once it is free, and a second Remove… of the row while the first waited removed the folder
+added meanwhile under that number - `App::deleting`'s trap, met again. Refused, it is a row
+again (no test: no seam makes the library refuse a removal). *A drop goes into the field
+only while the field is on screen and takes a path* (`add_field_shown`): open in another
+section, the drop went into a field nobody could see, and nothing was watched; and the
+card says so there (`CARD_ADD`). *A question takes Escape only while it is on screen* (the
+view's `asking`, of the last frame): left standing in another section or hidden by the
+filter it took the Escape that closes Settings, or empties the filter. *Another keyword's
+Rename is a rename question's Cancel* (`let_go_of_question`): left standing under the new
+field, its Merge agreed to nothing. *The add field has its Cancel*: Escape closes it only
+while it has the keyboard. Known and left: between a folder's add and its scan's first
+report its row says "Online" and offers a Rescan that does nothing then; a question's
+buttons drawn out of sight (to hold the keyboard) are Tab stops there.
 
 **What a review of Settings found, each with its test** (`tests/settings_edges.rs`).
 *A press on the scrim closes it whatever else the frame asked*: a tap - press and release

@@ -1319,3 +1319,36 @@ fn native_settings_about_light() {
         |harness| settings_at(harness, "About"),
     );
 }
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_folders_light() {
+    shot(
+        ThemeChoice::Light,
+        "native-settings-folders-light.png",
+        |harness| {
+            settings_at(harness, "Folders");
+            // Its counts, read a moment after it opens.
+            for _ in 0..20 {
+                harness.step();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        },
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_settings_tags_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-settings-tags-dark.png",
+        |harness| {
+            settings_at(harness, "Tags");
+            for _ in 0..20 {
+                harness.step();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        },
+    );
+}

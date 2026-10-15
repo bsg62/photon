@@ -33,7 +33,7 @@ use eframe::egui::{
     self, Event, Id, Key, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
     WidgetInfo, WidgetType, pos2, vec2,
 };
-use photon_core::library::NamedPerson;
+use photon_core::library::{NamedPerson, TagCount};
 
 /// A dialog is at most this wide, and the keyword picker at most this tall. The export's
 /// is the Svelte dialog's own width, which is what its five sizes need in a row.
@@ -110,6 +110,9 @@ pub(crate) enum Look {
     Primary,
     /// The one that deletes.
     Danger,
+    /// One that asks before it deletes: the danger's words on a field's ground, as the
+    /// Svelte `.danger` button.
+    Warn,
     Plain,
     /// A primary one with nothing to do yet.
     Off,
@@ -134,6 +137,8 @@ pub(crate) fn button(ui: &mut egui::Ui, rect: Rect, id: Id, label: &str, look: L
         Look::Danger => (Some(palette.danger), palette.on_accent),
         Look::Plain if response.hovered() => (Some(palette.field_hover), palette.text),
         Look::Plain => (Some(palette.field), palette.text),
+        Look::Warn if response.hovered() => (Some(palette.field_hover), palette.danger),
+        Look::Warn => (Some(palette.field), palette.danger),
         Look::Off => (Some(palette.field), palette.text_dim),
         Look::Row if response.hovered() => (Some(palette.hover), palette.text),
         Look::Row => (None, palette.text),
@@ -236,14 +241,18 @@ impl DialogView {
         ui: &egui::Ui,
         dialog: &Dialog,
         keywords: &[String],
+        tags: &[TagCount],
         people: Option<&[NamedPerson]>,
     ) -> Done {
         let ctx = ui.ctx();
         let palette = palette(ctx);
         // Escape closes it, whatever in it has the keyboard, and is nobody's after -
         // and neither is a key that came in the same frame, which was typed at a
-        // dialog: left in the frame, an `h` after the Escape hid a photo.
-        if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+        // dialog: left in the frame, an `h` after the Escape hid a photo. But for one
+        // Settings has a use for: a question in a row, a field's own Escape.
+        let claimed = matches!(dialog, Dialog::Settings(settings)
+            if self.settings.claims_escape(ctx, settings));
+        if !claimed && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
             take_keys(ctx);
             return Done::Closed;
         }
@@ -362,7 +371,7 @@ impl DialogView {
                     }
                     // Settings draws its own header and list to the dialog's edge.
                     (Dialog::Settings(settings), _) => {
-                        settings_view.show(ui, rect, settings, palette, opened)
+                        settings_view.show(ui, rect, settings, tags, palette, opened)
                     }
                     (Dialog::Tags(_) | Dialog::Person(_), None) => Done::Open,
                 };
@@ -794,6 +803,8 @@ pub(crate) mod tests {
         pub(crate) view: DialogView,
         pub(crate) dialog: Dialog,
         pub(crate) keywords: Vec<String>,
+        /// The library's keywords with their counts, for Settings' Tags.
+        pub(crate) tags: Vec<TagCount>,
         /// The people the user has named; none while they have not been read.
         pub(crate) people: Option<Vec<NamedPerson>>,
         /// The window's size.
@@ -836,6 +847,7 @@ pub(crate) mod tests {
                 view: DialogView::default(),
                 dialog,
                 keywords: Vec::new(),
+                tags: Vec::new(),
                 people: None,
                 size: WINDOW,
                 time: 0.0,
@@ -860,6 +872,7 @@ pub(crate) mod tests {
             };
             self.time += 1.0 / 60.0;
             let (view, dialog, keywords) = (&mut self.view, &self.dialog, &self.keywords);
+            let tags = &self.tags;
             let people = self.people.as_deref();
             let behind = &mut self.behind;
             let asks = self.behind_asks;
@@ -868,7 +881,7 @@ pub(crate) mod tests {
             let (mut left_over, mut typed, mut presses) = (Vec::new(), false, 0);
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
-                done = view.show(ui, dialog, keywords, people);
+                done = view.show(ui, dialog, keywords, tags, people);
                 egui::CentralPanel::default().show(ui, |ui| {
                     let at = Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 40.0));
                     clicked = ui.put(at, egui::Button::new("behind")).clicked();
@@ -925,6 +938,17 @@ pub(crate) mod tests {
                     match asked {
                         Asked::Section(section) => settings.section = *section,
                         Asked::Interval { text, .. } => settings.type_interval(text),
+                        Asked::Filter(text) => settings.filter = text.clone(),
+                        Asked::RenameStart(tag) => settings.renamer.start(tag),
+                        Asked::RenameType(text) => settings.renamer.type_in(text),
+                        Asked::RenameCancel => settings.renamer.cancel(),
+                        Asked::AddOpen => settings.adding = Some(Default::default()),
+                        Asked::AddPath(text) => {
+                            if let Some(adding) = &mut settings.adding {
+                                adding.type_in(text.clone());
+                            }
+                        }
+                        Asked::AddClose => settings.adding = None,
                         _ => {}
                     }
                 }
@@ -1718,7 +1742,7 @@ pub(crate) mod tests {
             let mut full = ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 if open {
-                    done = view.show(ui, &dialog, &[], None);
+                    done = view.show(ui, &dialog, &[], &[], None);
                 }
                 egui::Area::new(Id::new("floating"))
                     .order(egui::Order::Foreground)

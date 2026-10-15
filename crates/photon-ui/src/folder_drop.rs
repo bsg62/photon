@@ -16,6 +16,9 @@ use raw_window_handle::{HandleError, RawWindowHandle};
 pub const CARD: &str = "Drop folders to add them to photon";
 /// And while the export's dialog is open, where the folder dropped is its destination.
 pub const CARD_EXPORT: &str = "Drop a folder to export into it";
+/// And over Settings' field for a folder to add, where the first folder dropped is put
+/// in the field, to be added as a typed one is.
+pub const CARD_ADD: &str = "Drop a folder to put its path in the field";
 /// The line under the empty library's buttons, where a drop can arrive.
 pub const ASIDE: &str = "Or drop a folder onto this window.";
 

@@ -12,12 +12,12 @@ use photon_ui::{
     app::App,
     dialogs::Dialog,
     fixture::Fixture,
-    settings::{FIND_FACES_BOX, INTERVAL_BEFORE, Settings},
+    settings::{FIND_FACES_BOX, INTERVAL_BEFORE, Question, Settings},
 };
 
 fn settings(app: &App) -> Option<&Settings> {
     match app.dialog() {
-        Some(Dialog::Settings(settings)) => Some(settings),
+        Some(Dialog::Settings(settings)) => Some(&**settings),
         _ => None,
     }
 }
@@ -179,7 +179,7 @@ fn the_keyboard_comes_back_to_the_box_when_the_question_is_answered() {
         .click();
     driver.act(&mut harness);
     driver.until(&mut harness, "the question asked", |app| {
-        settings(app).is_some_and(|settings| settings.question() == Some(1))
+        settings(app).is_some_and(|settings| settings.question() == Some(&Question::SwitchOff(1)))
     });
     driver.act(&mut harness);
     key(&mut driver, &mut harness, Key::Enter);

@@ -20,20 +20,23 @@ use crate::{
         APPEARANCE_HINT, Asked, CANCEL, CLOSE, DISTANCES, FIND_FACES, FIND_FACES_BOX,
         FIND_FACES_HINT, FIND_FACES_PRIVATE, FOLDERS_HINT, INTERVAL_AFTER, INTERVAL_BEFORE,
         LIBRARY, LICENCE, LOOK_ALIKES, LOOK_ALIKES_HINT, MEMORY, PHOTO_SIZE, PHOTO_SIZE_HINT,
-        REVEAL, SECTIONS, SHUFFLE, SLIDESHOW_HINT, STOP_FINDING, Section, Settings, TAGS_HINT,
-        THEMES, TITLE, VERSION, distance_hint, memory_amount, memory_scope, switch_off_warning,
+        Question, REVEAL, SECTIONS, SHUFFLE, SLIDESHOW_HINT, Section, Settings, TAGS_HINT, THEMES,
+        TITLE, VERSION, distance_hint, memory_amount, memory_scope,
     },
+    tag_manager::{self, CHANGES, FILTER, NO_TAGS, RENAME, RESTORE, filter_tags, rule_label},
     text::paint_line,
     theme::{
         apply::color,
         fonts,
         tokens::{Palette, R, S, T},
     },
+    watched_list::{self, ADD, ADD_FOLDER, CHOOSE, FolderRow, Kind, NO_FOLDERS, RESCAN},
 };
 use eframe::egui::{
     self, Color32, CornerRadius, Event, FontId, Id, Key, Modifiers, Rect, Sense, Stroke,
     StrokeKind, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
+use photon_core::library::TagCount;
 use std::sync::Arc;
 
 /// The header: the title and the cross, ten points over and under them.
@@ -67,9 +70,46 @@ fn box_id(label: &str) -> Id {
     Id::new(("settings-box", label))
 }
 
-/// The question's "Cancel", to egui: the keyboard is put on it as the question is asked.
-pub(crate) fn keep_id() -> Id {
-    Id::new("settings-keep-faces")
+/// A question's "Cancel", to egui: the keyboard is put on it as the question is asked.
+pub(crate) fn no_id() -> Id {
+    Id::new("settings-question-no")
+}
+
+/// The keyword's field, the tags' filter and the field a folder to add is typed in.
+pub(crate) fn rename_id() -> Id {
+    Id::new("settings-tag-rename")
+}
+
+pub(crate) fn filter_id() -> Id {
+    Id::new("settings-tag-filter")
+}
+
+pub(crate) fn add_id() -> Id {
+    Id::new("settings-add-folder")
+}
+
+/// A folder's "Remove…" and a keyword's: what the keyboard comes back to when the
+/// question it asked is answered.
+fn remove_folder_id(id: i64) -> Id {
+    Id::new(("settings-folder-remove", id))
+}
+
+fn remove_tag_id(tag: &str) -> Id {
+    Id::new(("settings-tag-remove", tag))
+}
+
+impl SettingsView {
+    /// What an Escape is in Settings when it is not the dialog's: Cancel for a question a
+    /// row asks - one on screen: drawn in the last frame, and not one a filter hides - the
+    /// field's own for a keyword being renamed, a filter that holds something and the
+    /// field a folder is typed in. Asked before the dialog takes Escape as its close.
+    pub(crate) fn claims_escape(&self, ctx: &egui::Context, settings: &Settings) -> bool {
+        let focused = ctx.memory(|memory| memory.focused());
+        self.asking.is_some()
+            || (settings.renamer.editing().is_some() && focused == Some(rename_id()))
+            || (!settings.filter.is_empty() && focused == Some(filter_id()))
+            || (settings.adding.is_some() && focused == Some(add_id()))
+    }
 }
 
 /// What the view keeps from frame to frame.
@@ -83,9 +123,102 @@ pub struct SettingsView {
     /// How far the section is to be scrolled in the next frame to bring the question
     /// into sight.
     reveal: f32,
-    /// Whether the People row's question was asked in the last frame: the keyboard is
-    /// put on its Cancel in the frame it is first asked.
-    asked: bool,
+    /// The question a row asked in the last frame, and in this one: the keyboard is put
+    /// on its Cancel in the frame it is first asked.
+    asked: Option<Question>,
+    asking: Option<Question>,
+    /// What had the keyboard when the question was asked - the box, the field, the
+    /// button that asked - which it comes back to when the question is answered; and,
+    /// for the frame after, the widget that is to take it back where it is drawn.
+    back_to: Option<Id>,
+    returning: Option<Id>,
+    /// The keyword whose field was open in the last frame, and whether the field a folder
+    /// is typed in was: a field opened is given the keyboard, and a history of its own.
+    renaming: Option<String>,
+    adding: bool,
+}
+
+/// A text field of Settings at `rect`: its ground, its words, its placeholder. The field
+/// is drawn in sight or out of it - egui lets go of a field that is not drawn - and the
+/// rest only in sight.
+struct Field<'a> {
+    id: Id,
+    text: &'a str,
+    placeholder: &'a str,
+    label: &'a str,
+    refused: bool,
+}
+
+fn text_field(
+    ui: &mut egui::Ui,
+    page: &Page,
+    rect: Rect,
+    field: Field<'_>,
+    palette: &Palette,
+) -> (egui::text_edit::TextEditOutput, String) {
+    if page.sees(rect) {
+        page.painter.rect_filled(rect, R[1], color(palette.field));
+        if field.refused {
+            page.painter.rect_stroke(
+                rect,
+                R[1],
+                Stroke::new(1.0, color(palette.danger)),
+                StrokeKind::Inside,
+            );
+        }
+    }
+    let font = fonts::regular(T[2]);
+    let line = line_height(ui, &font);
+    let edit = Rect::from_min_max(
+        pos2(rect.left() + S[1], rect.center().y - line / 2.0),
+        pos2(rect.right() - S[1], rect.center().y + line / 2.0),
+    );
+    let mut text = field.text.to_owned();
+    let output = ui
+        .scope_builder(UiBuilder::new().max_rect(edit), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            egui::TextEdit::singleline(&mut text)
+                .id(field.id)
+                // Escape claimed for the field: left to egui it takes the keyboard away
+                // at the start of the frame, before `claims_escape` can see whose it
+                // was, and the field's Escape closed Settings. All four said: the
+                // default's arrows are egui's to walk the keyboard away with.
+                .event_filter(egui::EventFilter {
+                    escape: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    tab: false,
+                })
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .font(font)
+                .text_color(color(palette.text))
+                .hint_text(egui::RichText::new(field.placeholder).color(color(palette.text_dim)))
+                .desired_width(edit.width())
+                .show(ui)
+        })
+        .inner;
+    output.response.widget_info(|| {
+        let mut info = WidgetInfo::text_edit(true, "", field.text, field.placeholder);
+        info.label = Some(field.label.to_owned());
+        info
+    });
+    (output, text)
+}
+
+/// A field opened in this frame takes the keyboard, with a history of its own - one
+/// field under one id serves every row, egui keeps a field's undo by id - and its words
+/// chosen, so that what is typed replaces them.
+fn opened_field(ui: &egui::Ui, id: Id, text: &str) {
+    let mut state = egui::text_edit::TextEditState::default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(text.chars().count()),
+        )));
+    state.store(ui.ctx(), id);
+    ui.memory_mut(|memory| memory.request_focus(id));
 }
 
 /// Where the next thing goes in the section, and what is in sight of it.
@@ -304,6 +437,7 @@ fn checkbox(
     ticked: bool,
     works: bool,
     palette: &Palette,
+    back: Option<Id>,
 ) -> bool {
     let row = page.row(CONTROL);
     page.put(row.bottom());
@@ -327,6 +461,9 @@ fn checkbox(
     };
     let response = ui.interact(at, box_id(label), sense);
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, works, ticked, label));
+    if back == Some(response.id) {
+        response.request_focus();
+    }
     let painter = page.painter.clone();
     let square =
         Rect::from_center_size(pos2(row.left() + BOX / 2.0, row.center().y), vec2(BOX, BOX));
@@ -370,6 +507,7 @@ impl SettingsView {
         ui: &mut egui::Ui,
         rect: Rect,
         settings: &Settings,
+        tags: &[TagCount],
         palette: &Palette,
         opened: bool,
     ) -> Done {
@@ -378,9 +516,26 @@ impl SettingsView {
         // Settings opened again brought back what was typed in the last one.
         if opened {
             egui::text_edit::TextEditState::default().store(ui.ctx(), interval_id());
+            egui::text_edit::TextEditState::default().store(ui.ctx(), filter_id());
         }
         let painter = ui.painter().clone();
         let mut asked = Vec::new();
+        // An Escape that is not the dialog's (`claims_escape`, which the dialog asked
+        // before it took the key as its close).
+        if self.claims_escape(ui.ctx(), settings)
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            let focused = ui.ctx().memory(|memory| memory.focused());
+            asked.push(if self.asking.is_some() {
+                Asked::No
+            } else if focused == Some(rename_id()) {
+                Asked::RenameCancel
+            } else if focused == Some(filter_id()) {
+                Asked::Filter(String::new())
+            } else {
+                Asked::AddClose
+            });
+        }
 
         // The header, on the chrome, its corners the dialog's.
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER));
@@ -481,7 +636,7 @@ impl SettingsView {
                     after: None,
                     asked: Vec::new(),
                 };
-                self.fill(ui, &mut page, settings, palette);
+                self.fill(ui, &mut page, settings, tags, palette);
                 page
             })
             .inner;
@@ -512,21 +667,50 @@ impl SettingsView {
         }
     }
 
+    /// The keyboard back to `response`, if it is what a question answered in the last
+    /// frame was asked from.
+    fn give_back(&mut self, response: &egui::Response) {
+        if self.returning == Some(response.id) {
+            self.returning = None;
+            response.request_focus();
+        }
+    }
+
     /// What the section shown holds.
-    fn fill(&mut self, ui: &mut egui::Ui, page: &mut Page, settings: &Settings, palette: &Palette) {
+    fn fill(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        settings: &Settings,
+        tags: &[TagCount],
+        palette: &Palette,
+    ) {
         let section = settings.section;
-        let asked_before = std::mem::replace(&mut self.asked, false);
+        self.asked = self.asking.take();
+        // The question answered in the last frame, its buttons gone with it: the
+        // keyboard, which was on one of them, comes back to what had it when it was asked
+        // - as the system's own question the Svelte dialog asks gives it back. On
+        // nothing, Space pressed nothing and Tab began again at the top of the dialog.
+        // Not asked of egui here, but where that widget is drawn (`give_back`): egui keeps
+        // a keyboard asked for in this frame though nothing of that name is drawn in it -
+        // a rename's answer that lands in the frame its question is answered closes its
+        // field - and AccessKit was then told of a focus on nothing.
+        self.returning = None;
+        if self.asked.is_some() && settings.question().is_none() {
+            self.returning = self.back_to.take();
+        }
         match section {
-            // Their sections are built by the pull requests after this one: their
-            // heading, and what can be said of them already.
             Section::Folders => {
                 page.heading(ui, section.label(), palette);
                 page.hint(ui, FOLDERS_HINT, palette);
+                self.folders(ui, page, settings, palette);
             }
             Section::Tags => {
                 page.heading(ui, section.label(), palette);
                 page.hint(ui, TAGS_HINT, palette);
+                self.tags(ui, page, settings, tags, palette);
             }
+            // Built by the pull request after this one: its heading.
             Section::Statistics | Section::Shortcuts => {
                 page.heading(ui, section.label(), palette);
             }
@@ -561,7 +745,7 @@ impl SettingsView {
                 page.gap(S[2]);
                 let stored = settings.stored();
                 let shuffle = stored.is_some_and(|stored| stored.shuffle);
-                if checkbox(ui, page, SHUFFLE, shuffle, stored.is_some(), palette) {
+                if checkbox(ui, page, SHUFFLE, shuffle, stored.is_some(), palette, None) {
                     page.asked.push(Asked::Shuffle(!shuffle));
                 }
             }
@@ -596,22 +780,14 @@ impl SettingsView {
                 page.hint(ui, FIND_FACES_HINT, palette);
                 page.hint(ui, FIND_FACES_PRIVATE, palette);
                 match settings.question() {
-                    Some(named) => {
-                        self.asked = true;
-                        self.question(ui, page, named, !asked_before, palette);
+                    Some(question @ Question::SwitchOff(_)) => {
+                        self.question(ui, page, question, box_id(FIND_FACES_BOX), palette);
                     }
-                    None => {
+                    _ => {
                         let on = settings.seen.find_faces;
-                        if checkbox(ui, page, FIND_FACES_BOX, on, true, palette) {
+                        let back = self.returning.take();
+                        if checkbox(ui, page, FIND_FACES_BOX, on, true, palette, back) {
                             page.asked.push(Asked::FindFaces(!on));
-                        }
-                        // The question was answered in the last frame, and its buttons
-                        // went with it: the keyboard, which was on one of them, comes
-                        // back to the box that asked - as the system's own question the
-                        // Svelte dialog asks gives it back. On nothing, Space ticked
-                        // nothing and Tab began again at the top of the dialog.
-                        if asked_before {
-                            ui.memory_mut(|memory| memory.request_focus(box_id(FIND_FACES_BOX)));
                         }
                     }
                 }
@@ -721,46 +897,50 @@ impl SettingsView {
         }
     }
 
-    /// The People row turned into its question: what switching off deletes, Cancel and
-    /// the button that switches off. The keyboard is put on Cancel as it is asked, as on
-    /// the dialog layer's own question, so an Enter that came with it deletes nothing.
+    /// The question a row asks, where it arises: its words, Cancel and the button that
+    /// does what is asked about. The keyboard is put on Cancel as it is asked, as on the
+    /// dialog layer's own question, so an Enter that came with it deletes nothing; and
+    /// comes back to `back_to` - what asked - when it is answered.
     fn question(
         &mut self,
         ui: &mut egui::Ui,
         page: &mut Page,
-        named: i64,
-        first: bool,
+        question: &Question,
+        back_to: Id,
         palette: &Palette,
     ) {
-        let warning = switch_off_warning(named);
+        let first = self.asked.as_ref() != Some(question);
+        self.asking = Some(question.clone());
         let words = page.words(
             ui,
-            &warning,
+            &question.words(),
             fonts::regular(T[2]),
             color(palette.text),
-            Id::new("settings-switch-off"),
+            Id::new("settings-question"),
         );
         page.gap(S[1]);
         let row = page.row(CONTROL);
         page.put(row.bottom());
         let cancel = button_width(ui, CANCEL);
-        let stop = button_width(ui, STOP_FINDING);
+        let label = question.yes();
+        let yes = button_width(ui, label);
         let cancel_at = Rect::from_min_size(row.min, vec2(cancel, CONTROL));
-        let stop_at = Rect::from_min_size(
+        let yes_at = Rect::from_min_size(
             pos2(cancel_at.right() + S[1], row.top()),
-            vec2(stop, CONTROL),
+            vec2(yes, CONTROL),
         );
         // Drawn in or out of sight: the keyboard put on Cancel must have something to
         // be on.
-        let keep = button(ui, cancel_at, keep_id(), CANCEL, Look::Plain);
+        let keep = button(ui, cancel_at, no_id(), CANCEL, Look::Plain);
         let off = button(
             ui,
-            stop_at,
-            Id::new("settings-stop-faces"),
-            STOP_FINDING,
+            yes_at,
+            Id::new("settings-question-yes"),
+            label,
             Look::Danger,
         );
         if first {
+            self.back_to = Some(back_to);
             keep.request_focus();
             // In a low window the row can be out of sight, the keyboard with it, and
             // nothing would bring it into sight: the section is scrolled to it.
@@ -772,10 +952,575 @@ impl SettingsView {
             }
         }
         if keep.clicked() {
-            page.asked.push(Asked::KeepFaces);
+            page.asked.push(Asked::No);
         } else if off.clicked() {
-            page.asked.push(Asked::SwitchOff);
+            page.asked.push(Asked::Yes);
         }
+    }
+
+    /// Folders: every watched folder with its status and count, Rescan, Reveal in its
+    /// place, and Remove… asked in its row; then "Add folder…", or the field a folder to
+    /// add is typed in.
+    fn folders(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        settings: &Settings,
+        palette: &Palette,
+    ) {
+        let folders = &settings.seen.folders;
+        if folders.is_empty() {
+            page.words(
+                ui,
+                NO_FOLDERS,
+                fonts::regular(T[2]),
+                color(palette.text_dim),
+                Id::new("settings-no-folders"),
+            );
+            page.gap(S[2]);
+        }
+        let name_font = fonts::semibold(ui.ctx(), T[2]);
+        let small = fonts::regular(T[1]);
+        let (name_line, small_line) = (line_height(ui, &name_font), line_height(ui, &small));
+        let height = name_line + 2.0 * small_line + 2.0 * S[1];
+        for folder in folders {
+            let row = page.row(height);
+            page.put(row.bottom());
+            if page.sees(row) {
+                self.folder_row(ui, page, row, folder, (name_line, small_line), palette);
+            }
+            if let Some(question @ Question::RemoveFolder { id, .. }) = settings.question()
+                && *id == folder.id
+            {
+                page.gap(S[1]);
+                self.question(ui, page, question, remove_folder_id(folder.id), palette);
+                page.gap(S[1]);
+            }
+        }
+        page.gap(S[2]);
+        match &settings.adding {
+            None => {
+                let width = button_width(ui, ADD_FOLDER);
+                let at = Rect::from_min_size(pos2(page.left, page.y), vec2(width, CONTROL));
+                page.put(at.bottom());
+                if page.sees(at)
+                    && button(
+                        ui,
+                        at,
+                        Id::new("settings-add-open"),
+                        ADD_FOLDER,
+                        Look::Primary,
+                    )
+                    .clicked()
+                {
+                    page.asked.push(Asked::AddOpen);
+                }
+            }
+            Some(adding) => {
+                if !self.adding {
+                    opened_field(ui, add_id(), adding.path());
+                }
+                // Enter adds what has passed. Read before the field is drawn and taken
+                // out of the frame: egui's field gives the keyboard up at an Enter.
+                let in_field = ui.memory(|memory| memory.has_focus(add_id()));
+                let enter = in_field
+                    && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+                let row = page.row(CONTROL);
+                page.put(row.bottom());
+                let add = button_width(ui, ADD);
+                let choose = button_width(ui, CHOOSE);
+                let cancel = button_width(ui, CANCEL);
+                // Its Cancel: Escape closes the field only while it has the keyboard, and a
+                // hand on the mouse has nothing else to close it by.
+                let cancel_at = Rect::from_min_max(pos2(row.right() - cancel, row.top()), row.max);
+                let add_at = Rect::from_min_size(
+                    pos2(cancel_at.left() - S[0] - add, row.top()),
+                    vec2(add, CONTROL),
+                );
+                let choose_at = Rect::from_min_size(
+                    pos2(add_at.left() - S[0] - choose, row.top()),
+                    vec2(choose, CONTROL),
+                );
+                let field_at =
+                    Rect::from_min_max(row.min, pos2(choose_at.left() - S[0], row.bottom()));
+                let (output, text) = text_field(
+                    ui,
+                    page,
+                    field_at,
+                    Field {
+                        id: add_id(),
+                        text: adding.path(),
+                        placeholder: watched_list::PLACEHOLDER,
+                        label: watched_list::FIELD,
+                        refused: adding.problem().is_some(),
+                    },
+                    palette,
+                );
+                // The picker's button waits for the picker of a later sub-project.
+                if page.sees(choose_at) {
+                    button(
+                        ui,
+                        choose_at,
+                        Id::new("settings-add-choose"),
+                        CHOOSE,
+                        Look::Off,
+                    );
+                }
+                let passed = matches!(adding.dest(), crate::export_dialog::Dest::Passed(_));
+                let look = if passed && !adding.busy() {
+                    Look::Primary
+                } else {
+                    Look::Off
+                };
+                let pressed = page.sees(add_at)
+                    && button(ui, add_at, Id::new("settings-add-send"), ADD, look).clicked();
+                let cancelled = page.sees(cancel_at)
+                    && button(
+                        ui,
+                        cancel_at,
+                        Id::new("settings-add-cancel"),
+                        CANCEL,
+                        Look::Plain,
+                    )
+                    .clicked();
+                // What was typed in this frame comes first: the Enter of the same frame
+                // would add the path as it was before the letter.
+                if output.response.changed() {
+                    page.asked.push(Asked::AddPath(text));
+                }
+                if enter || pressed {
+                    page.asked.push(Asked::AddSend);
+                }
+                if cancelled {
+                    page.asked.push(Asked::AddClose);
+                }
+                // The room of one line is kept under the field, whether or not anything
+                // is said there, as under the export's: a reason that came and went as a
+                // path was typed moved everything under it up and down.
+                page.gap(S[0]);
+                let line = small_line;
+                let said_at = page.y;
+                match adding.problem() {
+                    Some(why) => {
+                        let rect = page.words(
+                            ui,
+                            why,
+                            small.clone(),
+                            color(palette.danger),
+                            Id::new("settings-add-problem"),
+                        );
+                        page.put(rect.bottom().max(said_at + line));
+                    }
+                    None => page.put(said_at + line),
+                }
+            }
+        }
+        self.adding = settings.adding.is_some();
+    }
+
+    /// One watched folder's row in `row`: its name, its path and what is said of it, and
+    /// its three buttons.
+    fn folder_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        row: Rect,
+        folder: &FolderRow,
+        (name_line, small_line): (f32, f32),
+        palette: &Palette,
+    ) {
+        let middle = row.center().y;
+        let at = |right: f32, label: &str| {
+            let width = button_width(ui, label);
+            Rect::from_min_size(
+                pos2(right - width, middle - CONTROL / 2.0),
+                vec2(width, CONTROL),
+            )
+        };
+        let remove_at = at(row.right(), watched_list::REMOVE);
+        let reveal_at = at(remove_at.left() - S[0], watched_list::REVEAL);
+        let rescan_at = at(reveal_at.left() - S[0], RESCAN);
+        let room = rescan_at.left() - S[2] - row.left();
+        let painter = page.painter.clone();
+        // An offline folder's name is fainter: it is there to be removed or waited for.
+        let name_tint = if folder.online {
+            palette.text
+        } else {
+            palette.text_dim
+        };
+        let details_tint = match folder.kind {
+            Kind::Scanning => palette.accent,
+            Kind::Offline | Kind::Degraded => palette.text,
+            Kind::Online => palette.text_dim,
+        };
+        let mut y = row.top() + S[1];
+        for (words, font, tint, line) in [
+            (
+                folder.name.as_str(),
+                fonts::semibold(ui.ctx(), T[2]),
+                name_tint,
+                name_line,
+            ),
+            (
+                folder.path.as_str(),
+                fonts::regular(T[1]),
+                palette.text_dim,
+                small_line,
+            ),
+            (
+                folder.details.as_str(),
+                fonts::regular(T[1]),
+                details_tint,
+                small_line,
+            ),
+        ] {
+            let place = Rect::from_min_size(pos2(row.left(), y), vec2(room, line));
+            paint_line(
+                ui,
+                &painter,
+                (place.left(), place.center().y),
+                room,
+                words,
+                font,
+                color(tint),
+            );
+            ui.interact(
+                place,
+                Id::new(("settings-folder", folder.id, y as i64)),
+                Sense::hover(),
+            )
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
+            y += line;
+        }
+        painter.hline(
+            row.x_range(),
+            row.bottom() - 0.5,
+            (1.0, color(palette.line)),
+        );
+        // `rescan_folder` does nothing while a scan of the folder runs, and says nothing
+        // back: it is not offered then.
+        // A folder whose removal is on its way offers neither.
+        let look = if folder.scanning || folder.going {
+            Look::Off
+        } else {
+            Look::Plain
+        };
+        let rescan = button(
+            ui,
+            rescan_at,
+            Id::new(("settings-rescan", folder.id)),
+            RESCAN,
+            look,
+        );
+        if folder.scanning {
+            rescan.on_hover_text(watched_list::BEING_SCANNED);
+        } else if rescan.clicked() {
+            page.asked.push(Asked::Rescan(folder.id));
+        }
+        // Reveal waits for a later sub-project, as every Reveal of the native window.
+        button(
+            ui,
+            reveal_at,
+            Id::new(("settings-reveal", folder.id)),
+            watched_list::REVEAL,
+            Look::Off,
+        );
+        let look = if folder.going { Look::Off } else { Look::Warn };
+        let remove = button(
+            ui,
+            remove_at,
+            remove_folder_id(folder.id),
+            watched_list::REMOVE,
+            look,
+        );
+        self.give_back(&remove);
+        if remove.clicked() {
+            page.asked.push(Asked::RemoveFolder {
+                id: folder.id,
+                path: folder.path.clone(),
+            });
+        }
+    }
+
+    /// Tags: the keywords, filtered, each renamed in its row or removed after its row has
+    /// asked; then the changes made so far, each with Restore.
+    fn tags(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        settings: &Settings,
+        tags: &[TagCount],
+        palette: &Palette,
+    ) {
+        let editing = settings.renamer.editing();
+        if tags.is_empty() {
+            page.words(
+                ui,
+                NO_TAGS,
+                fonts::regular(T[2]),
+                color(palette.text_dim),
+                Id::new("settings-no-tags"),
+            );
+            page.gap(S[2]);
+        } else {
+            let row = page.row(CONTROL);
+            page.put(row.bottom());
+            let (output, text) = text_field(
+                ui,
+                page,
+                row,
+                Field {
+                    id: filter_id(),
+                    text: &settings.filter,
+                    placeholder: FILTER,
+                    label: FILTER,
+                    refused: false,
+                },
+                palette,
+            );
+            if output.response.changed() {
+                page.asked.push(Asked::Filter(text));
+            }
+            page.gap(S[1]);
+            let shown = filter_tags(tags, &settings.filter);
+            if shown.is_empty() {
+                page.words(
+                    ui,
+                    &tag_manager::no_match(settings.filter.trim()),
+                    fonts::regular(T[2]),
+                    color(palette.text_dim),
+                    Id::new("settings-no-match"),
+                );
+            }
+            let name_font = fonts::semibold(ui.ctx(), T[2]);
+            let small = fonts::regular(T[1]);
+            let (name_line, small_line) = (line_height(ui, &name_font), line_height(ui, &small));
+            let height = name_line + small_line + 2.0 * 6.0;
+            for tag in shown {
+                if editing == Some(tag.tag.as_str()) {
+                    self.rename_row(ui, page, settings, palette);
+                } else {
+                    let row = page.row(height);
+                    page.put(row.bottom());
+                    // A library's keywords can be thousands: what is out of sight costs
+                    // nothing but its height.
+                    if page.sees(row) {
+                        self.tag_row(ui, page, row, tag, (name_line, small_line), palette);
+                    }
+                }
+                match settings.question() {
+                    Some(question @ Question::RemoveTag(asked)) if *asked == tag.tag => {
+                        page.gap(S[1]);
+                        self.question(ui, page, question, remove_tag_id(&tag.tag), palette);
+                        page.gap(S[1]);
+                    }
+                    Some(question @ Question::Rename(_)) if editing == Some(tag.tag.as_str()) => {
+                        page.gap(S[1]);
+                        self.question(ui, page, question, rename_id(), palette);
+                        page.gap(S[1]);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(rules) = &settings.rules
+            && !rules.is_empty()
+        {
+            page.heading(ui, CHANGES, palette);
+            for rule in rules {
+                let label = rule_label(rule);
+                let row = page.row(CONTROL + 2.0 * S[0]);
+                page.put(row.bottom());
+                if !page.sees(row) {
+                    continue;
+                }
+                let width = button_width(ui, RESTORE);
+                let restore_at = Rect::from_min_size(
+                    pos2(row.right() - width, row.center().y - CONTROL / 2.0),
+                    vec2(width, CONTROL),
+                );
+                let room = restore_at.left() - S[2] - row.left();
+                let place =
+                    Rect::from_min_size(pos2(row.left(), row.top()), vec2(room, row.height()));
+                paint_line(
+                    ui,
+                    &page.painter,
+                    (place.left(), place.center().y),
+                    room,
+                    &label,
+                    fonts::semibold(ui.ctx(), T[2]),
+                    color(palette.text),
+                );
+                ui.interact(place, Id::new(("settings-rule", &rule.tag)), Sense::hover())
+                    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
+                page.painter.hline(
+                    row.x_range(),
+                    row.bottom() - 0.5,
+                    (1.0, color(palette.line)),
+                );
+                if button(
+                    ui,
+                    restore_at,
+                    Id::new(("settings-restore", &rule.tag)),
+                    RESTORE,
+                    Look::Plain,
+                )
+                .clicked()
+                {
+                    page.asked.push(Asked::Restore(rule.tag.clone()));
+                }
+            }
+        }
+        self.renaming = editing.map(str::to_owned);
+    }
+
+    /// A keyword's row: its name and count, Rename and Remove….
+    fn tag_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        row: Rect,
+        tag: &TagCount,
+        (name_line, small_line): (f32, f32),
+        palette: &Palette,
+    ) {
+        let middle = row.center().y;
+        let at = |right: f32, label: &str| {
+            let width = button_width(ui, label);
+            Rect::from_min_size(
+                pos2(right - width, middle - CONTROL / 2.0),
+                vec2(width, CONTROL),
+            )
+        };
+        let remove_at = at(row.right(), tag_manager::REMOVE);
+        let rename_at = at(remove_at.left() - S[0], RENAME);
+        let room = rename_at.left() - S[2] - row.left();
+        let painter = page.painter.clone();
+        let count = tag_manager::photos(tag.total);
+        let mut y = row.top() + 6.0;
+        for (words, font, tint, line) in [
+            (
+                tag.tag.as_str(),
+                fonts::semibold(ui.ctx(), T[2]),
+                palette.text,
+                name_line,
+            ),
+            (
+                count.as_str(),
+                fonts::regular(T[1]),
+                palette.text_dim,
+                small_line,
+            ),
+        ] {
+            let place = Rect::from_min_size(pos2(row.left(), y), vec2(room, line));
+            paint_line(
+                ui,
+                &painter,
+                (place.left(), place.center().y),
+                room,
+                words,
+                font,
+                color(tint),
+            );
+            ui.interact(
+                place,
+                Id::new(("settings-tag", &tag.tag, y as i64)),
+                Sense::hover(),
+            )
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
+            y += line;
+        }
+        painter.hline(
+            row.x_range(),
+            row.bottom() - 0.5,
+            (1.0, color(palette.line)),
+        );
+        if button(
+            ui,
+            rename_at,
+            Id::new(("settings-tag-rename-button", &tag.tag)),
+            RENAME,
+            Look::Plain,
+        )
+        .clicked()
+        {
+            page.asked.push(Asked::RenameStart(tag.tag.clone()));
+        }
+        let remove = button(
+            ui,
+            remove_at,
+            remove_tag_id(&tag.tag),
+            tag_manager::REMOVE,
+            Look::Warn,
+        );
+        self.give_back(&remove);
+        if remove.clicked() {
+            page.asked.push(Asked::RemoveTag(tag.tag.clone()));
+        }
+    }
+
+    /// The row of the keyword being renamed: its field, seeded with its name, and what
+    /// was said of the name - drawn in sight or out of it, since it holds the keyboard.
+    fn rename_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        page: &mut Page,
+        settings: &Settings,
+        palette: &Palette,
+    ) {
+        let renamer = &settings.renamer;
+        let tag = renamer.editing().unwrap_or_default();
+        if self.renaming.as_deref() != Some(tag) {
+            opened_field(ui, rename_id(), renamer.text());
+        }
+        // Enter stores the name, read before the field is drawn and taken out of the
+        // frame: egui's field gives the keyboard up at an Enter, and a name refused or
+        // asked about stays in the field to be put right.
+        let in_field = ui.memory(|memory| memory.has_focus(rename_id()));
+        let enter =
+            in_field && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+        page.gap(6.0);
+        let row = page.row(CONTROL);
+        page.put(row.bottom());
+        let label = tag_manager::rename_label(tag);
+        let (output, text) = text_field(
+            ui,
+            page,
+            row,
+            Field {
+                id: rename_id(),
+                text: renamer.text(),
+                placeholder: "",
+                label: &label,
+                refused: !renamer.error().is_empty(),
+            },
+            palette,
+        );
+        self.give_back(&output.response);
+        // What was typed is said before what stores it: a letter and Enter in one long
+        // frame stored the name without the letter.
+        if output.response.changed() {
+            page.asked.push(Asked::RenameType(text));
+        }
+        if enter {
+            page.asked.push(Asked::RenameCommit);
+        } else if output.response.lost_focus() {
+            // Left - by a press elsewhere, by Tab - it is given up, as the Svelte field's
+            // blur gives it up; not while its rename is on its way or its row asks, which
+            // the renamer itself sees to.
+            page.asked.push(Asked::RenameCancel);
+        }
+        if !renamer.error().is_empty() {
+            page.gap(S[0]);
+            page.words(
+                ui,
+                renamer.error(),
+                fonts::regular(T[1]),
+                color(palette.danger),
+                Id::new("settings-rename-error"),
+            );
+        }
+        page.gap(6.0);
     }
 
     /// About: the version, the library and its Reveal, photon's memory, the licence, as
@@ -934,7 +1679,7 @@ mod tests {
     use crate::{
         dialog_view::tests::{Fixture, WINDOW},
         dialogs::Dialog,
-        settings::{About, Memory, Stored},
+        settings::{About, Memory, STOP_FINDING, Stored, switch_off_warning},
     };
     use eframe::egui::{Event, MouseWheelUnit, Vec2};
     use photon_core::library::{GridTile, ThemeChoice};
@@ -961,7 +1706,7 @@ mod tests {
         if read {
             settings.read(stored());
         }
-        let mut f = Fixture::new(Dialog::Settings(settings));
+        let mut f = Fixture::new(Dialog::Settings(Box::new(settings)));
         f.open();
         f
     }
@@ -1111,10 +1856,10 @@ mod tests {
         f.frame(Vec::new());
         assert!(f.drew(FIND_FACES_BOX).is_none(), "the row is the question");
         assert!(f.drew(&switch_off_warning(2)).is_some());
-        assert_eq!(f.focused(), Some(keep_id()));
-        assert_eq!(asked(f.key(Key::Enter)), [Asked::KeepFaces]);
-        assert_eq!(click(&mut f, STOP_FINDING), [Asked::SwitchOff]);
-        assert_eq!(click(&mut f, CANCEL), [Asked::KeepFaces]);
+        assert_eq!(f.focused(), Some(no_id()));
+        assert_eq!(asked(f.key(Key::Enter)), [Asked::No]);
+        assert_eq!(click(&mut f, STOP_FINDING), [Asked::Yes]);
+        assert_eq!(click(&mut f, CANCEL), [Asked::No]);
         // Answered, the row is the box again; ticked on is asked for as it is.
         the(&mut f).answered();
         the(&mut f).seen.find_faces = false;
@@ -1162,6 +1907,251 @@ mod tests {
         assert_eq!(f.click(cross), Done::Closed);
     }
 
+    fn folder(id: i64, scanning: Option<u64>) -> FolderRow {
+        let watched = photon_core::library::WatchedFolder {
+            id,
+            path: format!("/photos/f{id}"),
+            online: true,
+        };
+        watched_list::row(&watched, scanning, false, Some(3))
+    }
+
+    /// Settings at Folders, two folders watched, the second of them being scanned.
+    fn folders() -> Fixture {
+        let mut f = settings(Section::Folders, true);
+        the(&mut f).seen.folders = vec![folder(1, None), folder(2, Some(40))];
+        f.frame(Vec::new());
+        f
+    }
+
+    /// The button called `label` on the row whose words are `row`'s: the nearest to them
+    /// of that name.
+    fn on_row(f: &Fixture, row: &str, label: &str) -> egui::Pos2 {
+        let y = f.at(row).y;
+        (f.texts.iter())
+            .filter(|(text, _)| text == label)
+            .map(|(_, rect)| rect.center())
+            .min_by(|a, b| (a.y - y).abs().total_cmp(&(b.y - y).abs()))
+            .unwrap_or_else(|| panic!("no {label}"))
+    }
+
+    // Each folder's row: its name, path and what is said of it, Rescan - no press while
+    // it is scanned - Reveal in its place, and Remove…, which its row asks.
+    #[test]
+    fn a_folders_row_rescans_and_asks_before_it_removes() {
+        let mut f = folders();
+        assert!(f.drew("f1").is_some() && f.drew("/photos/f1").is_some());
+        assert!(f.drew("Online · 3 photos").is_some());
+        assert!(f.drew("Scanning… 40 files · 3 photos").is_some());
+        let at = on_row(&f, "f1", RESCAN);
+        assert_eq!(asked(f.click(at)), [Asked::Rescan(1)]);
+        let at = on_row(&f, "f2", RESCAN);
+        assert_eq!(asked(f.click(at)), [], "being scanned");
+        let at = on_row(&f, "f1", watched_list::REVEAL);
+        assert_eq!(asked(f.click(at)), [], "waits for a later sub-project");
+        let at = on_row(&f, "f2", watched_list::REMOVE);
+        assert_eq!(
+            asked(f.click(at)),
+            [Asked::RemoveFolder {
+                id: 2,
+                path: "/photos/f2".to_owned()
+            }]
+        );
+        the(&mut f).ask(Question::RemoveFolder {
+            id: 2,
+            path: "/photos/f2".to_owned(),
+        });
+        f.frame(Vec::new());
+        let words = f
+            .drew(&watched_list::remove_question("/photos/f2"))
+            .expect("the row asks");
+        assert!(words.top() > f.at("f2").y, "under its own row");
+        assert_eq!(f.focused(), Some(no_id()));
+        assert_eq!(click(&mut f, watched_list::REMOVE_YES), [Asked::Yes]);
+        // Escape is the question's Cancel, and leaves Settings open.
+        assert_eq!(asked(f.key(Key::Escape)), [Asked::No]);
+        // Answered, the keyboard is back on the button that asked.
+        the(&mut f).answered();
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.focused(), Some(remove_folder_id(2)));
+    }
+
+    // "Add folder…" opens the field, which takes the keyboard; what is typed is asked
+    // about, Enter adds, Escape closes the field and not Settings.
+    #[test]
+    fn a_folder_to_add_is_typed_in_its_field() {
+        let mut f = folders();
+        assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.focused(), Some(add_id()));
+        assert_eq!(
+            asked(f.typed("/photos/new")),
+            [Asked::AddPath("/photos/new".to_owned())]
+        );
+        assert_eq!(asked(f.key(Key::Enter)), [Asked::AddSend]);
+        assert_eq!(f.focused(), Some(add_id()), "the caret stays");
+        assert_eq!(asked(f.key(Key::Escape)), [Asked::AddClose]);
+        f.frame(Vec::new());
+        // The picker's button waits for the picker.
+        assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
+        f.frame(Vec::new());
+        assert_eq!(click(&mut f, CHOOSE), []);
+    }
+
+    fn tag(name: &str, total: i64) -> TagCount {
+        TagCount {
+            tag: name.to_owned(),
+            count: total,
+            total,
+        }
+    }
+
+    /// Settings at Tags, the library holding three keywords and one change.
+    fn tags() -> Fixture {
+        let mut f = settings(Section::Tags, true);
+        f.tags = vec![tag("hiking", 5), tag("mountains", 12), tag("lake", 1)];
+        the(&mut f).rules = Some(vec![photon_core::library::TagRule {
+            tag: "Faro".to_owned(),
+            target: None,
+        }]);
+        f.frame(Vec::new());
+        f
+    }
+
+    // The keywords with their counts, filtered without case; Escape in a filter that
+    // holds something empties it and closes nothing.
+    #[test]
+    fn the_keywords_are_listed_and_filtered() {
+        let mut f = tags();
+        assert!(f.drew("12 photos").is_some() && f.drew("1 photo").is_some());
+        let field = f.at(FILTER);
+        f.click(field);
+        assert_eq!(f.focused(), Some(filter_id()));
+        assert_eq!(asked(f.typed("MOUN")), [Asked::Filter("MOUN".to_owned())]);
+        f.frame(Vec::new());
+        assert!(f.drew("mountains").is_some());
+        assert!(f.drew("hiking").is_none());
+        assert_eq!(asked(f.key(Key::Escape)), [Asked::Filter(String::new())]);
+        f.frame(Vec::new());
+        assert!(f.drew("hiking").is_some());
+        // An empty filter's Escape is the dialog's.
+        assert_eq!(f.key(Key::Escape), Done::Closed);
+    }
+
+    #[test]
+    fn a_filter_that_holds_no_keyword_says_so() {
+        let mut f = tags();
+        the(&mut f).filter = "zzz".to_owned();
+        f.frame(Vec::new());
+        assert!(f.drew(&tag_manager::no_match("zzz")).is_some());
+    }
+
+    // Rename opens the keyword's field with its name chosen, so that what is typed
+    // replaces it; Enter stores, Escape and leaving the field give it up.
+    #[test]
+    fn a_keyword_is_renamed_in_its_row() {
+        let mut f = tags();
+        let at = on_row(&f, "hiking", RENAME);
+        assert_eq!(
+            asked(f.click(at)),
+            [Asked::RenameStart("hiking".to_owned())]
+        );
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(f.focused(), Some(rename_id()));
+        assert_eq!(
+            asked(f.typed("walks")),
+            [Asked::RenameType("walks".to_owned())]
+        );
+        assert_eq!(
+            the(&mut f).renamer.text(),
+            "walks",
+            "the name was chosen and replaced"
+        );
+        assert_eq!(asked(f.key(Key::Enter)), [Asked::RenameCommit]);
+        assert_eq!(asked(f.key(Key::Escape)), [Asked::RenameCancel]);
+        the(&mut f).renamer.start("hiking");
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let away = f.at("mountains");
+        let came: Vec<Asked> = asked(f.click(away));
+        assert!(came.contains(&Asked::RenameCancel), "{came:?}");
+    }
+
+    // A merge asks in the row, under the field, with its own button.
+    #[test]
+    fn a_rename_onto_another_keyword_asks_in_its_row() {
+        let mut f = tags();
+        the(&mut f).renamer.start("hiking");
+        the(&mut f).renamer.type_in("mountains");
+        let rules = the(&mut f).rules.clone().unwrap_or_default();
+        let committed = the(&mut f).renamer.commit(&[tag("mountains", 12)], &rules);
+        let tag_manager::Committed::Asks(words) = committed else {
+            panic!("{committed:?}");
+        };
+        the(&mut f).ask(Question::Rename(words.clone()));
+        f.frame(Vec::new());
+        assert!(f.drew(&words).is_some());
+        assert_eq!(f.focused(), Some(no_id()));
+        assert_eq!(click(&mut f, tag_manager::MERGE_YES), [Asked::Yes]);
+    }
+
+    // The keyboard goes back to what asked only where that is drawn: a rename's answer
+    // that lands in the frame its question is answered closes the field, and egui keeps a
+    // keyboard asked for in that frame on a widget that is not there - which AccessKit
+    // was told of, a focus on nothing (`egui_kittest` panicked on it under load).
+    #[test]
+    fn the_keyboard_goes_back_to_nothing_that_is_not_drawn() {
+        let mut f = tags();
+        the(&mut f).renamer.start("lake");
+        the(&mut f).renamer.type_in("hiking");
+        let rules = the(&mut f).rules.clone().unwrap_or_default();
+        let tag_manager::Committed::Asks(words) =
+            the(&mut f).renamer.commit(&[tag("hiking", 5)], &rules)
+        else {
+            panic!("a merge asks");
+        };
+        the(&mut f).ask(Question::Rename(words));
+        f.frame(Vec::new());
+        assert_eq!(f.focused(), Some(no_id()));
+        // Answered, and the rename it agreed to stored, before the next frame.
+        the(&mut f).answered();
+        let rename = the(&mut f).renamer.agreed().expect("agreed");
+        the(&mut f).renamer.stored(rename.sent);
+        f.frame(Vec::new());
+        assert_ne!(f.focused(), Some(rename_id()), "the field is gone");
+    }
+
+    // A question a filter hides is not on screen, and takes no Escape: the filter's is to
+    // empty it.
+    #[test]
+    fn a_question_the_filter_hides_takes_no_escape() {
+        let mut f = tags();
+        the(&mut f).ask(Question::RemoveTag("lake".to_owned()));
+        f.frame(Vec::new());
+        let field = f.at(FILTER);
+        f.click(field);
+        f.typed("moun");
+        f.frame(Vec::new());
+        assert!(f.drew(&tag_manager::remove_question("lake")).is_none());
+        assert_eq!(asked(f.key(Key::Escape)), [Asked::Filter(String::new())]);
+    }
+
+    // Remove… asks in its row; a change is restored by its button.
+    #[test]
+    fn a_keyword_is_removed_after_its_row_asks_and_a_change_restored() {
+        let mut f = tags();
+        let at = on_row(&f, "lake", tag_manager::REMOVE);
+        assert_eq!(asked(f.click(at)), [Asked::RemoveTag("lake".to_owned())]);
+        the(&mut f).ask(Question::RemoveTag("lake".to_owned()));
+        f.frame(Vec::new());
+        assert!(f.drew(&tag_manager::remove_question("lake")).is_some());
+        assert!(f.drew("Faro — removed").is_some());
+        assert_eq!(click(&mut f, RESTORE), [Asked::Restore("Faro".to_owned())]);
+    }
+
     // In a window too low to hold it, the question is scrolled into sight as it is asked:
     // the keyboard is put on its Cancel, and nothing else would bring that into sight.
     #[test]
@@ -1182,7 +2172,7 @@ mod tests {
             cancel.bottom() <= ground.bottom(),
             "{cancel:?} in {ground:?}"
         );
-        assert_eq!(f.focused(), Some(keep_id()));
+        assert_eq!(f.focused(), Some(no_id()));
     }
 
     // A section taller than its place scrolls by the wheel over it, as far as its end;
@@ -1210,5 +2200,16 @@ mod tests {
         assert!(f.drew(FIND_FACES).is_none(), "the heading scrolled out");
         // Scrolled to its end and no further: the box stands near the section's foot.
         assert!(row.bottom() > ground.bottom() - 3.0 * CONTROL, "{row:?}");
+    }
+
+    // The field a folder is typed in has its Cancel: Escape closes it only while it has the
+    // keyboard, and once that was elsewhere a hand on the mouse could not close it at all.
+    #[test]
+    fn the_field_a_folder_is_typed_in_has_its_cancel() {
+        let mut f = folders();
+        assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert_eq!(click(&mut f, CANCEL), [Asked::AddClose]);
     }
 }

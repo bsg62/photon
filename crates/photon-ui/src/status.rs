@@ -33,7 +33,7 @@ pub struct Line {
 }
 
 /// The last part of a path, whichever way its separators lean: the folder's own name.
-fn last_segment(path: &str) -> &str {
+pub fn last_segment(path: &str) -> &str {
     path.split(['/', '\\'])
         .rfind(|part| !part.is_empty())
         .unwrap_or(path)

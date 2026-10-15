@@ -79,7 +79,9 @@ pub enum Dialog {
     Tags(TagPicker),
     Export(ExportDialog),
     Person(PersonPicker),
-    Settings(Settings),
+    /// Boxed: it holds the lists of its sections, and every other dialog would be as
+    /// large.
+    Settings(Box<Settings>),
 }
 
 #[cfg(test)]

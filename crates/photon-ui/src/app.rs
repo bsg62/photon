@@ -181,8 +181,18 @@ pub struct App {
     memory_asked: Option<f64>,
     /// How many people the user has named, read before face detection is switched off.
     face_count: Latest<u64, (u64, Result<i64, String>)>,
+    /// Settings' counts of photos for each watched folder and the changes made to
+    /// keywords, read as it opens and at every change of the library's data.
+    settings_lists: Latest<(), Result<settings_dialog::Lists, String>>,
+    /// The path in Settings' field for a folder to add, asked about off this thread:
+    /// with the text that was asked about.
+    adding_check: Latest<String, (String, Result<String, String>)>,
     /// How many times Settings has been opened: each opening's number.
     settings_opened: u64,
+    /// The watched folders whose removal has been asked for, and whether it has been
+    /// answered: until the list is read after that answer their rows offer nothing
+    /// (`FolderRow::going`).
+    removing: Vec<(i64, bool)>,
     /// Compare, while it is open.
     compare: Option<Comparing>,
     /// Compare, its photos read, to be put up at the end of the frame.
@@ -539,11 +549,10 @@ enum Unwritten {
     Edit {
         said: String,
     },
-    /// A setting of Settings the library would not store; the interval's field, if it
-    /// was the interval, and from the Settings opened under that number, shows what the
-    /// library holds.
+    /// A setting of Settings the library would not store, and what of the dialog it
+    /// was sent from waits for the answer.
     Setting {
-        interval: Option<u64>,
+        refused: settings_dialog::Refused,
         said: String,
     },
 }
@@ -1020,6 +1029,23 @@ impl App {
             },
             repaint(&ctx),
         );
+        let settings_lists = Latest::spawn(
+            "settings lists",
+            {
+                let engine = engine.clone();
+                move |()| settings_dialog::lists(&engine)
+            },
+            repaint(&ctx),
+        );
+        let adding_check = Latest::spawn(
+            "folder to add",
+            |text: String| {
+                let home = ::dirs::home_dir();
+                let answer = settings_dialog::check_folder(&text, home.as_deref());
+                (text, answer)
+            },
+            repaint(&ctx),
+        );
         let people = Latest::spawn(
             "named people",
             {
@@ -1135,6 +1161,9 @@ impl App {
             memory_asked: None,
             face_count,
             settings_opened: 0,
+            removing: Vec::new(),
+            settings_lists,
+            adding_check,
             fullscreen_asked: None,
             fullscreen_pending: None,
             compare: None,
@@ -1770,12 +1799,13 @@ impl App {
                 Vec::new()
             }
         };
-        let done = (self.dialog_view).show(ui, dialog, &keywords, self.named.as_deref());
+        let tags = &self.held.collections().tags;
+        let done = (self.dialog_view).show(ui, dialog, &keywords, tags, self.named.as_deref());
         match (done, &mut self.dialog) {
             (Done::Open, _) => {}
             (Done::Closed, _) => {
                 if let Some(Dialog::Settings(settings)) = self.dialog.take() {
-                    self.settings_closed(settings);
+                    self.settings_closed(*settings);
                 }
                 self.dialog = None;
             }
@@ -1852,6 +1882,15 @@ impl App {
         }
     }
 
+    /// Whether Settings' field for a folder to add is on screen and takes a path: shown -
+    /// it stays open when another section is shown, and a drop then went into a field
+    /// nobody could see - and not adding one already, when it takes nothing.
+    fn add_field_shown(&self) -> bool {
+        matches!(&self.dialog, Some(Dialog::Settings(settings))
+            if settings.section == Section::Folders
+                && settings.adding.as_ref().is_some_and(|adding| !adding.busy()))
+    }
+
     /// What was dropped on the window. Under the export's dialog the first path is its
     /// destination, put in the field and asked about as a typed one is - a file dropped
     /// first is said to be no folder, as one typed is - and nothing is watched: the
@@ -1864,6 +1903,18 @@ impl App {
         if let Some(Dialog::Export(export)) = &mut self.dialog {
             if let Some(ask) = export.type_in(first.clone()) {
                 self.checking.ask(ask);
+            }
+            return;
+        }
+        // Under Settings' field for a folder to add, the first path is put in the field,
+        // to be added as a typed one is: the field is asking for a folder, and that is
+        // what the drop answers.
+        if self.add_field_shown()
+            && let Some(Dialog::Settings(settings)) = &mut self.dialog
+            && let Some(adding) = &mut settings.adding
+        {
+            if let Some(ask) = adding.type_in(first.clone()) {
+                self.adding_check.ask(ask);
             }
             return;
         }
@@ -3493,8 +3544,13 @@ impl App {
             Action::Panel(PanelButton::ShowHidden) => self.go(Step::View(View::Hidden)),
             Action::Panel(PanelButton::WatchedFolders) => self.open_settings(Section::Folders),
             Action::Settings => self.open_settings(Section::Folders),
-            // Drawn where it will be, and not answered yet (`PanelButton::works`).
-            Action::Panel(PanelButton::AddFolder) => {}
+            // Settings' list of folders, with the field a folder is typed in open.
+            Action::Panel(PanelButton::AddFolder) => {
+                self.open_settings(Section::Folders);
+                if let Some(Dialog::Settings(settings)) = &mut self.dialog {
+                    settings.adding = Some(Default::default());
+                }
+            }
             // Applied first and stored second, so the press is answered at once. A size
             // the library would not store is kept for this session all the same: going
             // back would answer a disk error with the whole grid laid out again.
@@ -3561,6 +3617,11 @@ impl App {
         // And an album made, a face named, a keyword renamed: the sidebar lists them.
         if data_changed {
             self.collecting.ask(());
+            // Settings' counts of photos and its changes to keywords are read again with
+            // the sidebar's lists, while it is open.
+            if matches!(self.dialog, Some(Dialog::Settings(_))) {
+                self.settings_lists.ask(());
+            }
         }
         if data_changed || folders_changed {
             self.folder_list.ask(());
@@ -3576,6 +3637,9 @@ impl App {
             if let Ok(Some(list)) = read {
                 self.watched = list.watched;
                 self.held.set_folders(list.folders);
+                // A removal answered before this list was asked for is in it: its row
+                // has gone, and its number is free to be another folder's.
+                self.removing.retain(|(_, answered)| !answered);
             }
             // Read or not: the list on hand is what there is to go by. Left as "not
             // read", a read that failed at launch kept an empty library saying nothing.
@@ -3844,9 +3908,11 @@ impl App {
                 }
                 Ok(Ok(Wrote::Stored)) => {}
                 Ok(Ok(Wrote::Setting(wrote))) => self.setting_written(wrote),
-                Ok(Err(Unwritten::Setting { interval, said })) => {
-                    self.setting_refused(interval);
-                    self.toasts.error(said, now_ms);
+                Ok(Err(Unwritten::Setting { refused, said })) => {
+                    // Said under the field that waits for it, or as a message.
+                    if let Some(said) = self.setting_refused(refused, said) {
+                        self.toasts.error(said, now_ms);
+                    }
                 }
                 Ok(Err(Unwritten::Edits { was, said })) => {
                     if let Some(Dialog::Export(export)) = &mut self.dialog {
@@ -4352,6 +4418,7 @@ impl eframe::App for App {
         if self.drop.hovering() {
             let words = match self.dialog {
                 Some(Dialog::Export(_)) => folder_drop::CARD_EXPORT,
+                Some(Dialog::Settings(_)) if self.add_field_shown() => folder_drop::CARD_ADD,
                 _ => folder_drop::CARD,
             };
             drop_card::show(ui.ctx(), words);
