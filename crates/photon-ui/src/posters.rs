@@ -6,14 +6,14 @@
 //! and used as they stand; what a poster's failure is reported as is that file's rule,
 //! ported whole (`answer`).
 
-use crate::video::{self, Failure, Picture};
+use crate::video::{self, Failure, Picture, Videos};
 use photon_core::thumbs::VideoFailure;
 use photon_engine::{commands, engine::Engine};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -21,35 +21,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// What makes a poster: the system's framework, or a test's stand-in for it.
-pub trait Posters: Send + Sync + 'static {
-    /// Whether anything can be decoded here at all: asked once, as the worker starts.
-    fn can_play(&self) -> bool;
-    /// The frame at `at` seconds of the video at `path`, turned as it is seen.
-    fn poster(&self, path: &Path, at: f64) -> Result<Picture, Failure>;
-    /// How long a poster is waited for before it is a failure: `JOB_TIMEOUT`, but in a
-    /// test that cannot wait that long.
-    fn patience(&self) -> Duration {
-        JOB_TIMEOUT
-    }
-}
-
-/// The system's own framework.
-pub struct System;
-
-impl Posters for System {
-    fn can_play(&self) -> bool {
-        video::can_play()
-    }
-
-    fn poster(&self, path: &Path, at: f64) -> Result<Picture, Failure> {
-        video::poster(path, at)
-    }
-}
-
-/// A poster that has not come in this long is a failure, not a slow disk: the web view's
-/// rule, whose spike's 4K file gave its frame in 200-300 ms.
-pub const JOB_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long one ask for a job waits: the engine long-polls, and a worker told to stop
 /// hears it at the next ask - which is what the window's closing waits for.
 const ASK: Duration = Duration::from_millis(250);
@@ -71,12 +42,20 @@ impl PosterWorker {
     /// Opens the engine's session of videos - supported or not, as `posters` says; not
     /// supported, the engine answers every video's tile as having no poster yet, and
     /// nothing is asked of the system - and makes posters until told to stop.
-    pub fn start(engine: Arc<Engine>, posters: Arc<dyn Posters>) -> Self {
+    ///
+    /// What `can_play` answered is put in `plays` for the viewer, which asks it of no
+    /// one itself: it is asked here, off the window's thread, once - GStreamer's first
+    /// answer reads its registry of plugins.
+    pub fn start(
+        engine: Arc<Engine>,
+        posters: Arc<dyn Videos>,
+        plays: Arc<OnceLock<bool>>,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = thread::Builder::new()
             .name("photon-posters".into())
-            .spawn(move || run(&engine, posters, &stopping))
+            .spawn(move || run(&engine, posters, &plays, &stopping))
             .map_err(|err| tracing::warn!("no thread to make videos' posters: {err}"))
             .ok();
         PosterWorker { stop, thread }
@@ -108,8 +87,9 @@ impl Drop for PosterWorker {
     }
 }
 
-fn run(engine: &Arc<Engine>, posters: Arc<dyn Posters>, stop: &AtomicBool) {
+fn run(engine: &Arc<Engine>, posters: Arc<dyn Videos>, plays: &OnceLock<bool>, stop: &AtomicBool) {
     let supported = posters.can_play();
+    let _ = plays.set(supported);
     if let Err(err) = commands::video_session_start(engine, supported) {
         tracing::warn!("the videos' session did not start: {err}");
         return;
@@ -166,7 +146,7 @@ pub enum Drawn {
 /// was left behind still at work.
 fn draw(
     engine: &Arc<Engine>,
-    posters: &Arc<dyn Posters>,
+    posters: &Arc<dyn Videos>,
     stop: &AtomicBool,
     id: i64,
     key: &str,
@@ -209,7 +189,7 @@ fn draw(
 /// left behind at its `patience` and a stop is heard within `LOOK` - with that thread,
 /// where it was left behind.
 fn made(
-    posters: &Arc<dyn Posters>,
+    posters: &Arc<dyn Videos>,
     stop: &AtomicBool,
     path: PathBuf,
     at: f64,

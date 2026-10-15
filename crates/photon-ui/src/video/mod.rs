@@ -19,6 +19,105 @@ mod system;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use system::{Player, can_play, poster};
 
+use std::{path::Path, time::Duration};
+
+/// The system's video as the window uses it: the framework itself (`System`), or a test's
+/// stand-in - a test cannot count on a decoder, and the backends are tested on their own.
+pub trait Videos: Send + Sync + 'static {
+    /// Whether anything can be decoded here at all: asked once, off the window's thread.
+    fn can_play(&self) -> bool;
+    /// The frame at `at` seconds of the video at `path`, turned as it is seen.
+    fn poster(&self, path: &Path, at: f64) -> Result<Picture, Failure>;
+    /// How long a poster is waited for before it is a failure: `JOB_TIMEOUT`, but in a
+    /// test that cannot wait that long.
+    fn patience(&self) -> Duration {
+        JOB_TIMEOUT
+    }
+    /// A player of the video at `path`, opened and on its way to ready, paused: on the
+    /// window's thread, which is the main one, as AVFoundation wants.
+    fn open(&self, path: &Path) -> Result<Box<dyn Stream>, Failure>;
+}
+
+/// A poster that has not come in this long is a failure, not a slow disk: the web view's
+/// rule, whose spike's 4K file gave its frame in 200-300 ms.
+pub const JOB_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The system's own framework.
+pub struct System;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl Videos for System {
+    fn can_play(&self) -> bool {
+        can_play()
+    }
+
+    fn poster(&self, path: &Path, at: f64) -> Result<Picture, Failure> {
+        poster(path, at)
+    }
+
+    fn open(&self, path: &Path) -> Result<Box<dyn Stream>, Failure> {
+        Ok(Box::new(Player::open(path)?))
+    }
+}
+
+/// A video being played, as the window has it: the system's `Player`, or a test's.
+pub trait Stream {
+    /// Whether it knows its size and length; nothing is shown before.
+    fn ready(&self) -> bool;
+    fn play(&self);
+    fn pause(&self);
+    /// To `at` seconds, to the frame.
+    fn seek(&self, at: f64);
+    /// From nought to one.
+    fn set_volume(&self, volume: f64);
+    fn set_muted(&self, muted: bool);
+    /// Seconds into the video.
+    fn position(&self) -> Option<f64>;
+    fn duration(&self) -> Option<f64>;
+    fn ended(&self) -> bool;
+    /// What went wrong after it was opened, if anything did.
+    fn failure(&self) -> Option<Failure>;
+    /// The newest frame due, once.
+    fn frame(&self) -> Option<Picture>;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl Stream for Player {
+    fn ready(&self) -> bool {
+        Player::ready(self)
+    }
+    fn play(&self) {
+        Player::play(self)
+    }
+    fn pause(&self) {
+        Player::pause(self)
+    }
+    fn seek(&self, at: f64) {
+        Player::seek(self, at)
+    }
+    fn set_volume(&self, volume: f64) {
+        Player::set_volume(self, volume)
+    }
+    fn set_muted(&self, muted: bool) {
+        Player::set_muted(self, muted)
+    }
+    fn position(&self) -> Option<f64> {
+        Player::position(self)
+    }
+    fn duration(&self) -> Option<f64> {
+        Player::duration(self)
+    }
+    fn ended(&self) -> bool {
+        Player::ended(self)
+    }
+    fn failure(&self) -> Option<Failure> {
+        Player::failure(self)
+    }
+    fn frame(&self) -> Option<Picture> {
+        Player::frame(self)
+    }
+}
+
 /// A frame of a video, as RGBA with its rows packed, and the time in it that it shows.
 #[derive(Clone, PartialEq)]
 pub struct Picture {

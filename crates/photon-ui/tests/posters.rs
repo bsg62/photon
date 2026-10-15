@@ -9,8 +9,7 @@ use photon_core::{library::Library, media::ThumbState, thumbs::ThumbSize};
 use photon_engine::commands;
 use photon_ui::{
     app::App,
-    posters::Posters,
-    video::{Failure, Picture},
+    video::{Failure, Picture, Stream, Videos},
 };
 use std::{
     path::{Path, PathBuf},
@@ -57,7 +56,7 @@ impl StandIn {
     }
 }
 
-impl Posters for StandIn {
+impl Videos for StandIn {
     fn can_play(&self) -> bool {
         self.plays
     }
@@ -73,6 +72,10 @@ impl Posters for StandIn {
 
     fn patience(&self) -> Duration {
         self.patience
+    }
+
+    fn open(&self, _: &Path) -> Result<Box<dyn Stream>, Failure> {
+        Err(Failure::Unsupported("posters only".into()))
     }
 }
 
@@ -142,7 +145,7 @@ fn launched<'a>(
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, pictures).unwrap().with_posters(posters));
+        .build_eframe(move |cc| App::new(cc, dirs, pictures).unwrap().with_videos(posters));
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the folder shown", |app| {
         app.photos() == count

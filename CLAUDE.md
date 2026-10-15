@@ -2782,12 +2782,12 @@ event's *first* parameter. **A paused player still hands over the frame it stand
 the first at opening, the one a seek landed on - which GStreamer's sink gives only as its
 preroll (and `try_pull_sample` throws the preroll away before it looks, so a paused sink is
 asked for the preroll alone), and AVFoundation's video output not at all, as it vends what
-the player renders: a paused Mac player makes that frame as a still, as a poster is. **Nothing a frame asks of a player turns the Mac's run loop**: in the window winit
-turns it, and turned again in `frame` it held the window five milliseconds a call; `open`,
-which waits for the item to be ready, is the one place that does, and the tests turn it
-while they wait (`idle`). **Known, and left**: `open` waits on the thread that calls it, up
-to ten seconds (on a Mac it must be the main thread) - the viewer's pull request decides
-how it is called; and the `windows` crate links Media Foundation's DLLs at load time, so a
+the player renders: a paused Mac player makes that frame as a still, as a poster is. **Nothing a player is asked turns the Mac's run loop**: in the window winit
+turns it, and turned again in `frame` it held the window five milliseconds a call; the
+tests turn it while they wait (`idle`). **`open` waits for nothing**: it is called on the
+window's thread (on a Mac it must be the main one), and Media Foundation's engine takes a
+second or two to know a video's size on a runner - the player says when it is `ready`, and
+what went wrong after it was opened by `failure`. **Known, and left**: the `windows` crate links Media Foundation's DLLs at load time, so a
 Windows "N" edition without the Media Feature Pack cannot start photon-native at all - the
 packaging's to answer (sub-project 7). Every backend lets go of
 what it holds when it is dropped (GStreamer to `Null`, the Media Engine `Shutdown`), and
@@ -2832,6 +2832,41 @@ tests drive a stand-in for the system's framework that answers by the file's nam
 that plays nothing** (`common::no_posters`), since a file called a video is decoded on a
 runner with decoders and not on one without, and each system calls the same unreadable
 file something else.
+
+**A video plays in the viewer through its player, and its frame is its picture**
+(`playback.rs`, a state module; `App::play_video`). The system's video is one trait,
+`video::Videos` - `can_play`, `poster` and `open` - over the framework (`video::System`) or
+a test's stand-in (`App::with_videos`), and a player is a `video::Stream`. Whether the system
+plays at all is the poster worker's answer, put where the viewer reads it
+(`App::video_plays`): asked once, off the window's thread. The file is read off it too
+(`video_paths`, asked once a video), the player opened on the window's thread - which on a
+Mac is the one AVFoundation wants, and is why `open` waits for nothing - and told to play at
+once, with its sound, as the web view's `<video>` did. Each frame's newest picture is written
+into one texture in place (`TextureHandle::set`) and handed to the viewer as its one level,
+so a video's frame is drawn as a photo's picture is, fitted; until the first its poster - the
+preview - stands in its place. A frame is asked for every 8 ms while it plays (and once more
+after its end, whose last frame can come after the frame that heard it): a crude rate,
+which PR 4's pause has to stop - GStreamer could say when a sample arrives, the other two
+cannot as simply. **A player is opened only once the viewer has rested on its video**
+(`Viewer::rested`, as for a photo's full picture): a held arrow passes videos faster than a
+player opens, and each opened and let go of was work on this thread and a moment of its
+sound. **A player that fails is let go of** (`Playing::frame`): on Linux a video whose
+picture has no decoder plays its sound alone, and kept, it played on under what is said of
+it; and the poster, not its last frame, stands under the words. A new picture of the same
+video is a new file - followed to a new name, or rewritten - whose path is read again (no
+test: the seam is a file moved while the viewer is on it). **Known, and left**: each frame
+is made a `ColorImage` on this thread and uploaded from it - about a millisecond at 1080p in
+a release build once the needless unmultiplying pass was dropped, four at 4K, and ten times
+that in a debug build; and a player has no crash-loop guard, where a poster does - a file
+whose later frames crash a decoder takes the window down at each opening, which is not a
+loop, since each needs a click. **Another video, or another
+picture of the same one, is another player** (`Playing::is_of`): the step from one video to
+the next let go of the first. What is said over a video that cannot be played is the web
+view's, in its order (`playback::said`): a crash first; then a system that plays nothing -
+on Linux naming GStreamer's plugins; then the video's own failure, a missing decoder on
+Linux named the same way. Its tests drive a stand-in player (`tests/playback.rs`); which
+frame is on screen is read off the texture the viewer last drew (`App::video_frame`), not
+off the one kept, which a probe showed is no proof it was drawn.
 
 **A picture test makes its GPU device alone** (`tests/screenshots.rs`, `DEVICES`): every
 picture is drawn on a thread of its own, and with two dozen devices made in the same

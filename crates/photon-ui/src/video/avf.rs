@@ -26,7 +26,7 @@ use objc2_core_video::{
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
     kCVPixelFormatType_32BGRA,
 };
-use objc2_foundation::{NSDate, NSDictionary, NSNumber, NSRunLoop, NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use objc2_quartz_core::CACurrentMediaTime;
 use std::{
     cell::Cell,
@@ -35,7 +35,6 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
 };
 
 /// AVFoundation is part of the system, and plays H.264 and HEVC on every Mac photon runs on.
@@ -136,15 +135,6 @@ fn refused(asset: &AVAsset, why: String) -> Failure {
     }
 }
 
-/// The main thread's run loop turned for a moment, which is how AVFoundation's state
-/// arrives on a thread with nothing else running it: `open`, which waits for the item to be
-/// ready, is the one place that waits for it. Nothing that runs every frame does - in the
-/// window winit turns the main run loop already, and turned again here `frame` held the
-/// window's thread five milliseconds each time it was asked, a third of a frame.
-fn turn_run_loop() {
-    NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
-}
-
 /// A video being played, with its sound. Made on the main thread, as AVFoundation's player
 /// item must be - which is the window's.
 pub struct Player {
@@ -166,7 +156,6 @@ pub struct Player {
     seeking: Arc<AtomicUsize>,
     heading: Cell<f64>,
     quarters: u32,
-    duration: f64,
     shown: Cell<f64>,
 }
 
@@ -177,7 +166,10 @@ impl Drop for Player {
 }
 
 impl Player {
-    /// Opened and ready, paused at its start.
+    /// Opened, and on its way to being ready, paused at its start: nothing waits here
+    /// for the item - it is called on the window's thread - and what goes wrong from here
+    /// on is said by `failure`. (`isPlayable` and the turn are read from the file's
+    /// headers as it opens, which on a share is a moment.)
     pub fn open(path: &Path) -> Result<Player, Failure> {
         let mtm = MainThreadMarker::new().ok_or(Failure::Broken(
             "a player is made on the main thread".into(),
@@ -205,23 +197,8 @@ impl Player {
             // stopped for good at the first stall - on macOS' runner, 0.12 s into a file
             // on its own disk - where on it begins a moment late and plays through.
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
-            let until = Instant::now() + Duration::from_secs(10);
-            loop {
-                match item.status() {
-                    AVPlayerItemStatus::ReadyToPlay => break,
-                    AVPlayerItemStatus::Failed => {
-                        let why = item.error().map(|e| said(&e)).unwrap_or_default();
-                        return Err(refused(&asset, why));
-                    }
-                    _ if Instant::now() > until => {
-                        return Err(Failure::Broken("AVFoundation was never ready".into()));
-                    }
-                    _ => turn_run_loop(),
-                }
-            }
             Ok(Player {
                 quarters: quarters(&asset),
-                duration: item.duration().seconds(),
                 generator: generator(&asset),
                 asset,
                 player,
@@ -286,8 +263,16 @@ impl Player {
         at.is_finite().then_some(at)
     }
 
+    /// Once it is ready: before, the item's length is not known.
     pub fn duration(&self) -> Option<f64> {
-        (self.duration.is_finite() && self.duration > 0.0).then_some(self.duration)
+        let whole = unsafe { self.item.duration().seconds() };
+        (whole.is_finite() && whole > 0.0).then_some(whole)
+    }
+
+    /// Whether the item is ready to play: its state arrives on the main thread's run
+    /// loop, which in the window winit turns.
+    pub fn ready(&self) -> bool {
+        unsafe { self.item.status() == AVPlayerItemStatus::ReadyToPlay }
     }
 
     /// Whether it has played to its end.
@@ -300,8 +285,10 @@ impl Player {
     /// What went wrong while it played, if anything did.
     pub fn failure(&self) -> Option<Failure> {
         unsafe {
-            (self.item.status() == AVPlayerItemStatus::Failed)
-                .then(|| Failure::Broken(self.item.error().map(|e| said(&e)).unwrap_or_default()))
+            (self.item.status() == AVPlayerItemStatus::Failed).then(|| {
+                let why = self.item.error().map(|e| said(&e)).unwrap_or_default();
+                refused(&self.asset, why)
+            })
         }
     }
 

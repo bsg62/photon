@@ -11,7 +11,6 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::{Duration, Instant},
 };
 use windows::{
     Win32::{
@@ -227,6 +226,8 @@ pub struct Player {
     wic: IWICImagingFactory,
     bitmap: std::cell::RefCell<Option<(IWICBitmap, u32, u32)>>,
     stamp: Cell<i64>,
+    /// A seek asked for before the engine had its first frame, made once it has.
+    waiting_seek: Cell<Option<f64>>,
 }
 
 impl Drop for Player {
@@ -238,7 +239,9 @@ impl Drop for Player {
 }
 
 impl Player {
-    /// Opened and ready, paused at its start.
+    /// Opened, and on its way to being ready, paused at its start: nothing waits here -
+    /// it is called on the window's thread - and what goes wrong from here on is said by
+    /// `failure`.
     pub fn open(path: &Path) -> Result<Player, Failure> {
         started()?;
         unsafe {
@@ -270,22 +273,19 @@ impl Player {
                 wic,
                 bitmap: Default::default(),
                 stamp: Cell::new(-1),
+                waiting_seek: Cell::new(None),
             };
             let url = BSTR::from(path.to_string_lossy().as_ref());
             player.engine.SetSource(&url).map_err(failure)?;
-            let until = Instant::now() + Duration::from_secs(10);
-            // HAVE_METADATA or more: its size and length are known.
-            while player.engine.GetReadyState() < 1 {
-                if let Some(failure) = player.failure() {
-                    return Err(failure);
-                }
-                if Instant::now() > until {
-                    return Err(Failure::Broken("Media Foundation was never ready".into()));
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
             Ok(player)
         }
+    }
+
+    /// Whether it knows its size and length: `HAVE_METADATA` or more. The engine takes
+    /// a second or two to get there on a runner, which is why `open` does not wait for
+    /// it on the window's thread.
+    pub fn ready(&self) -> bool {
+        self.failure().is_none() && unsafe { self.engine.GetReadyState() } >= 1
     }
 
     pub fn play(&self) {
@@ -301,9 +301,19 @@ impl Player {
     }
 
     /// To `at` seconds, to the frame.
+    /// **A seek asked for before the engine has its first frame is kept until it has**
+    /// (`HAVE_CURRENT_DATA`): made straight away, it was now and then lost to the load of
+    /// that first frame, and a paused video stood on its start (Windows' runner, once in
+    /// a few runs of the paused seek's test).
     pub fn seek(&self, at: f64) {
+        let at = at.max(0.0);
+        if unsafe { self.engine.GetReadyState() } < 2 {
+            self.waiting_seek.set(Some(at));
+            return;
+        }
+        self.waiting_seek.set(None);
         unsafe {
-            let _ = self.engine.SetCurrentTime(at.max(0.0));
+            let _ = self.engine.SetCurrentTime(at);
         }
     }
 
@@ -322,6 +332,9 @@ impl Player {
 
     /// Seconds into the video, as the player has it.
     pub fn position(&self) -> Option<f64> {
+        if let Some(at) = self.waiting_seek.get() {
+            return Some(at);
+        }
         let at = unsafe { self.engine.GetCurrentTime() };
         at.is_finite().then_some(at)
     }
@@ -352,6 +365,11 @@ impl Player {
 
     /// The newest frame due, once: none when no new one has come since the last asked.
     pub fn frame(&self) -> Option<Picture> {
+        if let Some(at) = self.waiting_seek.get()
+            && unsafe { self.engine.GetReadyState() } >= 2
+        {
+            self.seek(at);
+        }
         unsafe {
             // A new frame is a new stamp: the bindings read the call's S_FALSE ("none
             // new") as success. Before the first frame is due the engine answers a stamp
