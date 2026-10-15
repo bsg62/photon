@@ -24,6 +24,8 @@ struct Told {
     /// The files players were opened for.
     opened: Vec<PathBuf>,
     played: bool,
+    /// What the players were told of their sound and their playing, in order.
+    log: Vec<String>,
     /// How many players have been let go of.
     dropped: usize,
     frames: VecDeque<Picture>,
@@ -60,12 +62,22 @@ impl Stream for Player {
         true
     }
     fn play(&self) {
-        self.0.lock().unwrap().played = true;
+        let mut told = self.0.lock().unwrap();
+        told.played = true;
+        told.log.push("play".into());
     }
-    fn pause(&self) {}
-    fn seek(&self, _: f64) {}
-    fn set_volume(&self, _: f64) {}
-    fn set_muted(&self, _: bool) {}
+    fn pause(&self) {
+        self.0.lock().unwrap().log.push("pause".into());
+    }
+    fn seek(&self, at: f64) {
+        self.0.lock().unwrap().log.push(format!("seek {at}"));
+    }
+    fn set_volume(&self, volume: f64) {
+        self.0.lock().unwrap().log.push(format!("volume {volume}"));
+    }
+    fn set_muted(&self, muted: bool) {
+        self.0.lock().unwrap().log.push(format!("muted {muted}"));
+    }
     fn position(&self) -> Option<f64> {
         None
     }
@@ -295,4 +307,109 @@ fn a_video_stepped_past_is_not_played() {
     driver.settle(&mut harness);
     let first = photon_core::paths::canonicalize(folder.join("v.mp4")).unwrap();
     assert_eq!(told.lock().unwrap().opened, [first]);
+}
+
+fn log(told: &Arc<Mutex<Told>>) -> Vec<String> {
+    std::mem::take(&mut told.lock().unwrap().log)
+}
+
+// Space pauses and plays, M mutes - and the sound is carried to the next video, set
+// before it plays, for as long as photon is open.
+#[test]
+fn a_videos_keys_reach_its_player_and_its_sound_goes_on_to_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let told = Arc::new(Mutex::new(Told::default()));
+    let (mut harness, mut driver, _) = launched(dir.path(), &told);
+    open(&mut driver, &mut harness, "v.mp4");
+    driver.until(&mut harness, "its player opened", |_| {
+        told.lock().unwrap().opened.len() == 1
+    });
+    // A frame, so that it plays: its strip is drawn while it does.
+    told.lock()
+        .unwrap()
+        .frames
+        .push_back(frame(0.5, [20, 200, 20]));
+    driver.until(&mut harness, "a frame drawn", |app| {
+        app.video_frame() == Some(0.5)
+    });
+    assert_eq!(log(&told), ["volume 1", "muted false", "play"]);
+    for key in [Key::Space, Key::Space, Key::M] {
+        harness.key_press_modifiers(Modifiers::NONE, key);
+        driver.act(&mut harness);
+    }
+    assert_eq!(log(&told), ["pause", "play", "muted true"]);
+    assert!(
+        harness.query_by_label("Unmute").is_some(),
+        "{:?}",
+        said(&harness)
+    );
+    // The next video starts muted.
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the next one's player", |_| {
+        told.lock().unwrap().opened.len() == 2
+    });
+    assert_eq!(log(&told), ["volume 1", "muted true", "play"]);
+}
+
+// A double click on an item of the viewer's menu that lies over the picture: the first
+// click picks the item and closes the menu, the second lands on the picture. It pauses
+// nothing; a click there a moment later does.
+#[test]
+fn a_double_click_on_a_menus_item_over_a_video_does_not_pause_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let told = Arc::new(Mutex::new(Told::default()));
+    let (mut harness, mut driver, _) = launched(dir.path(), &told);
+    open(&mut driver, &mut harness, "v.mp4");
+    driver.until(&mut harness, "its player opened", |_| {
+        told.lock().unwrap().opened.len() == 1
+    });
+    told.lock()
+        .unwrap()
+        .frames
+        .push_back(frame(0.5, [20, 200, 20]));
+    driver.until(&mut harness, "a frame drawn", |app| {
+        app.video_frame() == Some(0.5)
+    });
+    let middle = egui::pos2(500.0, 300.0);
+    harness.event(egui::Event::PointerMoved(middle));
+    harness.event(press(middle, PointerButton::Secondary, true));
+    harness.event(press(middle, PointerButton::Secondary, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    let item = harness.get_by_label("Hide photo").rect().center();
+    log(&told);
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(press(item, PointerButton::Primary, true));
+    harness.event(press(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(
+        !harness.state().menu_open(),
+        "the first click picked the item"
+    );
+    // The second, a tenth of a second on.
+    driver.frames_in(&mut harness, 0.1);
+    harness.event(press(item, PointerButton::Primary, true));
+    harness.event(press(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(
+        !log(&told).contains(&"pause".to_owned()),
+        "the second click paused it"
+    );
+    // Once a double click's time is over, a click on the picture is a click on it.
+    driver.frames_in(&mut harness, 1.0);
+    harness.event(press(item, PointerButton::Primary, true));
+    harness.event(press(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(log(&told).contains(&"pause".to_owned()));
+}
+
+fn press(pos: Pos2, button: PointerButton, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
 }
