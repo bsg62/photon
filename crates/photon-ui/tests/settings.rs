@@ -365,5 +365,8 @@ fn the_memory_is_read_again_only_while_about_is_shown() {
     // a few for each two seconds, and nowhere near one at every refresh, which is three
     // hundred.
     let frames = driver.frames_in(&mut harness, 5.0);
-    assert!((2..=30).contains(&frames), "{frames} frames in five seconds");
+    assert!(
+        (2..=30).contains(&frames),
+        "{frames} frames in five seconds"
+    );
 }
