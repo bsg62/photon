@@ -19,6 +19,7 @@ mod faces_edges;
 mod lists;
 mod menu;
 mod people;
+mod pickers;
 mod playback;
 mod posters;
 mod probe;

@@ -23,7 +23,11 @@ fn main() -> ExitCode {
         )
         .init();
     let Some(dirs) = args.dirs() else {
-        eprintln!("photon could not find a directory to keep its library in");
+        // Said where it can be read with no window, as a failed start is below: a
+        // release build on Windows has no console to print it in.
+        let said = "photon could not find a directory to keep its library in.";
+        eprintln!("{said}");
+        photon_ui::platform::show_error(said);
         return ExitCode::FAILURE;
     };
 
@@ -60,9 +64,14 @@ fn main() -> ExitCode {
     );
     match run {
         Ok(()) => ExitCode::SUCCESS,
+        // Said where it can be read with no window: in the system's message box, which on
+        // Linux needs `zenity`, and on the standard error and in the log, which need
+        // nothing.
         Err(err) => {
             tracing::error!(%err, "photon could not start");
-            eprintln!("photon could not start: {err}");
+            let said = photon_ui::platform::startup_failed(&err);
+            eprintln!("{said}");
+            photon_ui::platform::show_error(&said);
             ExitCode::FAILURE
         }
     }

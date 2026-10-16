@@ -82,6 +82,8 @@ pub enum Done {
     Size(Option<u32>),
     /// The export is to run, to the destination that has passed.
     Export,
+    /// The export's "Choose…": the system's folder picker, for the destination.
+    Choose,
     /// What was asked for in Settings, in the order it was.
     Settings(Vec<Asked>),
 }

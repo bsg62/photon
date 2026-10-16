@@ -27,6 +27,7 @@ use crate::{
     people_page::{self, PeoplePage},
     people_view::{PeopleData, PeopleView},
     person_picker::{self, PersonPicker},
+    platform::Platform,
     playback::Playing,
     posters::PosterWorker,
     probe::{Facts, Move, Outside, Probe, Report},
@@ -79,6 +80,7 @@ use photon_engine::{
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
 mod people;
+mod pick;
 mod settings_dialog;
 use settings_dialog::{SettingWrite, SettingWrote};
 
@@ -236,6 +238,14 @@ pub struct App {
     /// The system's video, which makes the posters and plays: its framework, or a test's
     /// stand-in.
     videos: Arc<dyn Videos>,
+    /// The system photon asks for a folder chosen and a message shown (`platform.rs`), or
+    /// a test's stand-in.
+    platform: Arc<dyn Platform>,
+    /// The system's folder picker, while it is open: one at a time, on a thread of its own.
+    picking: Option<pick::Picking>,
+    /// How many dialogs have been opened: a folder chosen is put only into the dialog that
+    /// asked for it.
+    dialog_openings: u64,
     /// The thread that makes them, from the first frame until the window closes - started
     /// there and not here so that a test can say what makes them (`with_videos`).
     poster_worker: Option<PosterWorker>,
@@ -699,8 +709,7 @@ impl App {
             cache_dir: dirs.cache_dir,
             workers: photon_core::thumbs::default_workers(),
         };
-        let engine = Engine::open(config, Arc::new(events))
-            .map_err(|err| format!("could not open the photon library: {err}"))?;
+        let engine = Engine::open(config, Arc::new(events)).map_err(|err| err.to_string())?;
         // The theme and the tile size, here and not by a task: this is before the first
         // frame, where a read is allowed and its answer is wanted. Read after it, a theme
         // pinned against the desktop's showed the desktop's for a frame at every launch -
@@ -1354,6 +1363,9 @@ impl App {
             wheel: system_wheel,
             notch,
             videos: Arc::new(crate::video::System),
+            platform: Arc::new(crate::platform::System),
+            picking: None,
+            dialog_openings: 0,
             poster_worker: None,
             checking,
             edits,
@@ -1418,6 +1430,13 @@ impl App {
     /// for a test, which has none of its own to count on.
     pub fn with_videos(mut self, videos: Arc<dyn Videos>) -> Self {
         self.videos = videos;
+        self
+    }
+
+    /// Folders chosen by `platform` in place of the system's picker: for a test, which has
+    /// no portal or picker to count on.
+    pub fn with_platform(mut self, platform: Arc<dyn Platform>) -> Self {
+        self.platform = platform;
         self
     }
 
@@ -1838,6 +1857,7 @@ impl App {
     fn open_dialog(&mut self, dialog: Dialog) {
         self.dialog = Some(dialog);
         self.dialog_view.reset();
+        self.dialog_openings += 1;
     }
 
     /// Opens the dialog that names `target`: a face of the photo in the viewer, or the
@@ -2091,6 +2111,7 @@ impl App {
                 self.writes.push(Write::ExportApplyEdits { apply, was });
             }
             (Done::Size(max_edge), Some(Dialog::Export(export))) => export.size(max_edge),
+            (Done::Choose, Some(Dialog::Export(_))) => self.pick_folder(pick::PickFor::Export),
             // Closed before the export runs: it can take minutes, and a dialog over the
             // progress it started would hide it.
             (Done::Export, Some(Dialog::Export(export))) => {
@@ -2109,6 +2130,7 @@ impl App {
                 | Done::Tick(_)
                 | Done::Size(_)
                 | Done::Export
+                | Done::Choose
                 | Done::Settings(_),
                 _,
             ) => {}
@@ -3871,12 +3893,15 @@ impl App {
             Action::Panel(PanelButton::ShowHidden) => self.go(Step::View(View::Hidden)),
             Action::Panel(PanelButton::WatchedFolders) => self.open_settings(Section::Folders),
             Action::Settings => self.open_settings(Section::Folders),
-            // Settings' list of folders, with the field a folder is typed in open.
+            // The system's picker straight away, as the Svelte panel opens it, over
+            // Settings' list of folders with the field a folder is typed in open: where
+            // no picker can be opened, that is said, and the field is what is left.
             Action::Panel(PanelButton::AddFolder) => {
                 self.open_settings(Section::Folders);
                 if let Some(Dialog::Settings(settings)) = &mut self.dialog {
                     settings.adding = Some(Default::default());
                 }
+                self.pick_folder(pick::PickFor::AddFolder);
             }
             // Applied first and stored second, so the press is answered at once. A size
             // the library would not store is kept for this session all the same: going
@@ -4550,6 +4575,7 @@ impl eframe::App for App {
         let reported = self.take_answers(now) || reported;
         let reported = self.people_answers(ui.ctx(), now) || reported;
         let reported = self.more_answers(now) || reported;
+        let reported = self.picked(now) || reported;
         self.adopt();
         let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before

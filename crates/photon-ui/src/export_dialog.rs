@@ -5,9 +5,10 @@
 //! The photos are taken when the dialog opens: it has the keyboard, and a scan landing
 //! while it is open can change what the grid has selected.
 //!
-//! Where the Svelte dialog asks the system for a folder, this one has a field: the path
-//! is typed, or a folder is dropped on the window, until the picker of a later
-//! sub-project. A path is asked about as it changes, off the UI thread, and the answer
+//! The Svelte dialog asks the system for a folder; this one has the system's picker too
+//! (`platform.rs`) and a field it puts the folder chosen in: a path can be typed, or a
+//! folder dropped on the window, and where no picker can be opened the field is the way.
+//! A path is asked about as it changes, off the UI thread, and the answer
 //! counts only for the text it was asked for: the next letter is another question.
 //!
 //! There is no `busy` here: the dialog is closed in the frame it answers, and a closed

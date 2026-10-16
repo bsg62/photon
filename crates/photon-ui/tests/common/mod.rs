@@ -244,7 +244,11 @@ pub fn launch<'a>(library: &fixture::Fixture) -> Harness<'a> {
     egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, None).unwrap().with_videos(no_videos()))
+        .build_eframe(move |cc| {
+            (App::new(cc, dirs, None).unwrap())
+                .with_videos(no_videos())
+                .with_platform(no_platform())
+        })
 }
 
 /// Clicks the sidebar row called `label`, once it is drawn, and draws the frame the
@@ -306,6 +310,7 @@ pub fn over<'a>(
             App::new(cc, dirs, pictures)
                 .unwrap()
                 .with_videos(no_videos())
+                .with_platform(no_platform())
         });
     let driver = Driver::new(&harness);
     (harness, driver, made)
@@ -378,6 +383,44 @@ pub fn photo_ids(library: &fixture::Fixture) -> Vec<i64> {
 /// and `tests/playback.rs` are): over the system's own framework, a file called a video
 /// would be decoded on a runner that has decoders and not on one that has none, and each
 /// system calls the same unreadable file something else.
+/// A stand-in for the system's pickers that chooses nothing, as a cancel does. Every test
+/// of the whole application that can press "Choose…" or the empty library's "Add folder…"
+/// launches with one (or with a `Picker`): over the system's own, the press would open a
+/// real picker on whatever machine the test runs on.
+pub fn no_platform() -> std::sync::Arc<Picker> {
+    std::sync::Arc::new(Picker::default())
+}
+
+/// A stand-in for the system's folder picker: it answers `answer` (a cancel until told
+/// otherwise), says what it was asked under `asked`, and - while `held` holds a receiver -
+/// waits until it is sent to.
+pub struct Picker {
+    pub answer: std::sync::Mutex<photon_ui::platform::Picked>,
+    pub asked: std::sync::Mutex<Vec<String>>,
+    pub held: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl Default for Picker {
+    fn default() -> Self {
+        Self {
+            answer: std::sync::Mutex::new(photon_ui::platform::Picked::Cancelled),
+            asked: Default::default(),
+            held: Default::default(),
+        }
+    }
+}
+
+impl photon_ui::platform::Platform for Picker {
+    fn pick_folder(&self, title: &str) -> photon_ui::platform::Picked {
+        self.asked.lock().unwrap().push(title.to_owned());
+        let held = self.held.lock().unwrap().take();
+        if let Some(held) = held {
+            let _ = held.recv();
+        }
+        self.answer.lock().unwrap().clone()
+    }
+}
+
 pub fn no_videos() -> std::sync::Arc<dyn photon_ui::video::Videos> {
     use photon_ui::video::{Failure, Picture, Stream};
     struct Nothing;

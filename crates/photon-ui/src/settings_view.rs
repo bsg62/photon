@@ -1112,15 +1112,19 @@ impl SettingsView {
                     },
                     palette,
                 );
-                // The picker's button waits for the picker of a later sub-project.
-                if page.sees(choose_at) {
-                    button(
-                        ui,
-                        choose_at,
-                        Id::new("settings-add-choose"),
-                        CHOOSE,
-                        Look::Off,
-                    );
+                // The system's picker: the folder chosen is put in the field and asked
+                // about as a typed one is. Not dimmed while it is open, which would take
+                // the keyboard off it (`app/pick.rs`); while a path is being added, as
+                // the field takes nothing then.
+                let look = if adding.busy() {
+                    Look::Off
+                } else {
+                    Look::Plain
+                };
+                if page.sees(choose_at)
+                    && button(ui, choose_at, Id::new("settings-add-choose"), CHOOSE, look).clicked()
+                {
+                    page.asked.push(Asked::AddChoose);
                 }
                 let passed = matches!(adding.dest(), crate::export_dialog::Dest::Passed(_));
                 let look = if passed && !adding.busy() {
@@ -2146,10 +2150,10 @@ mod tests {
         assert_eq!(f.focused(), Some(add_id()), "the caret stays");
         assert_eq!(asked(f.key(Key::Escape)), [Asked::AddClose]);
         f.frame(Vec::new());
-        // The picker's button waits for the picker.
+        // "Choose…" asks for the system's picker.
         assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
         f.frame(Vec::new());
-        assert_eq!(click(&mut f, CHOOSE), []);
+        assert_eq!(click(&mut f, CHOOSE), [Asked::AddChoose]);
     }
 
     fn tag(name: &str, total: i64) -> TagCount {

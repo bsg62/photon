@@ -45,6 +45,7 @@ pub mod nav;
 pub mod people_page;
 pub mod people_view;
 pub mod person_picker;
+pub mod platform;
 pub mod playback;
 pub mod posters;
 pub mod probe;

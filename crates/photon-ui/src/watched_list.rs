@@ -6,9 +6,9 @@
 //! offline, or has never been scanned, has no section in the grid and so no row in the
 //! sidebar: this list is the only place it can be rescanned or removed.
 //!
-//! The Svelte dialog adds a folder through the system's folder picker; this one has a
-//! field for its path, with the picker's button beside it in its place and taking no press
-//! until a later sub-project brings the picker - the export's field's rules
+//! The Svelte dialog adds a folder through the system's folder picker; this one has that
+//! (`platform.rs`) and a field for its path beside it, where a folder chosen is put - the
+//! one way to add a folder where no picker can be opened - with the export's field's rules
 //! (`export_dialog.rs`): asked about as it is typed, off the window's thread, an answer
 //! counting only for the text the field still holds, and what was said of the last path
 //! standing while the next is asked about.

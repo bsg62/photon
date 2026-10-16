@@ -609,6 +609,7 @@ impl App {
                 Asked::RemoveFolder { id, path } => {
                     settings.ask(Question::RemoveFolder { id, path });
                 }
+                Asked::AddChoose => self.pick_folder(super::pick::PickFor::AddFolder),
                 Asked::AddOpen => {
                     settings.adding = Some(Default::default());
                 }

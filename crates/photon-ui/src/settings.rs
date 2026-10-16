@@ -244,6 +244,8 @@ pub enum Asked {
     },
     /// "Add folder…": the field a path is typed in opens.
     AddOpen,
+    /// "Choose…" beside the field: the system's folder picker.
+    AddChoose,
     /// What the field holds now.
     AddPath(String),
     /// The path that has passed is to be added: Enter, or "Add".
