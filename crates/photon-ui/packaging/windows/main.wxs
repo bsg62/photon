@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  photon-native's MSI: Tauri's template (crates/tauri-bundler/src/bundle/windows/msi/main.wxs at
+  photon's MSI: Tauri's template (crates/tauri-bundler/src/bundle/windows/msi/main.wxs at
   tag tauri-cli-v2.11.4, MIT/Apache-2.0) as photon's Tauri MSI used it, with Tauri's own
   placeholders taken out - built by `xtask package msi` with WiX 3, the toolset Tauri's bundler
   uses - and what photon does not use left out: deep links, file associations, the updater's
@@ -15,7 +15,7 @@
     it again;
   - the binary installed as photon.exe, where the Tauri MSI put its own.
 
-  Preprocessor variables, given by xtask: Version, Binary (photon-native.exe), Icon
+  Preprocessor variables, given by xtask: Version, Binary (photon.exe), Icon
   (icon.ico), LicenseRtf (the licence as RTF).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">

@@ -4,7 +4,7 @@ use crate::dirs::{self, Dirs};
 use std::path::PathBuf;
 
 pub const USAGE: &str =
-    "usage: photon-native [--data-dir DIR] [--cache-dir DIR] [--fullscreen] [--probe FILE]
+    "usage: photon [--data-dir DIR] [--cache-dir DIR] [--fullscreen] [--probe FILE]
 
   --data-dir DIR    the directory that holds library.db
   --cache-dir DIR   the directory that holds thumbs/

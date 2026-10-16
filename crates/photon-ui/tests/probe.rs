@@ -2,7 +2,7 @@
 //! built to be measured, the application over it, and the programme run to its report on a
 //! clock that is the harness's own.
 //!
-//! What this cannot say is how long a frame takes on a screen. That is `photon-native
+//! What this cannot say is how long a frame takes on a screen. That is `photon
 //! --probe`, run by a person, which needs a compositor.
 
 use eframe::egui::{self, pos2, vec2};
@@ -304,7 +304,7 @@ fn at(sorted: &[f64], quantile: f64) -> f64 {
 // harness's clock and times what the application does for each frame - its own pass, and,
 // for every tenth frame, the pass with the frame drawn off screen and read back, which is
 // more than a window ever does. It says nothing about the cadence a compositor allows;
-// that is `photon-native --probe` in a window.
+// that is `photon --probe` in a window.
 //
 //   cargo run --release -p photon-ui --example fixture -- --out target/gate-fixture
 //   PHOTON_GATE_FIXTURE=$PWD/target/gate-fixture \

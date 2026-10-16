@@ -1,25 +1,47 @@
-name: native-packages
+name: release
 
 # photon's installers (`xtask package`; spec 2026-10-16-photon-native-platform-design.md,
-# decision 8), uploaded as artifacts - never a release: the release workflow is the
-# switch-over's next pull request.
+# decision 8), built and read on every platform. A tag makes them a draft release; anything
+# else leaves them as the run's artifacts.
 on:
   push:
-    branches: [native-ui]
+    tags: ['v*']
+    # The installers of the branch, to try before a release - and on `main` the caches a
+    # tag's run starts from, which can read only its own and the default branch's.
+    branches: [main, native-ui]
     paths:
       - 'crates/**'
       - 'Cargo.lock'
-      - '.github/workflows/native-packages.yml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+  # A tag-only job cannot be tried before the tag that needs it, so a change to how the
+  # installers are made builds and reads them on its pull request. The release job stays
+  # tag-only.
   pull_request:
     paths:
-      - '.github/workflows/native-packages.yml'
+      - '.github/workflows/release.yml'
       - 'crates/photon-ui/packaging/**'
+      - 'crates/photon-ui/icons/**'
       - 'crates/photon-ui/build.rs'
+      - 'crates/photon-ui/Cargo.toml'
       - 'crates/xtask/src/package.rs'
-  workflow_dispatch:
 
 jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: The version is the tag's
+        run: |
+          cargo run -p xtask -- versions --tag "${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}"
+          cargo run -p xtask -- metadata
+
   linux:
+    needs: version-check
     # The oldest Ubuntu the runners have: the glibc the binary is built against is the
     # oldest one it runs on, and the AppImage carries GStreamer's libraries from here.
     runs-on: ubuntu-22.04
@@ -33,13 +55,13 @@ jobs:
           sudo apt-get remove -y libunwind-14-dev || true
           sudo apt-get install -y nasm dpkg-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
-      # Caches are saved from native-ui alone, as ci.yml's are (the 10 GB cap).
+      # Caches are saved from main and native-ui alone, as ci.yml's are (the 10 GB cap): a
+      # tag's run restores main's, the only branch's a tag can read, so main saves them too.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
-      - run: cargo run -p xtask -- versions
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
-      - run: cargo run -p xtask -- package deb --binary target/release/photon-native --out dist
+      - run: cargo run -p xtask -- package deb --binary target/release/photon --out dist
       - name: The .deb installs what it says and links nothing it does not declare
         run: |
           set -euo pipefail
@@ -55,7 +77,7 @@ jobs:
           ldd "$bin"
           if ldd "$bin" | grep -q "not found"; then echo "::error::unresolved libraries"; exit 1; fi
           # No system library the rule forbids: GTK would be one.
-          if ldd "$bin" | grep -qi gtk; then echo "::error::photon-native links GTK"; exit 1; fi
+          if ldd "$bin" | grep -qi gtk; then echo "::error::photon links GTK"; exit 1; fi
           grep -qx 'Name=photon' "$RUNNER_TEMP"/deb/usr/share/applications/*.desktop
           test -s "$RUNNER_TEMP/deb/usr/share/icons/hicolor/256x256/apps/io.github.bsg62.photon.png"
       - name: linuxdeploy
@@ -66,7 +88,7 @@ jobs:
           echo "LINUXDEPLOY=$RUNNER_TEMP/linuxdeploy" >> "$GITHUB_ENV"
           # No FUSE on the runner.
           echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
-      - run: cargo run -p xtask -- package appimage --binary target/release/photon-native --out dist
+      - run: cargo run -p xtask -- package appimage --binary target/release/photon --out dist
       - name: The AppImage names photon and carries no GStreamer plugin
         run: |
           set -euo pipefail
@@ -79,13 +101,14 @@ jobs:
           fi
       - uses: actions/upload-artifact@v5
         with:
-          name: photon-native-linux
+          name: photon-linux
           path: |
             dist/*.deb
             dist/*.AppImage
           if-no-files-found: error
 
   macos:
+    needs: version-check
     strategy:
       fail-fast: false
       matrix:
@@ -107,11 +130,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --target ${{ matrix.target }} ${{ matrix.features }}
       - run: >
           cargo run -p xtask -- package dmg --arch ${{ matrix.arch }}
-          --binary target/${{ matrix.target }}/release/photon-native --out dist
+          --binary target/${{ matrix.target }}/release/photon --out dist
       - name: The disk image holds photon.app, signed
         run: |
           set -euo pipefail
@@ -124,11 +147,12 @@ jobs:
           hdiutil detach "$RUNNER_TEMP/mnt"
       - uses: actions/upload-artifact@v5
         with:
-          name: photon-native-macos-${{ matrix.arch }}
+          name: photon-macos-${{ matrix.arch }}
           path: dist/*.dmg
           if-no-files-found: error
 
   windows:
+    needs: version-check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -136,7 +160,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
       # Media Foundation's DLLs are delay-loaded (`crates/photon-ui/build.rs`), or a Windows
       # "N" edition without them could not start photon at all.
@@ -144,7 +168,7 @@ jobs:
       - name: Media Foundation is delay-loaded
         shell: pwsh
         run: |
-          $imports = dumpbin /imports target\release\photon-native.exe | Out-String
+          $imports = dumpbin /imports target\release\photon.exe | Out-String
           $at = $imports.IndexOf('delay load imports', [StringComparison]::OrdinalIgnoreCase)
           if ($at -lt 0) { Write-Output '::error::no delay-loaded imports'; exit 1 }
           foreach ($dll in 'mfplat.dll', 'mfreadwrite.dll') {
@@ -158,7 +182,7 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile "$env:RUNNER_TEMP\wix.zip"
           Expand-Archive "$env:RUNNER_TEMP\wix.zip" -DestinationPath "$env:RUNNER_TEMP\wix"
           echo "$env:RUNNER_TEMP\wix" >> $env:GITHUB_PATH
-      - run: cargo run -p xtask -- package msi --binary target\release\photon-native.exe --out dist
+      - run: cargo run -p xtask -- package msi --binary target\release\photon.exe --out dist
       # The MSI's own tables: nobody can click through one here.
       - name: The MSI replaces the Tauri one, installs photon.exe, and asks for its shortcut
         shell: pwsh
@@ -206,9 +230,58 @@ jobs:
           if ($failed) { exit 1 }
       - uses: actions/upload-artifact@v5
         with:
-          name: photon-native-windows
+          name: photon-windows
           path: dist/*.msi
           if-no-files-found: error
+
+  release:
+    # Tag pushes only: a pull request, a push to a branch or a workflow_dispatch rehearsal
+    # (one run against a tag ref among them) builds and reads, and publishes nothing.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          # `sha256sum` and `gh release create` take files and choke on a directory. Every
+          # artifact arrives flat today (each uploads from `dist/` alone, whose root the
+          # upload drops); flattened all the same, so that one uploaded from two folders
+          # does not fail the release it was meant to be in.
+          find . -mindepth 2 -type f -exec mv -t . {} +
+          find . -mindepth 1 -type d -delete
+          ls -la
+          # Publishing an incomplete release is worse than publishing late, and unlike a
+          # draft it cannot be quietly corrected once people have the link.
+          for ext in deb AppImage msi; do
+            test "$(ls ./*."$ext" | wc -l)" -eq 1 || { echo "::error::expected one .$ext"; exit 1; }
+          done
+          test "$(ls ./*.dmg | wc -l)" -eq 2 \
+            || { echo "::error::expected two .dmg, one per macOS architecture"; exit 1; }
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # `--generate-notes` lists the pull requests merged since the previous tag, under
+          # the explicit `--notes`; the explicit `--title` wins over the generated one.
+          gh release create "$TAG" \
+            --draft \
+            --generate-notes \
+            --title "photon $TAG" \
+            --notes "Unsigned installers. See the README for the security warnings each OS shows, and how to get past them." \
+            artifacts/*
 
   summary:
     needs: [linux, macos, windows]
@@ -217,10 +290,10 @@ jobs:
       - name: What these are
         run: |
           {
-            echo "photon-native's installers, built from this commit as artifacts - not a release."
+            echo "photon's installers, built from this commit. A tag makes them a draft release;"
+            echo "on any other run they are this run's artifacts alone."
             echo
             echo "The MSI has the Tauri MSI's upgrade code: installed over the Tauri photon of the"
             echo "same version or a lower one it REMOVES the Tauri program (photon's library is left"
-            echo "alone), and over a higher one it is refused. To keep the Tauri photon, try the MSI"
-            echo "on a machine where it is not installed."
+            echo "alone), and over a higher one it is refused."
           } >> "$GITHUB_STEP_SUMMARY"

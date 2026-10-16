@@ -52,7 +52,7 @@ pub fn complete(out: &Path) -> Option<usize> {
     Some(said["photos"].as_u64()? as usize)
 }
 
-/// Where a fixture is, in both spellings: the directories photon-native is given, and the
+/// Where a fixture is, in both spellings: the directories photon is given, and the
 /// two homes the Tauri photon is pointed at (`XDG_DATA_HOME`, `XDG_CACHE_HOME`), under
 /// which it resolves the same directories by its identifier.
 #[derive(Clone, Debug, PartialEq, Eq)]

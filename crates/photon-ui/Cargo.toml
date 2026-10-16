@@ -13,10 +13,9 @@ authors.workspace = true
 # where twenty-five ran one after another, each ending on its slowest few.
 autotests = false
 
-# `photon` was the Tauri shell's binary; this one keeps the name it was built under, beside
-# that one, until the switch-over's rename.
+# The package is photon-ui; the program is photon, as the Tauri shell's was before it.
 [[bin]]
-name = "photon-native"
+name = "photon"
 path = "src/main.rs"
 
 [[test]]

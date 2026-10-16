@@ -89,7 +89,7 @@ Four crates:
   watcher. No UI runtime is a dependency, and `the_engine_depends_on_no_ui_runtime` reads
   its manifest to keep it so.
 - **`photon-ui`** - the window, on egui and wgpu (below, "The window"). Its binary is
-  `photon-native`.
+  `photon`.
 - **`xtask`** - repository chores, `native-shot`, `package` (the installers) and
   `fixture-library`. Binary only, no `lib.rs`.
 
@@ -1813,7 +1813,7 @@ file of this computer's (`smb://`) goes into the field as it is, which says it i
 whole path. Where photon has no window to say something in - the library that could not
 be opened - it says it in the system's message box (`platform::show_error`: `MessageBoxW`
 on Windows, since rfd's is a task dialog under the workspace's unified features and
-needs Common Controls 6, which photon-native has no manifest for; rfd's on macOS; `zenity`
+needs Common Controls 6, which photon has no manifest for; rfd's on macOS; `zenity`
 on Linux where that is installed), on the standard error and in the log, in the Tauri
 photon's words (`platform::startup_failed`).
 **The system is one trait, `Platform`, and a test stands in for it** (`App::with_platform`;
@@ -2975,7 +2975,7 @@ colour since sub-project 1. And the splitter is lit under the pointer, while it 
 when the keyboard brought the focus to it, not while it merely still has the focus a
 press gave it (`Shell::pointer_focus`): egui has no `:focus-visible` of its own.
 
-**The installers are built by `xtask package`, in `native-packages.yml`, as artifacts** (spec `2026-10-16-photon-native-platform-design.md`,
+**The installers are built by `xtask package`, in `release.yml`** (spec `2026-10-16-photon-native-platform-design.md`,
 decision 8): a `.deb` (`dpkg-deb`, its `Depends` read off the binary by `dpkg-shlibdeps`),
 an AppImage (`linuxdeploy`, which carries the libraries the binary links - GStreamer's
 among them, never its plugins; `AppRun` points GStreamer at the host's), a `.dmg` for each
@@ -3048,7 +3048,7 @@ no-break spaces are written as plain ones (`plain`): the faces photon draws with
 system's, and not each has that glyph. Folder names keep `natural_cmp`, the grid's own order
 (the spec says why). The words photon writes itself stay English.
 
-**`photon-native --probe` runs a scroll programme over a library and reports how each frame
+**`photon --probe` runs a scroll programme over a library and reports how each frame
 went** (`probe.rs`, a state module), over `xtask fixture-library`'s 300,000 rows on a drive
 recorded as unplugged, every thumbnail cached, so the engine has nothing to do at launch.
 Until the switch-over `xtask grid-gate` ran it against the Svelte grid given the same
@@ -3182,9 +3182,12 @@ reviewer's copy, and the gate's own worktree running this tree's xtask).
 The version lives in the workspace's `Cargo.toml` alone, plus the regenerated `Cargo.lock`:
 bump it, regenerate the lock in place with `cargo update --workspace --offline` (a release
 commit touches exactly two files), run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit
-as `chore(release): X.Y.Z`, then push the tag. `release.yml` built the Tauri photon and went
-with it; the window's release workflow is the switch-over's next pull request, and until it
-lands `native-packages.yml` builds the installers as artifacts and no tag makes a release.
+as `chore(release): X.Y.Z`, then push the tag. The tag push runs `.github/workflows/release.yml`,
+which builds the installers on every platform, reads them, and creates a **draft** release;
+verify the six artifacts attached (two `.dmg`, `.deb`, AppImage, `.msi`, `SHA256SUMS`) before
+publishing it. The same workflow builds them as a run's artifacts, and publishes nothing, on
+a push to `main` or `native-ui`, on a pull request that changes how they are made, and by
+hand.
 
 Release commits go straight to `main`. A schema bump makes the release a minor. The generated
 notes are a list of PR titles; replace them with hand-written ones in the shape of v0.14.0 and

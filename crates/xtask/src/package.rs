@@ -1,15 +1,15 @@
-//! `xtask package <kind>`: photon-native's installers, built without Tauri's bundler
+//! `xtask package <kind>`: photon's installers, built without Tauri's bundler
 //! (spec `2026-10-16-photon-native-platform-design.md`, decision 8). The files an installer
 //! carries - the desktop entry, the Debian control file, `Info.plist`, the licence as RTF,
 //! the AppImage's `AppRun` - are written by pure functions, tested here as text; the tools
 //! that make the packages of them (`dpkg-deb`, `linuxdeploy`, `codesign` and `hdiutil`, WiX's
-//! `candle` and `light`) are run by the workflow that calls this, `native-packages.yml`, and
+//! `candle` and `light`) are run by the workflow that calls this, `release.yml`, and
 //! by nothing in the gate.
 //!
-//!   cargo run -p xtask -- package deb      --binary <photon-native> --out <dir>
-//!   cargo run -p xtask -- package appimage --binary <photon-native> --out <dir>
-//!   cargo run -p xtask -- package dmg      --binary <photon-native> --arch <aarch64|x86_64> --out <dir>
-//!   cargo run -p xtask -- package msi      --binary <photon-native.exe> --out <dir>
+//!   cargo run -p xtask -- package deb      --binary <photon> --out <dir>
+//!   cargo run -p xtask -- package appimage --binary <photon> --out <dir>
+//!   cargo run -p xtask -- package dmg      --binary <photon> --arch <aarch64|x86_64> --out <dir>
+//!   cargo run -p xtask -- package msi      --binary <photon.exe> --out <dir>
 //!
 //! The program is installed as `photon` (`photon.exe`), where the Tauri photon's installers
 //! put theirs, under the identifier the Tauri photon has: one replaces the other.
@@ -428,7 +428,7 @@ fn msi(
         .map_err(|err| format!("cannot read LICENSE: {err}"))?;
     write(&work.join("license.rtf"), &license_rtf(&licence))?;
     copy(&icons.join("icon.ico"), &work.join("icon.ico"))?;
-    copy(binary, &work.join("photon-native.exe"))?;
+    copy(binary, &work.join("photon.exe"))?;
     // WiX 3: where its installer sets WIX to, when it is there; else on the PATH, where
     // the workflow puts the toolset's own binaries.
     let tool = |name: &str| {
@@ -441,7 +441,7 @@ fn msi(
             .args(["-nologo", "-arch", "x64", "-ext", "WixUIExtension"])
             .arg(format!("-dVersion={}", meta.version))
             .args([
-                "-dBinary=photon-native.exe",
+                "-dBinary=photon.exe",
                 "-dIcon=icon.ico",
                 "-dLicenseRtf=license.rtf",
             ])
