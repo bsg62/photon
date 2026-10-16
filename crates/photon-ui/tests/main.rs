@@ -6,6 +6,7 @@ mod common;
 
 mod app;
 mod band;
+mod clipboard;
 mod compare;
 mod compare_edges;
 mod copies;

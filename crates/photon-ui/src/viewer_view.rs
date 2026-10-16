@@ -88,6 +88,10 @@ pub enum ViewerAction {
     Info,
     /// A quarter turn: to the right (true), or to the left.
     Turn(bool),
+    /// Ctrl/Cmd+C: the photo on the clipboard.
+    Copy,
+    /// A click on the caption in the bar: its file name on the clipboard.
+    CopyName,
     /// Every turn and the crop taken off again.
     Original,
     /// The crop tool, opened.
@@ -142,6 +146,10 @@ pub struct ViewerData<'a> {
     pub message: Option<Message<'a>>,
     /// The line in the bar: the file's name, its time, its size, its place.
     pub caption: &'a str,
+    /// What the line says in its place for a moment after a click copied the file name:
+    /// "Copied". The bar keeps the width of the line, so nothing in it moves under the
+    /// pointer - the second click of a double click on the name turned the photo.
+    pub caption_said: Option<&'a str>,
     /// The photo's own caption, where it has one.
     pub photo_caption: Option<&'a str>,
     /// The photo's width in pixels as it is seen, as the library says it; nought while
@@ -159,6 +167,9 @@ pub struct ViewerData<'a> {
     /// in its bar at all. Where it cannot, the tools are in their places and take no
     /// press, and their keys do nothing.
     pub editable: bool,
+    /// Whether Ctrl/Cmd+C copies the photo: a photo the library has said is one, and no
+    /// video.
+    pub copyable: bool,
     /// Whether it has been turned or cropped: "Original" is offered.
     pub edited: bool,
     /// Whether the info panel is open: the photo is then fitted beside it, and its
@@ -871,10 +882,19 @@ impl ViewerView {
         // While a keyword is being typed the keys are its field's: `h` is a letter, the
         // arrows move the caret, and Escape leaves the field and closes nothing.
         let typing = self.info.typing();
+        let held = ui.input(|input| input.modifiers);
         let over_panel =
             pointer.is_some_and(|at| controls.panel.is_some_and(|panel| panel.contains(at)));
         for event in &events {
             match event {
+                // Ctrl/Cmd+C reaches egui as a copy and not as a key (egui-winit turns
+                // `Key::C` with the command modifier into it): the photo on the
+                // clipboard - but not while a keyword is typed, whose field copies its
+                // own text.
+                // (Not with Shift or Alt, as in the grid.)
+                Event::Copy if !typing && data.copyable && !held.shift && !held.alt => {
+                    actions.push(ViewerAction::Copy);
+                }
                 Event::Key { pressed: true, .. } if typing => {}
                 Event::Key {
                     key,
@@ -1952,14 +1972,25 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<Vi
     if room > 0.0 {
         let painter = ui.painter().with_clip_rect(rect);
         let caption = Rect::from_min_max(pos2(left, rect.top()), pos2(left + room, rect.bottom()));
-        ui.interact(caption, Id::new("viewer-caption"), Sense::hover())
-            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, data.caption));
+        // A click copies the file name, as the Svelte caption's does. No stop of the Tab
+        // key, as no control of the viewer is (`Sense::CLICK`).
+        let sense = if data.caption.is_empty() {
+            Sense::hover()
+        } else {
+            Sense::CLICK
+        };
+        let words = data.caption_said.unwrap_or(data.caption);
+        let response = ui.interact(caption, Id::new("viewer-caption"), sense);
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, words));
+        if response.clicked() {
+            pressed.push(ViewerAction::CopyName);
+        }
         text::paint_line(
             ui,
             &painter,
             (left, rect.center().y),
             room,
-            data.caption,
+            words,
             font,
             color(DARK.text_dim),
         );
@@ -2055,12 +2086,14 @@ mod tests {
         preview: Option<TextureHandle>,
         message: Option<(&'static str, bool)>,
         caption: String,
+        caption_said: Option<&'static str>,
         photo_caption: Option<&'static str>,
         starred: Option<bool>,
         can_prev: bool,
         can_next: bool,
         info_open: bool,
         editable: bool,
+        copyable: bool,
         edited: bool,
         /// What the library has said of the photo, for the open panel.
         item: Option<photon_engine::commands::ViewerItem>,
@@ -2115,12 +2148,14 @@ mod tests {
                 preview: None,
                 message: None,
                 caption: "a.jpg · Jul 14, 2026, 12:30 PM · 4000 × 3000 · 2.4 MB (1 / 3)".to_owned(),
+                caption_said: None,
                 photo_caption: None,
                 starred: Some(false),
                 can_prev: true,
                 can_next: true,
                 info_open: false,
                 editable: true,
+                copyable: true,
                 edited: false,
                 item: None,
                 width: 0,
@@ -2190,6 +2225,7 @@ mod tests {
                 preview: self.preview.as_ref(),
                 message: (self.message).map(|(text, over)| Message { text, over }),
                 caption: &self.caption,
+                caption_said: self.caption_said,
                 photo_caption: self.photo_caption,
                 starred: self.starred,
                 width: self.width,
@@ -2198,6 +2234,7 @@ mod tests {
                 can_next: self.can_next,
                 info_open: self.info_open,
                 editable: self.editable,
+                copyable: self.copyable,
                 edited: self.edited,
                 info: (self.item.as_ref()).map(|item| InfoData {
                     item,
@@ -4457,10 +4494,38 @@ mod tests {
         f
     }
 
-    // A click on the bar beside its buttons names no face under it. The bar's caption
-    // is a widget that senses no click, and its glass is no widget at all: egui hands
-    // the click to the outline beneath, and it is the view that says the bar was in the
-    // way.
+    // A double click on the file name copies it twice and presses nothing else: "Copied"
+    // stands in its place with the bar as wide as the line was, so nothing moves under the
+    // pointer. Laid out for the shorter word, the bar shrank and the second click turned
+    // the photo, cropped it or started a slideshow, by where on the name it fell.
+    #[test]
+    fn a_double_click_on_the_caption_presses_nothing_but_the_caption() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let caption = (f.texts.iter())
+            .find(|(text, _)| text.starts_with("a.jpg"))
+            .map(|(_, at)| *at)
+            .expect("the bar's caption");
+        for x in [5.0, 40.0, 80.0, 120.0] {
+            let at = pos2(caption.left() + x, caption.center().y);
+            f.caption_said = None;
+            f.frame(Vec::new());
+            assert_eq!(f.click(at), [ViewerAction::CopyName], "{x}");
+            f.caption_said = Some("Copied");
+            f.frame(Vec::new());
+            assert!(f.drew("Copied").is_some());
+            assert_eq!(
+                f.click(at),
+                [ViewerAction::CopyName],
+                "{x}, the second click"
+            );
+        }
+    }
+
+    // A click on the bar beside its buttons names no face under it: a click on the
+    // caption copies its file name, and the bar's glass is no widget at all - egui would
+    // hand a click there to the outline beneath, and it is the view that says the bar
+    // was in the way.
     #[test]
     fn a_click_on_the_bars_caption_over_an_outline_names_no_face() {
         let mut f = square_photo();
@@ -4470,7 +4535,11 @@ mod tests {
             .expect("the bar's caption");
         let face = Rect::from_min_max(pos2(195.6, 545.6), pos2(619.4, 676.0));
         assert!(face.contains(caption), "{caption:?} is over the face");
-        assert_eq!(f.click(caption), [], "a click on the bar's words");
+        assert_eq!(
+            f.click(caption),
+            [ViewerAction::CopyName],
+            "a click on the bar's words"
+        );
     }
 
     // The same for a control that is in its place and takes no press: the button for the
@@ -4719,6 +4788,20 @@ mod tests {
             - (without[4].center().x - without[3].center().x);
         assert!(moved > word.width() + TOOL_GAP, "{moved}");
         assert_eq!(f.click(word.center()), [ViewerAction::Original]);
+    }
+
+    // Ctrl/Cmd+C - a copy to egui, not a key - copies the photo; but not a video, of which
+    // the clipboard's one picture cannot be made, nor a photo nothing is known of yet.
+    #[test]
+    fn ctrl_c_copies_a_photo_and_nothing_else() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        assert_eq!(f.frame(vec![Event::Copy]), [ViewerAction::Copy]);
+        let shift = Event::ModifiersChanged(Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(f.frame(vec![shift, Event::Copy]), [], "with Shift");
+        f.frame(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+        f.copyable = false;
+        assert_eq!(f.frame(vec![Event::Copy]), []);
     }
 
     // A photo that cannot be edited - nothing is known of it yet, it has left the view,

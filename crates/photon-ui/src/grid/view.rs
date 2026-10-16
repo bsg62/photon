@@ -166,6 +166,8 @@ pub enum Ask {
     Hide,
     /// `C`: compare it, two to four photos side by side.
     Compare,
+    /// Ctrl/Cmd+C: copy the one photo selected to the clipboard.
+    Copy,
 }
 
 /// The keys of this frame that are the grid's, in the order they were pressed, each with
@@ -178,6 +180,17 @@ pub enum Ask {
 fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
     let mut keys = Vec::new();
     for event in &input.events {
+        // Ctrl/Cmd+C reaches egui as a copy and not as a key (`Key::C` with the command
+        // modifier, which egui-winit turns into `Event::Copy` and nothing else) - and so
+        // do Ctrl/Cmd+Shift+C and Alt with it, which copy no photo, as the Svelte grid's
+        // rule has it. Its repeat cannot be told from the event: a held key copies again
+        // once each copy is done.
+        if *event == Event::Copy {
+            if !input.modifiers.shift && !input.modifiers.alt {
+                keys.push((GridKey::Ask(Ask::Copy), false));
+            }
+            continue;
+        }
         let Event::Key {
             key,
             physical_key,

@@ -41,8 +41,7 @@ pub enum TileAction {
 
 impl TileAction {
     /// Whether the item works yet. The others are in their place and take no press: what
-    /// they open is a later sub-project's (the viewer's compare, the platform's file
-    /// manager and clipboard), and a menu that grew as they arrived would move every
+    /// they open is a later sub-project's (the platform's file manager), and a menu that grew as they arrived would move every
     /// item under a hand that had learnt where it was.
     pub fn works(&self) -> bool {
         matches!(
@@ -58,6 +57,7 @@ impl TileAction {
                 | Self::AddToAlbum(_)
                 | Self::Compare
                 | Self::ShowCopies(_)
+                | Self::CopyPhoto
         )
     }
 }
@@ -471,7 +471,7 @@ mod tests {
             [
                 "Reveal in file manager [Ctrl+Shift+R] (off)",
                 "Open in default app (off)",
-                "Copy photo [Ctrl+C] (off)",
+                "Copy photo [Ctrl+C]",
                 "---",
                 "Star photo [.]",
                 "Hide photo [H]",
@@ -517,7 +517,7 @@ mod tests {
         w.mac = true;
         let lines = w.lines();
         assert_eq!(lines[0], "Reveal in file manager [⌘+Shift+R] (off)");
-        assert_eq!(lines[2], "Copy photo [⌘+C] (off)");
+        assert_eq!(lines[2], "Copy photo [⌘+C]");
     }
 
     // Several photos can be part starred, so both are offered; the key's hint is beside
@@ -715,14 +715,11 @@ mod tests {
             TileAction::RemoveKeyword,
             TileAction::AddToPerson,
             TileAction::Export,
+            TileAction::CopyPhoto,
         ] {
             assert!(works.works(), "{works:?}");
         }
-        for waits in [
-            TileAction::Reveal,
-            TileAction::OpenInApp,
-            TileAction::CopyPhoto,
-        ] {
+        for waits in [TileAction::Reveal, TileAction::OpenInApp] {
             assert!(!waits.works(), "{waits:?}");
         }
     }

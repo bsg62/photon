@@ -1,5 +1,6 @@
 //! What photon asks of the system it runs on, beyond the window: a folder chosen in the
-//! system's own picker, and - where photon has no window to say it in - a message box.
+//! system's own picker, a picture put on the clipboard, and - where photon has no window
+//! to say it in - a message box.
 //! The rest of the platform's calls (the clipboard, the file manager) join this as they
 //! are built (spec `2026-10-16-photon-native-platform-design.md`).
 //!
@@ -36,12 +37,22 @@ pub enum Picked {
 pub trait Platform: Send + Sync + 'static {
     /// A folder chosen in the system's picker, under `title`.
     fn pick_folder(&self, title: &str) -> Picked;
+
+    /// A picture, `width` by `height` in RGBA, put on the clipboard; or why not.
+    fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String>;
 }
 
 /// The system photon runs on.
-pub struct System;
+#[derive(Default)]
+pub struct System {
+    clipboard: Clipboard,
+}
 
 impl Platform for System {
+    fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String> {
+        self.clipboard.copy_image(width, height, rgba)
+    }
+
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn pick_folder(&self, title: &str) -> Picked {
         match rfd::FileDialog::new().set_title(title).pick_folder() {
@@ -60,6 +71,82 @@ impl Platform for System {
             }
         }
     }
+}
+
+/// The clipboard, kept for the session by a thread of its own. On Linux what was copied
+/// lives only as long as the clipboard that copied it, unless a clipboard manager takes it
+/// over: one made for each copy and let go of with it would have lost every copy. A thread,
+/// and not the window's own clipboard (`Context::copy_image`): arboard's X11 side makes a
+/// PNG of the picture as it is put there, a frame's worth of work many times over.
+#[derive(Default)]
+struct Clipboard {
+    jobs: std::sync::Mutex<Option<std::sync::mpsc::Sender<Job>>>,
+}
+
+/// A picture to put on the clipboard, and where to say how it went.
+struct Job {
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+    done: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
+impl Clipboard {
+    fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String> {
+        let (done, answer) = std::sync::mpsc::channel();
+        let job = Job {
+            width,
+            height,
+            rgba,
+            done,
+        };
+        let sent = {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let jobs = jobs.get_or_insert_with(keeper);
+            jobs.send(job)
+        };
+        if sent.is_err() {
+            return Err(COPY_FAILED.to_owned());
+        }
+        answer
+            .recv()
+            .unwrap_or_else(|_| Err(COPY_FAILED.to_owned()))
+    }
+}
+
+/// What is said when the clipboard's thread is gone.
+const COPY_FAILED: &str = "Couldn't put the photo on the clipboard.";
+
+/// The thread that keeps the clipboard: made at the first copy, and kept for the session.
+fn keeper() -> std::sync::mpsc::Sender<Job> {
+    let (jobs, queue) = std::sync::mpsc::channel::<Job>();
+    let spawned = std::thread::Builder::new()
+        .name("clipboard".to_owned())
+        .spawn(move || {
+            let mut clipboard = None;
+            for job in queue {
+                let result = (match &mut clipboard {
+                    Some(clipboard) => Ok(clipboard),
+                    None => arboard::Clipboard::new().map(|made| clipboard.insert(made)),
+                })
+                .and_then(|clipboard| {
+                    clipboard.set_image(arboard::ImageData {
+                        width: job.width,
+                        height: job.height,
+                        bytes: job.rgba.into(),
+                    })
+                })
+                .map_err(|err| format!("Couldn't put the photo on the clipboard: {err}"));
+                let _ = job.done.send(result);
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::error!(%err, "the clipboard's thread could not start");
+    }
+    jobs
 }
 
 /// How long the portal is given to open its picker.
