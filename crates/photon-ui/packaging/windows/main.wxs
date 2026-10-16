@@ -83,7 +83,7 @@
                 <Component Id="ApplicationShortcutDesktop" Guid="*">
                     <!-- Only when asked for. -->
                     <Condition>DESKTOPSHORTCUT</Condition>
-                    <Shortcut Id="ApplicationDesktopShortcut" Name="photon" Description="Runs photon" Target="[!Path]" WorkingDirectory="INSTALLDIR" />
+                    <Shortcut Id="ApplicationDesktopShortcut" Name="photon" Description="Runs photon" Target="[!Path]" WorkingDirectory="INSTALLDIR" Icon="ProductIcon" />
                     <RemoveFolder Id="DesktopFolder" On="uninstall" />
                     <RegistryValue Root="HKCU" Key="Software\David Henning\photon" Name="Desktop Shortcut" Type="integer" Value="1" KeyPath="yes" />
                 </Component>

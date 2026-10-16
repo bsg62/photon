@@ -309,7 +309,7 @@ fn transform(parser: &AvifParser<'_>, img: DynamicImage) -> DynamicImage {
     };
     // Axis 1 flips left-to-right and axis 0 top-to-bottom: libavif's reading, and so the
     // browsers'. zenavif-parse's doc comment on `ImageMirror` says the opposite; the
-    // `imir.avif` fixture pins which one the webview will agree with.
+    // `imir.avif` fixture pins which one a browser will agree with.
     match parser.mirror().map(|m| m.axis) {
         Some(0) => img.flipv(),
         Some(1) => img.fliph(),

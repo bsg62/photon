@@ -73,7 +73,9 @@ simply appear as each folder is walked again, whether that scan is manual or tri
 the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt.
 
 **Video:** MP4, M4V, MOV and WebM, played by the system's own video support - photon ships
-no decoder. On macOS everything an iPhone records plays. On Windows, iPhone video (HEVC)
+no decoder. On macOS everything an iPhone records plays; WebM does not (macOS's own video
+support does not read it), and is listed without a preview. On Windows WebM plays where
+Microsoft's *Web Media Extensions* are installed. On Windows, iPhone video (HEVC)
 needs Microsoft's *HEVC Video Extensions* from the Store; without it such a video shows no
 preview and does not play. On Linux photon plays through GStreamer, and the `.deb` pulls in
 its good and libav plugins;

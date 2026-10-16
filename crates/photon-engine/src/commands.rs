@@ -175,10 +175,9 @@ pub struct ViewerItem {
     pub albums: Vec<i64>,
     /// Other files with the same bytes as this one.
     pub copies: Vec<ItemCopy>,
-    /// The size of the picture turned but not cropped - what `/image/<id>/uncropped`
-    /// serves and the crop tool draws its rectangle on. Sent rather than read off the
-    /// loaded image, because `naturalWidth` of an EXIF-rotated file is one more thing the
-    /// three webviews need not agree on.
+    /// The size of the picture turned but not cropped - what the crop tool draws its
+    /// rectangle on. Sent rather than read off a picture, which the tool may not have yet
+    /// (it stands on the cropped one until the whole is made).
     pub uncropped_width: u32,
     pub uncropped_height: u32,
     /// What the user has done to the photo in photon, or `None` for an untouched one.
@@ -562,9 +561,9 @@ pub fn remove_from_album(engine: &Engine, album_id: i64, item_ids: &[i64]) -> Cm
 
 /// The view setters below answer with the grid version that shows the view they moved to,
 /// or `None` when that cannot be vouched for (`Engine::rebuild_or_restore`). The rebuild's
-/// `library_changed` can reach the webview before this reply does, and the UI's listener
-/// has then already fetched the grid; the version is what lets the setter's own refresh
-/// see that and not fetch it a second time.
+/// `library_changed` can reach the window before this reply does, and the grid may then
+/// already be on screen; the version is what tells the window which grid the step built
+/// (`nav::Landed`).
 pub fn set_grid_view(engine: &Engine, view: GridView) -> CmdResult<Option<u64>> {
     Ok(engine.set_view(view)?)
 }
@@ -1043,8 +1042,7 @@ impl From<photon_core::edit::ClipboardPicture> for Pixels {
 
 /// The photo at full size, as shown: decoded whole, turned upright, then turned and
 /// cropped by its edit - or, with `uncropped`, turned and not cropped, which is the
-/// picture the crop tool draws its rectangle on. What `/image/<id>` is to the web view,
-/// without the encode: the native window draws the pixels.
+/// picture the crop tool draws its rectangle on. As pixels: the window draws them.
 ///
 /// `fit` is the box the viewer fits the photo into, in pixels: the answer then holds a
 /// copy scaled to it as well, which is what is drawn while the photo is fitted.
@@ -1253,7 +1251,7 @@ pub fn item_path(engine: &Engine, id: i64) -> CmdResult<PathBuf> {
 
 /// The web page that shows where a photo was taken, or `None` for a photo with no position.
 ///
-/// Built here from the stored position rather than taken from the webview, so the one URL
+/// Built here from the stored position rather than taken from the window, so the one URL
 /// photon ever hands the system's browser is one it wrote itself. OpenStreetMap, because it
 /// needs no key and no account; the marker and the map centre are the same point. Six
 /// decimals is about a decimetre, finer than any camera's fix.
@@ -1633,7 +1631,7 @@ mod tests {
         assert!(all(&copied, colour), "{:?}", &copied.rgba[..4]);
     }
 
-    // One full-size render at a time, with the export and the web view's: held, the
+    // One full-size render at a time, with the export's: held, the
     // viewer's picture waits.
     #[test]
     fn the_viewers_picture_waits_for_the_one_render_at_a_time() {

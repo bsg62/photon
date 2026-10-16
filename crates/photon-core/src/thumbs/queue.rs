@@ -36,8 +36,8 @@ struct State {
     /// behind the whole backlog until the waiter times out.
     ///
     /// A floor rather than an exemption, because the set is unbounded in both count and
-    /// time. A fast scroll abandons one request per tile it passes and the webview gives us
-    /// no cancellation signal, so hundreds of ids can sit here at `Visible` with low seqs for
+    /// time. A fast scroll abandons one request per tile it passes and nothing tells the
+    /// queue a request was given up, so hundreds of ids can sit here at `Visible` with low seqs for
     /// the full request timeout. Exempting them outranks the tiles that are actually on
     /// screen, and the workers decode invisible photos while the grid stays empty.
     waiters: HashMap<i64, usize>,
@@ -269,8 +269,8 @@ impl ThumbQueue {
         }
     }
 
-    /// `pop_blocking`, but giving up at `deadline`: for a consumer that is a person's
-    /// webview asking over IPC, not a worker thread that lives as long as the queue. Every
+    /// `pop_blocking`, but giving up at `deadline`: for a consumer that asks and goes away
+    /// (the window's poster worker), not a worker thread that lives as long as the queue. Every
     /// `Some(id)` must be followed by `done(id)`, as for `pop_blocking`.
     pub fn pop_until(&self, deadline: Instant) -> Option<i64> {
         let mut state = self.state.lock();
@@ -325,7 +325,7 @@ impl ThumbQueue {
 
     /// `done`, for a job that settled `id`'s fate, dropping any push held while it ran
     /// rather than queueing it. A worker's re-run of a settled job costs a stat and ends at
-    /// once; a video's waits for the webview to poll again, and a `wait` whose
+    /// once; a video's waits for the window's poster worker to ask again, and a `wait` whose
     /// own push was held - a thumbnail requested while the frame was being drawn - would
     /// wait with it, for a frame that is already in the cache.
     pub fn done_settled(&self, id: i64) {
@@ -806,8 +806,8 @@ mod tests {
         assert!(waiter.join().unwrap());
     }
 
-    /// A fast scroll abandons one request per tile it passes, and Tauri gives the Rust side
-    /// no cancellation signal, so each one sits in `waiters` at `Visible` with a low seq for
+    /// A fast scroll abandons one request per tile it passes, and nothing tells the queue a
+    /// request was given up, so each one sits in `waiters` at `Visible` with a low seq for
     /// the full request timeout. If that exempts them from demotion they outrank the tiles
     /// actually on screen, and the workers decode invisible photos while the grid stays
     /// empty - exactly the starvation the priority levels exist to prevent.

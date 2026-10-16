@@ -474,6 +474,9 @@ sub-project, are at the end.
       photon starts. **Blocking for the release.**
 - [ ] Windows without the HEVC extension: an iPhone video shows the play icon and a message, not
       a broken tile.
+- [ ] A `.webm` on each OS: on Linux and on Windows (with the Web Media Extensions) it has a
+      poster and plays; on a Mac it is listed with no preview, and opening it says it cannot
+      be played - nothing hangs, nothing crashes.
 - [ ] A video's poster frame actually appears, on each OS (each makes it with its own
       framework).
 - [ ] photon's video controls sit above the viewer's bar and look the same on every OS. After

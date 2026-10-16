@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn the_tree_is_the_root_and_everything_below_it() {
-        // 10 is photon, 11 the web view's network process, 12 a web process under a
+        // 10 is photon, 11 a process it started, 12 one under a
         // sandbox launcher 13; 20 is another app and 21 its child.
         let procs = [
             (1, 0),

@@ -4594,6 +4594,13 @@ impl App {
             if !self.writes.finish(WRITES_PATIENCE) {
                 tracing::warn!("the window closed before every change was stored");
             }
+            // The two writers that keep only their latest question: the sidebar's layout
+            // and the folder at the top of the grid, dragged or scrolled to just before.
+            if !self.layout_store.finish(WRITES_PATIENCE)
+                || !self.remembering.finish(WRITES_PATIENCE)
+            {
+                tracing::warn!("the window closed before its layout or its place was stored");
+            }
             // Before the engine goes, so that a poster being made is answered as not made
             // this session: left unanswered, its claim is counted at the next launch as
             // a window that died opening the video, and two such deaths fail it for good.

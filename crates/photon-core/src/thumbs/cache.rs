@@ -170,7 +170,7 @@ impl ThumbCache {
         Ok((preview, grid))
     }
 
-    /// A poster frame the webview drew, as the preview and grid images. It arrives upright
+    /// A poster frame the window drew, as the preview and grid images. It arrives upright
     /// and at most preview-sized, so this only shrinks.
     pub(crate) fn render_frame(&self, frame: &DynamicImage) -> (DynamicImage, DynamicImage) {
         let preview = shrink(frame, ThumbSize::Preview.max_edge());

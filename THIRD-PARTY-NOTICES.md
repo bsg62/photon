@@ -409,6 +409,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+## GStreamer and GLib (the Linux AppImage)
+
+photon plays video on Linux through GStreamer (https://gstreamer.freedesktop.org), linked
+dynamically. The AppImage carries the libraries photon links - GStreamer's core, its app and
+video libraries from gst-plugins-base, and GLib (https://gitlab.gnome.org/GNOME/glib) with
+them - unmodified, as the build machine's distribution (Ubuntu 22.04) ships them; it carries
+no GStreamer plugin. They are licensed under the GNU Lesser General Public License, version
+2.1 or later (https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html); their source is at
+the addresses above and in Ubuntu's source packages of the same versions. The `.deb` carries
+none of them: it depends on the system's.
+
 ## fast_image_resize
 
 `crates/photon-core` depends on fast_image_resize 6.1.0

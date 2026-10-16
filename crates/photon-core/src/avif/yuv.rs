@@ -1,5 +1,6 @@
 //! YUV to RGB for decoded AV1 planes. Nearest chroma sample, no upsampling filter: this
-//! feeds thumbnails and edits, and the viewer shows the webview's own decode of the file.
+//! feeds thumbnails, edits and the viewer's full picture alike, as the Tauri photon's web
+//! view showed its own decode of the file instead.
 
 use super::av1::Planes;
 use image::{RgbImage, Rgba, RgbaImage};

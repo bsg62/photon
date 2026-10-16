@@ -14,8 +14,7 @@
 //! ashpd, the client rfd itself uses there - pure Rust, no GTK - and where the portal does
 //! not answer, `zenity`, as rfd falls back to it; where neither is there, photon says that
 //! no picker could be opened, which rfd would have answered as a cancel. rfd is not used
-//! on Linux: built there it must have GTK or the portal and refuses both at once, and in a
-//! build of the whole workspace Tauri's dialog plugin asks for GTK.
+//! on Linux: built there it must have GTK or the portal, and refuses both at once.
 
 use std::{
     ffi::OsStr,
@@ -355,10 +354,10 @@ pub fn startup_failed(err: &eframe::Error) -> String {
 /// through `zenity`, where that is installed; where it is not, nothing is shown, which is
 /// why the caller also writes it to the standard error and the log.
 pub fn show_error(text: &str) {
-    // On Windows the system's own box, from `user32`: rfd's is a task dialog wherever
-    // Tauri's dialog plugin is in the build (its `common-controls-v6`, which a build of the
-    // whole workspace unifies in), and a task dialog is in Common Controls 6 alone, which
-    // a program without a manifest asking for it is not given - it would not start.
+    // On Windows the system's own box, from `user32`: rfd's is a task dialog when its
+    // `common-controls-v6` feature is on (the Tauri shell's build turned it on), and a task
+    // dialog is in Common Controls 6 alone, which a program without a manifest asking for
+    // it is not given - it would not start.
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};

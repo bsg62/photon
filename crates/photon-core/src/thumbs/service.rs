@@ -71,14 +71,14 @@ fn worker_count(parallelism: usize) -> usize {
     parallelism.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
 
-/// What the webview is asked to draw: the video, and the key its frame will be stored under.
+/// What the window is asked to draw: the video, and the key its frame will be stored under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VideoJob {
     pub id: i64,
     pub key: u64,
 }
 
-/// Why the webview could not draw a frame. `Unsupported` is the platform's answer (no codec)
+/// Why the window could not draw a frame. `Unsupported` is the platform's answer (no codec)
 /// and is not held against the file; the other two are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -122,7 +122,7 @@ impl DrainSignal {
     }
 }
 
-/// A frame bigger than this on either side is not one the webview drew at preview size.
+/// A frame bigger than this on either side is not one the window drew at preview size.
 const MAX_FRAME_EDGE: u32 = 8192;
 
 pub struct ThumbService {
@@ -135,25 +135,26 @@ pub struct ThumbService {
     /// `decode_lock` and its backoff bookkeeping, grouped into one field so `process` takes
     /// one parameter for both rather than two (and stays under clippy's argument-count lint).
     suspects: Arc<Suspects>,
-    /// Videos waiting for a poster frame. No worker pops it: the webview draws a video's
+    /// Videos waiting for a poster frame. No worker pops it: the window draws a video's
     /// frame (`next_video_job`), and `request` waits on it exactly as it waits on `queue`.
     videos: ThumbQueue,
     /// The crash-loop guard for frames, under `<cache>/video`. Separate from `inflight`
-    /// because what dies is the web process, not photon: its window goes blank, the user
-    /// quits cleanly, and `disarm` - right for a worker - would sweep the evidence. This one
-    /// is never disarmed, and is judged by `recover` whenever a page starts a session.
+    /// because a frame is made by the window's poster worker, which answers the job it holds
+    /// before photon closes, and not by a worker `disarm` - right for a worker - would sweep
+    /// the evidence of. This one is never disarmed, and is judged by `recover` whenever a
+    /// session of frames starts.
     video_inflight: InFlight,
-    /// The marker of every job handed to a page and not yet answered. An entry is what
+    /// The marker of every job handed to the window's poster worker and not yet answered. An entry is what
     /// stands for the id being in flight in `videos`: whoever removes it owes `videos` its
     /// one `done`, and nobody else does - see `claim_video`.
     video_claims: Mutex<HashMap<i64, Marker>>,
-    /// Ids the webview said it cannot play, skipped until the next session.
+    /// Ids the window said it cannot play, skipped until the next session.
     video_skipped: Mutex<HashSet<i64>>,
-    /// Whether a page is making frames. Without one, a thumbnail request for a video
+    /// Whether the window's poster worker is making frames. Without it, a thumbnail request for a video
     /// answers at once rather than holding the request open for `THUMB_TIMEOUT`.
     video_session: AtomicBool,
     /// Bumped by every `video_session_start`, under `video_claims`' lock, so a long-poll the
-    /// previous page left waiting cannot claim a job for a page that no longer exists.
+    /// previous session left waiting cannot claim a job for a session that no longer exists.
     video_generation: AtomicU64,
 }
 
@@ -318,7 +319,7 @@ impl ThumbService {
     }
 
     /// Queues every item still waiting for thumbnails at background priority: images for
-    /// the workers, and videos for the webview while a page is drawing them.
+    /// the workers, and videos for the window while its poster worker is drawing them.
     pub fn enqueue_pending(&self) -> Result<usize> {
         let ids = self.lib.pending_thumb_ids(MediaKind::Image)?;
         self.queue.push_many(&ids, Priority::Background);
@@ -336,9 +337,9 @@ impl ThumbService {
         Ok(ids.len())
     }
 
-    /// A page has loaded and says whether it can play video. Every claim still open belongs
-    /// to a page that no longer exists - it reloaded, or its process died with the frame half
-    /// drawn - so `recover` turns their markers into deaths first, the judgement a worker's
+    /// A session of frames starts - the window's poster worker, once a launch - and says
+    /// whether it can play video. Every claim still open belongs to a session that no longer
+    /// exists - a launch that died with the frame half drawn - so `recover` turns their markers into deaths first, the judgement a worker's
     /// marker gets at launch.
     ///
     /// `recover`, the generation bump and the drain happen under `video_claims`' lock, which
@@ -439,9 +440,9 @@ impl ThumbService {
         Ok(Claim::Job(VideoJob { id, key }))
     }
 
-    /// Stores the frame the webview drew for `id`. `false`, storing nothing, when the video
+    /// Stores the frame the window drew for `id`. `false`, storing nothing, when the video
     /// changed since the job was handed out - the frame is of a file that is not there.
-    /// The bytes came over IPC, so they are decoded as a JPEG of bounded size and nothing else.
+    /// The bytes are decoded as a JPEG of bounded size and nothing else.
     pub fn put_video_frame(&self, id: i64, key: u64, jpeg: &[u8]) -> Result<bool> {
         let claim = self.video_claims.lock().remove(&id);
         let stored = self.store_video_frame(id, key, jpeg);
@@ -488,9 +489,9 @@ impl ThumbService {
     /// Ends a claim the page answered. The page lived to answer, so whatever it said, this
     /// was not a death. `videos.done` only for a claim this call actually removed, so a claim
     /// ends once whoever answers it: an answer that finds none - a second answer to one job,
-    /// or one from a page a session already wrote off and drained - owes nothing, and a
-    /// `done` from it could land while the id sits popped but not yet claimed by the page
-    /// that is there now, releasing that job's waiters before its frame exists.
+    /// or one from a worker a session already wrote off and drained - owes nothing, and a
+    /// `done` from it could land while the id sits popped but not yet claimed by the session
+    /// there is now, releasing that job's waiters before its frame exists.
     ///
     /// `settled` - a frame stored, the row failed, the video skipped - drops a push that
     /// arrived while the page drew (`ThumbQueue::done_settled`): queued, it would hold a
@@ -559,10 +560,10 @@ impl ThumbService {
     /// watches for, so no marker from it should survive to be misread as one. Safe to call
     /// even if `disarm` already ran - it just sweeps an already-empty directory again.
     ///
-    /// `video_inflight` is left armed. A web process that dies on a video leaves photon
-    /// running with a blank window, and the user's next move is a clean quit: disarming here
-    /// would sweep the marker that is the only evidence, and the next launch would open the
-    /// same video and die the same way. Closing `videos` returns a waiting `next_video_job`.
+    /// `video_inflight` is left armed: the window answers the job it holds before it closes
+    /// (`PosterWorker::finish`), and a marker still there is a job no answer came for - a
+    /// decoder that took the window down, or hung past the close - which the next launch
+    /// must count. Closing `videos` returns a waiting `next_video_job`.
     pub fn close(&self) {
         self.inflight.disarm();
         self.queue.close();
@@ -571,7 +572,7 @@ impl ThumbService {
 
     /// Returns the cached thumbnail, generating it on the calling thread if needed.
     ///
-    /// Not the production path - `protocol.rs` uses `request`, which keeps decoding inside
+    /// Not the production path - the window uses `request_async`, which keeps decoding inside
     /// the worker pool - and today only the tests call this, as a synchronous harness around
     /// `process`. Kept public rather than gated to tests because `self.render` would
     /// otherwise be a field no non-test code reads; if a second caller ever appears, it
@@ -627,7 +628,7 @@ impl ThumbService {
         // queued nor in flight and returns at once - no worker is ever woken for it, so
         // this never causes a fresh `decode_lock` attempt on the suspect's behalf.
         //
-        // A video waits on `videos`, where the webview rather than a worker makes the frame.
+        // A video waits on `videos`, where the window rather than a worker makes the frame.
         let video = self
             .lib
             .item(id)?
@@ -641,7 +642,7 @@ impl ThumbService {
                 && (!self.video_session.load(Ordering::SeqCst)
                     || self.video_skipped.lock().contains(&id))
             {
-                // No page is drawing frames - the webview cannot play video here - or it
+                // Nothing is drawing frames - the system cannot play video here - or it
                 // could not draw this one: waiting would hold the request open for nothing.
                 return Err(Error::ThumbUnavailable(id));
             }
@@ -809,7 +810,7 @@ fn process(
         return Ok(());
     }
     if item.kind != MediaKind::Image {
-        // The webview draws a video's frame (`next_video_job`). `set_visible` and
+        // The window draws a video's frame (`next_video_job`). `set_visible` and
         // `prioritize` take ids without asking what they are, so one can still land here.
         suspects.resolved(id, queue);
         return Ok(());
@@ -1137,7 +1138,7 @@ mod tests {
         let (_dir, lib, service, ids) = video_setup(&["a.mp4"]);
         service.video_session_start(true).unwrap();
         let job = service.next_video_job(SHORT).unwrap().unwrap();
-        // The file is rewritten while the webview is still drawing it.
+        // The file is rewritten while the window is still drawing it.
         let item = lib.item(ids[0]).unwrap().unwrap();
         let mut changed = new_item(item.folder_id, &item.path, 0);
         changed.kind = MediaKind::Video;
@@ -1234,8 +1235,8 @@ mod tests {
 
     #[test]
     fn a_clean_close_does_not_forgive_a_claimed_video() {
-        // A web process that dies leaves photon running; the user quits it cleanly. That quit
-        // must not sweep the video's marker, or the next launch replays the crash.
+        // A job left unanswered at a clean close - a decoder that hung past it - must keep
+        // its marker, or the next launch replays what took it.
         let (dir, lib, service, ids) = video_setup(&["a.mp4"]);
         service.video_session_start(true).unwrap();
         service.next_video_job(SHORT).unwrap().unwrap();
@@ -2063,8 +2064,8 @@ mod tests {
     /// delayed suspect early. Same construction as the hammer test above - the hang decode's
     /// render has actually started before the suspect is even queued - but here the suspect
     /// is left to time out exactly once on its own (matching the "a suspect that has timed
-    /// out once" setup), and then `request` is called for it twice, the way `protocol.rs`'s
-    /// `thumb` handler would on two separate 503-triggered UI retries.
+    /// out once" setup), and then `request` is called for it twice, the way the Tauri
+    /// photon's thumbnail route did on two retries of the UI's.
     ///
     /// Before the fix, each `request` call pushed the suspect back into `order` immediately
     /// (`State::push` had no guard against readmitting a delayed id), and a free worker would

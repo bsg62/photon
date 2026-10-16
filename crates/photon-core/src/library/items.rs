@@ -1112,7 +1112,7 @@ impl Library {
     /// the planner walks from `items_pending` regardless, so the shape costs nothing.
     ///
     /// One `kind` at a time, because the two are made by different hands: a worker decodes
-    /// an image, the webview draws a video's frame, and each drains its own queue.
+    /// an image, the window draws a video's frame, and each drains its own queue.
     pub fn pending_thumb_ids(&self, kind: MediaKind) -> Result<Vec<i64>> {
         let conn = self.reader()?;
         let driver = folder_order(Shown::Either, "");
