@@ -142,7 +142,7 @@ pub(crate) fn show(
         color(palette.text),
     );
 
-    // The folder's path, and beside it the picker's button, which waits for the picker.
+    // The folder's path, and beside it the button that opens the system's picker.
     let form = Rect::from_min_size(
         pos2(room.left(), header.bottom() + GAP),
         vec2(room.width(), CONTROL),
@@ -197,7 +197,14 @@ pub(crate) fn show(
         egui::text_edit::TextEditState::default().store(ui.ctx(), id);
     }
     let typed = output.response.changed();
-    button(ui, choose_at, Id::new("dialog-choose"), CHOOSE, Look::Off);
+    // The system's picker, one at a time - dimmed while it is open, a button that senses
+    // no press: the folder chosen is put in the field and asked about as a typed one is.
+    let look = if dialog.choosing {
+        Look::Off
+    } else {
+        Look::Plain
+    };
+    let chose = button(ui, choose_at, Id::new("dialog-choose"), CHOOSE, look).clicked();
 
     // Against the field, while the dialog is still open: a folder photon will not write
     // into is worth saying before the export and not after it.
@@ -329,6 +336,9 @@ pub(crate) fn show(
     if exported || (enter && works) {
         return Done::Export;
     }
+    if chose {
+        return Done::Choose;
+    }
     if tick.clicked() {
         return Done::Tick(!ticked);
     }
@@ -455,7 +465,7 @@ photon would index the copies as new photos";
         assert_eq!(f.drew(PLACEHOLDER), None);
     }
 
-    // The picker's button waits for the picker, and "Export" for a destination.
+    // "Export" waits for a destination; "Choose…" opens the system's picker, once.
     #[test]
     fn export_takes_no_press_and_enter_does_nothing_until_a_destination_has_passed() {
         let mut f = export(&[1, 2]);
@@ -473,7 +483,7 @@ photon would index the copies as new photos";
         );
         assert_eq!(f.left_over, [], "and the key goes no further");
         assert_eq!(f.click(go), Done::Open);
-        assert_eq!(f.click(choose), Done::Open);
+        assert_eq!(f.click(choose), Done::Choose);
         // (A click elsewhere takes the caret out of the field, as egui has it.)
         let field_at = f.at(FOLDER);
         f.click(field_at);
@@ -484,9 +494,12 @@ photon would index the copies as new photos";
         let mut f = passed();
         let go = f.at(EXPORT);
         assert_eq!(f.click(go), Done::Export);
-        // The picker's button still takes none.
+        // While the picker is open, "Choose…" takes no second press.
         let mut f = passed();
         let choose = f.at(CHOOSE);
+        if let Dialog::Export(export) = &mut f.dialog {
+            export.choosing = true;
+        }
         assert_eq!(f.click(choose), Done::Open);
     }
 
@@ -553,10 +566,10 @@ photon would index the copies as new photos";
             f.click(pos2(words.right() + 30.0, words.center().y)),
             Done::Open
         );
-        // Tab leaves the field for it - the picker's button takes no keyboard - and
-        // Space ticks it.
+        // Tab leaves the field for it, by way of "Choose…", and Space ticks it.
         let field = f.at(PLACEHOLDER);
         f.click(field);
+        f.key(Key::Tab);
         f.key(Key::Tab);
         assert_eq!(f.focused(), Some(Id::new("dialog-export-edits")));
         assert_eq!(f.key(Key::Space), Done::Tick(false));
@@ -592,7 +605,7 @@ photon would index the copies as new photos";
         // Enter with the keyboard on "Cancel" is a press of that button: the Enter that
         // exports is the field's.
         let mut f = passed();
-        for _ in 0..7 {
+        for _ in 0..8 {
             f.key(Key::Tab);
         }
         assert_eq!(f.focused(), Some(Id::new("dialog-export-cancel")));
@@ -642,27 +655,27 @@ photon would index the copies as new photos";
     fn tab_walks_the_dialog_in_its_order_and_stays_in_it() {
         let mut f = passed();
         let mut walked = Vec::new();
-        for _ in 0..11 {
+        for _ in 0..12 {
             f.key(Key::Tab);
             walked.push(
                 f.focused()
                     .expect("something in the dialog has the keyboard"),
             );
         }
-        let mut expected = vec![Id::new("dialog-export-edits")];
+        let mut expected = vec![Id::new("dialog-choose"), Id::new("dialog-export-edits")];
         expected.extend(SIZES.map(|(_, label)| Id::new(("dialog-export-size", label))));
         expected.extend([
             Id::new("dialog-export-cancel"),
             Id::new("dialog-export-go"),
             Id::new("dialog-close"),
             field_id(),
-            Id::new("dialog-export-edits"),
+            Id::new("dialog-choose"),
         ]);
         assert_eq!(walked, expected);
         // With no destination "Export" takes no keyboard either.
         let mut f = export(&[1]);
         f.open();
-        for _ in 0..7 {
+        for _ in 0..8 {
             f.key(Key::Tab);
         }
         assert_eq!(f.focused(), Some(Id::new("dialog-export-cancel")));

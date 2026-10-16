@@ -1112,15 +1112,18 @@ impl SettingsView {
                     },
                     palette,
                 );
-                // The picker's button waits for the picker of a later sub-project.
-                if page.sees(choose_at) {
-                    button(
-                        ui,
-                        choose_at,
-                        Id::new("settings-add-choose"),
-                        CHOOSE,
-                        Look::Off,
-                    );
+                // The system's picker, one at a time - dimmed while it is open, a button
+                // that senses no press: the folder chosen is put in the field and asked
+                // about as a typed one is.
+                let look = if adding.choosing || adding.busy() {
+                    Look::Off
+                } else {
+                    Look::Plain
+                };
+                if page.sees(choose_at)
+                    && button(ui, choose_at, Id::new("settings-add-choose"), CHOOSE, look).clicked()
+                {
+                    page.asked.push(Asked::AddChoose);
                 }
                 let passed = matches!(adding.dest(), crate::export_dialog::Dest::Passed(_));
                 let look = if passed && !adding.busy() {
@@ -2146,8 +2149,12 @@ mod tests {
         assert_eq!(f.focused(), Some(add_id()), "the caret stays");
         assert_eq!(asked(f.key(Key::Escape)), [Asked::AddClose]);
         f.frame(Vec::new());
-        // The picker's button waits for the picker.
+        // "Choose…" asks for the system's picker.
         assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
+        f.frame(Vec::new());
+        assert_eq!(click(&mut f, CHOOSE), [Asked::AddChoose]);
+        // While the picker is open, it takes no second press.
+        the(&mut f).adding.as_mut().unwrap().choosing = true;
         f.frame(Vec::new());
         assert_eq!(click(&mut f, CHOOSE), []);
     }

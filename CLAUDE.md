@@ -1665,8 +1665,8 @@ before the engine is opened, so no report is sent before someone listens.
 
 **The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
 All photos and Recent alone; every other view has its one line. "Add folder…" opens
-Settings at its folders with the field a path is typed in open, "Watched folders…" at
-its folders; and "Or
+the system's folder picker over Settings' folders with the field a path is typed in open
+(`App::pick_folder`, below), "Watched folders…" Settings at its folders; and "Or
 drop a folder onto this window." stands under them only where a drop can arrive
 (`LibraryFacts::drops`, below): a line that offered one where none arrives would be
 false, not inactive. The block is centred, so a longer sentence
@@ -2096,9 +2096,8 @@ card would not show and the drop would still be taken.
 
 **The export is a third dialog and a thread of its own** (`export_dialog.rs`,
 `createExportDialog`; `export_view.rs` for its body; `App::exports`). Its photos are
-taken as it opens, as the picker's are. **The destination is a path typed into a field**
-until a later sub-project brings the folder picker, whose button stands beside the field
-and takes no press: asked about as it changes, off the UI thread, by a task that answers
+taken as it opens, as the picker's are. **The destination is a path in a field**, typed or
+put there by the system's picker ("Choose…", below): asked about as it changes, off the UI thread, by a task that answers
 only the latest question (`App::checking`, `check_dest`), and the answer counts only for
 the text the field still holds (`ExportDialog::checked`). It passes when it is the whole
 path of a folder that is there (`typed_path`: a `~` at its start is the home folder, and
@@ -2137,6 +2136,30 @@ engine's (`Engine::export_items`, which refuses a destination inside a watched f
 and creates every file with `create_new`), and a test's destination is a folder under
 its own temporary directory. A test holds an export for as long as it needs by holding
 the engine's `RENDERING` lock, which a turned photo's copy waits for.
+
+**A folder is chosen in the system's own picker** (`platform.rs`, `app/pick.rs`; spec
+`2026-10-16-photon-native-platform-design.md`, decision 2): on Windows and macOS rfd's,
+the crate Tauri's dialog plugin is built on; on Linux the XDG desktop portal over D-Bus
+through ashpd, the client rfd uses there (pure Rust, no GTK, on `async-std` - with
+tokio, zbus panics with no runtime running), and where the portal does not answer,
+`zenity`. **rfd is not built on Linux**: there it must have GTK or the portal and its
+build script refuses both, and in a build of the whole workspace Tauri's plugin asks for
+GTK. Going to the portal itself also tells a picker that could not be opened from a
+cancel, which rfd answers alike: no portal and no `zenity` is said (`NO_PICKER`), a
+cancel is not. "Choose…" beside the export's destination and beside Settings' folder
+field, and the empty library's "Add folder…", open it; the folder chosen goes into the
+field and is asked about as a typed path is - the field, which stays, is the way where no
+picker opens. **It runs on a thread of its own**, one at a time (`App::picking`;
+"Choose…" is dimmed while it is open), and **its answer goes only into the dialog that
+asked**, by the number of its opening (`App::dialog_openings`): closed meanwhile, or
+another opened in its place, the folder is dropped. Where photon has no window to say
+something in - the library that could not be opened - it says it in the system's message
+box (`platform::show_error`; on Linux through `zenity` where that is installed), on the
+standard error and in the log, in the Tauri photon's words (`platform::startup_failed`).
+**The system is one trait, `Platform`, and a test stands in for it** (`App::with_platform`;
+`common::Picker`, which answers and can be held): every test builder that can press
+"Choose…" or the empty library's "Add folder…" launches with one (`no_platform`), or the
+press opens a real picker on whatever machine runs the test.
 
 **The viewer takes the whole window** (spec `2026-10-12-photon-native-viewer-design.md`;
 `viewer.rs` for which photo is open, `viewer_view.rs` for what is drawn, `App::viewer`
@@ -3106,8 +3129,8 @@ a use for it** (`settings_view::claims_escape`, asked by the dialog before it ta
 key): a question's Cancel, the keyword's field and the folder's field giving up, a filter
 that holds something emptied. The three fields claim Escape in their `EventFilter` - left
 to egui it takes the keyboard away at the start of the frame, before anyone can see whose
-it was - with all four of its fields said. **"Add folder…" is a typed path** until the
-picker: the field opens with the keyboard, is asked about as it is typed off the window's
+it was - with all four of its fields said. **"Add folder…" is a path in a field**, typed or chosen in the
+system's picker: the field opens with the keyboard, is asked about as it is typed off the window's
 thread (`check_folder`, the export field's rules, the text as it stands first), and is
 added by Enter or "Add" through `commands::add_folder`; the library's refusal - inside a
 folder already watched - stands under the field, which keeps the path. A folder added is

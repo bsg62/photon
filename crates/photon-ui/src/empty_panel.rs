@@ -4,8 +4,7 @@
 //!
 //! The scanning and the nothing-found states are one block with one sentence changing: a
 //! watched folder is rescanned at any time. A button is known by what it is and not by
-//! the sentence over it, so that when these buttons take a press - they do not yet - one
-//! is the same widget before and after a scan, and keeps the focus and a press on its
+//! the sentence over it, so that one is the same widget before and after a scan, and keeps the focus and a press on its
 //! way. What does move them is the sentence's height: the block is centred, as the Svelte
 //! one is, and a longer sentence pushes its buttons down.
 

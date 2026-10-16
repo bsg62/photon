@@ -67,6 +67,13 @@ webp = "0.3.1"
 # Windows' setting of how many lines a notch of the mouse wheel scrolls (`wheel.rs`): the
 # bindings winit already brings, at its version. Declarations only; the call is the
 # system's own `user32`.
+# The system's folder picker and message box (`platform.rs`) on Windows and macOS: the
+# crate Tauri's dialog plugin is built on, at its version. Not on Linux, where it must be
+# built with GTK or the portal and refuses both at once - and Tauri's plugin asks for GTK
+# in a build of the whole workspace.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = { version = "0.16.0", default-features = false }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 # Video (`video/mf.rs`): Media Foundation, part of the system. The version already in the
@@ -85,6 +92,12 @@ windows-core = "0.62.2"
 # Its libraries are linked (the core, and plugins-base's app and video); its plugins are
 # looked for when a video is opened.
 [target.'cfg(target_os = "linux")'.dependencies]
+# The folder picker on Linux (`platform.rs`): the XDG desktop portal over D-Bus, through
+# the client rfd itself uses there - pure Rust, no GTK. `async-std` is the executor it
+# runs on outside a runtime of its own (with tokio, its default, zbus panics with none
+# running); a request is waited for with eframe's `pollster`.
+ashpd = { version = "0.11.1", default-features = false, features = ["async-std"] }
+pollster = "1.0.1"
 gstreamer = "0.25.4"
 gstreamer-app = "0.25.2"
 gstreamer-video = "0.25.4"
