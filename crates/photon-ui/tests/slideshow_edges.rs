@@ -395,12 +395,15 @@ fn the_fade_draws_its_frames_and_a_stopped_show_lets_go_of_it() {
     key(&mut driver, &mut harness, Key::ArrowRight);
     assert_eq!(viewing(&harness), Some(ids[1]));
     assert!(harness.state().fading());
-    driver.until(&mut harness, "the arriving photo shown", |app| {
-        app.viewer_levels().is_some()
-    });
-    let frames = driver.frames_in(&mut harness, 0.6);
+    // Counted from the step to the fade's end, and not over 600 ms from the arriving
+    // photo's full picture: on a slow runner (macOS' CI) the fade, begun at its preview,
+    // was over on the test's clock before that picture had been made, and none of its
+    // frames was counted. A fade that asked for no frame of its own lets the clock jump
+    // to its end in one step, which counts a frame or two.
+    let from = driver.frames;
+    driver.until(&mut harness, "the fade over", |app| !app.fading());
+    let frames = driver.frames - from;
     assert!(frames > 10, "a frame at a time: {frames}");
-    assert!(!harness.state().fading(), "and let go of once faded");
     key(&mut driver, &mut harness, Key::ArrowRight);
     assert!(harness.state().fading());
     key(&mut driver, &mut harness, Key::Escape);
