@@ -6,8 +6,9 @@ name: release
 on:
   push:
     tags: ['v*']
-    # `native-ui` until it is merged: the installers of the branch, to try before a release.
-    branches: [native-ui]
+    # The installers of the branch, to try before a release - and on `main` the caches a
+    # tag's run starts from, which can read only its own and the default branch's.
+    branches: [main, native-ui]
     paths:
       - 'crates/**'
       - 'Cargo.lock'
@@ -20,7 +21,9 @@ on:
     paths:
       - '.github/workflows/release.yml'
       - 'crates/photon-ui/packaging/**'
+      - 'crates/photon-ui/icons/**'
       - 'crates/photon-ui/build.rs'
+      - 'crates/photon-ui/Cargo.toml'
       - 'crates/xtask/src/package.rs'
 
 jobs:
@@ -52,10 +55,11 @@ jobs:
           sudo apt-get remove -y libunwind-14-dev || true
           sudo apt-get install -y nasm dpkg-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
-      # Caches are saved from native-ui alone, as ci.yml's are (the 10 GB cap).
+      # Caches are saved from main and native-ui alone, as ci.yml's are (the 10 GB cap): a
+      # tag's run restores main's, the only branch's a tag can read, so main saves them too.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
       - run: cargo run -p xtask -- package deb --binary target/release/photon --out dist
       - name: The .deb installs what it says and links nothing it does not declare
@@ -126,7 +130,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --target ${{ matrix.target }} ${{ matrix.features }}
       - run: >
           cargo run -p xtask -- package dmg --arch ${{ matrix.arch }}
@@ -156,7 +160,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
       # Media Foundation's DLLs are delay-loaded (`crates/photon-ui/build.rs`), or a Windows
       # "N" edition without them could not start photon at all.
@@ -248,8 +252,10 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
-          # `sha256sum` and `gh release create` take files and choke on a directory, and an
-          # artifact of two globs keeps the folders they share a root under.
+          # `sha256sum` and `gh release create` take files and choke on a directory. Every
+          # artifact arrives flat today (each uploads from `dist/` alone, whose root the
+          # upload drops); flattened all the same, so that one uploaded from two folders
+          # does not fail the release it was meant to be in.
           find . -mindepth 2 -type f -exec mv -t . {} +
           find . -mindepth 1 -type d -delete
           ls -la

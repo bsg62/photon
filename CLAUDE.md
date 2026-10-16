@@ -3186,7 +3186,8 @@ as `chore(release): X.Y.Z`, then push the tag. The tag push runs `.github/workfl
 which builds the installers on every platform, reads them, and creates a **draft** release;
 verify the six artifacts attached (two `.dmg`, `.deb`, AppImage, `.msi`, `SHA256SUMS`) before
 publishing it. The same workflow builds them as a run's artifacts, and publishes nothing, on
-a push to `native-ui`, on a pull request that changes how they are made, and by hand.
+a push to `main` or `native-ui`, on a pull request that changes how they are made, and by
+hand.
 
 Release commits go straight to `main`. A schema bump makes the release a minor. The generated
 notes are a list of PR titles; replace them with hand-written ones in the shape of v0.14.0 and
