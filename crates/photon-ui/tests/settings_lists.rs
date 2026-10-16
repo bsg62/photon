@@ -81,8 +81,6 @@ fn press(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
     press_near(driver, harness, label, None);
 }
 
-/// A folder's path as the library stores it: on a Mac a temporary directory is under
-/// `/var`, which is a link to `/private/var`, and the library keeps where a path leads.
 /// "Add folder…" pressed where no picker opens, and the field it then opens.
 fn add_field(driver: &mut Driver, harness: &mut Harness<'_>) {
     press(driver, harness, watched_list::ADD_FOLDER);
@@ -91,6 +89,8 @@ fn add_field(driver: &mut Driver, harness: &mut Harness<'_>) {
     });
 }
 
+/// A folder's path as the library stores it: on a Mac a temporary directory is under
+/// `/var`, which is a link to `/private/var`, and the library keeps where a path leads.
 fn stored(path: &std::path::Path) -> String {
     let path = photon_core::paths::canonicalize(path).unwrap();
     path.to_str().unwrap().to_owned()

@@ -373,3 +373,78 @@ fn a_folder_chosen_to_add_is_watched_when_settings_opened_meanwhile() {
         watching(app, &chosen)
     });
 }
+
+// A picker open for the export, under its title "Export copies to…", is not taken for
+// "Add folder…" pressed while it is open: the folder chosen there would have been watched,
+// at once, as the destination of an export (a review found it).
+#[test]
+fn a_picker_open_for_the_export_is_not_taken_for_add_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let pictures = photos_in(dir.path(), "Pictures", &["a.jpg"]);
+    let out = folder(dir.path(), "out");
+    let picker = Arc::new(Picker::default());
+    *picker.answer.lock().unwrap() = Picked::Folder(out.clone());
+    let (release, held) = mpsc::channel();
+    *picker.held.lock().unwrap() = Some(held);
+    let (mut harness, mut driver) = launch(dir.path(), Some(pictures), picker.clone());
+    driver.until(&mut harness, "the photo shown", |app| {
+        app.photos() == 1 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    open_export(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, CHOOSE);
+    driver.until(&mut harness, "the picker open", |_| {
+        picker.asked.lock().unwrap().len() == 1
+    });
+    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the export's dialog closed", |app| {
+        app.dialog().is_none()
+    });
+    press(&mut driver, &mut harness, "Settings");
+    press(&mut driver, &mut harness, ADD);
+    release.send(()).unwrap();
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    assert!(
+        !watching(harness.state(), &out),
+        "the export's destination was watched"
+    );
+    assert_eq!(*picker.asked.lock().unwrap(), ["Export copies to…"]);
+}
+
+// Where no picker could be opened and a dialog has opened over the window meanwhile, the
+// dialog stays: only Settings is the field's place, and nothing else is put out for it.
+#[test]
+fn a_picker_that_could_not_open_leaves_a_dialog_opened_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let picker = Arc::new(Picker::default());
+    *picker.answer.lock().unwrap() = Picked::Unavailable;
+    let (release, held) = mpsc::channel();
+    *picker.held.lock().unwrap() = Some(held);
+    let (mut harness, mut driver) = launch(dir.path(), None, picker.clone());
+    driver.settle(&mut harness);
+    press(&mut driver, &mut harness, "Add folder…");
+    driver.until(&mut harness, "the picker asked", |_| {
+        picker.asked.lock().unwrap().len() == 1
+    });
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        },
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the list of keys open", |app| {
+        matches!(app.dialog(), Some(Dialog::Shortcuts))
+    });
+    release.send(()).unwrap();
+    driver.until(&mut harness, "the picker's answer said", |app| {
+        (app.toasts().iter()).any(|toast| toast.message == photon_ui::platform::NO_PICKER)
+    });
+    assert!(matches!(harness.state().dialog(), Some(Dialog::Shortcuts)));
+}

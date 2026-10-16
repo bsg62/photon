@@ -55,6 +55,13 @@ impl App {
     /// one is open already.
     pub(super) fn pick_folder(&mut self, of: PickFor) {
         if let Some(picking) = &mut self.picking {
+            // A picker open for the export, under its title "Export copies to…", is not
+            // taken for "Add folder…": the folder chosen in it would be watched, at once
+            // and with nothing to confirm, as the destination of an export it was asked
+            // for. A field it is taken for still shows the folder before anything is done.
+            if of == PickFor::Watch && picking.of == PickFor::Export {
+                return;
+            }
             picking.of = of;
             picking.opening = self.dialog_openings;
             return;
@@ -103,8 +110,11 @@ impl App {
             Picked::Cancelled => return true,
             Picked::Unavailable => {
                 self.toasts.error(NO_PICKER.to_owned(), now);
-                // Where no picker opens, the field a path is typed in is the way left.
-                if of == PickFor::Watch {
+                // Where no picker opens, the field a path is typed in is the way left: in
+                // Settings, opened for it or open already - but not in place of another
+                // dialog opened since, a name half typed, an export's destination, a
+                // question (which a late answer - `zenity` failing after it showed - met).
+                if of == PickFor::Watch && matches!(self.dialog, None | Some(Dialog::Settings(_))) {
                     self.type_a_folder();
                 }
                 return true;

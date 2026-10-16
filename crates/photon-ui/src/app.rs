@@ -4651,6 +4651,7 @@ impl eframe::App for App {
         self.keep_title_bar(ui.ctx());
         let in_view = ui.ctx().content_rect().height() - TOP_BAR - STATUS_BAR;
         crate::grid::view::set_wheel_notch(ui.ctx(), self.notch.points(f64::from(in_view)));
+        crate::scroll_bar::keep_notch(ui.ctx(), self.notch);
         // What the window has asked for and the window has now done is no longer on
         // its way.
         let reported = ui.ctx().input(|input| input.viewport().fullscreen);

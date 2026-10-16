@@ -2171,7 +2171,10 @@ cancel is not. "Choose…" beside the export's destination and beside Settings' 
 field opens it, and the folder chosen goes into the field and is asked about as a typed
 path is; **"Add folder…" - Settings' and the empty library's - opens it and watches the
 folder chosen** (`PickFor::Watch`, the drop's `Write::Watch`), as the Tauri photon's
-`addFolderFromPicker` does, whatever has opened over the window by the time it answers.
+`addFolderFromPicker` does, whatever has opened over the window by the time it answers -
+but a picker open for the export is not taken for it ("Export copies to…" would have
+watched the destination chosen), and where none can open Settings' field is opened only
+over nothing or over Settings, never in place of another dialog.
 It opened Settings' field first and the picker over it, steps the Tauri photon does not
 have, which the first person to run the window found. Where no picker opens, that is said
 and Settings' field is opened - the way left. **It runs on a thread of its own, one at a time, and its answer is for the
@@ -2482,7 +2485,10 @@ panel's and steps to no photo: **a notch moves it as far as it moves the grid**
 system's notch in every frame), and a trackpad's points as they come. It was forty points
 whatever the system said, which the first person to run the People page on Windows found
 "slow" beside the grid, the page going by the same rule; at a Windows set to scroll no
-lines a notch the panel's scrollbar is the way down it. **Every column painted by hand
+lines a notch the panel's scrollbar is the way down it, and where it pages ("one screen at
+a time") a column pages by its own height (`scroll_bar::notch_points`, from the `Notch` the
+application keeps in egui's memory every frame): a page of the grid skipped half a
+Settings section a notch. **Every column painted by hand
 has the grid's scrollbar** (`scroll_bar.rs`: the info panel, the People page, Settings'
 section, the `?` sheet) - as wide, held where its thumb is taken, a press on its track
 taking the column there - asked before the column is filled, so that what it draws is
@@ -3165,7 +3171,10 @@ then whose later word does, at most six; not under a person's new name, where an
 would be a merge nobody asked for by typing a rename - that rule has no test), in an area
 over the page, above the box where there is no room below: the arrows move through them,
 taken out of the frame before the field is drawn, Enter or a click names the faces as the
-one picked, and a letter typed lets go of the one the arrows were on. Something the
+one picked, and a letter typed lets go of the one the arrows were on. The arrows are on a
+person by who they are (`PeopleView::offered` keeps the id), not by their place in the
+list: a read of the page landing between the arrow and Enter can put someone new above
+them (a review found it; the race has no seam, and no test). Something the
 Svelte page does not have, asked for by the first person to run the native one. A test holds the page's read back by renaming `detected_faces` from a second
 connection, the faces' seam (`tests/people.rs`); `native-shot` draws the page
 (`native-people-*`), its faces written through the library's own calls after the launch's

@@ -883,9 +883,10 @@ impl ViewerView {
         let held = ui.input(|input| input.modifiers);
         let over_panel =
             pointer.is_some_and(|at| controls.panel.is_some_and(|panel| panel.contains(at)));
-        let line = ui
-            .ctx()
-            .options(|options| options.input_options.line_scroll_speed);
+        // The panel is about as tall as the photo's area, which pages it.
+        let line = controls.panel.map_or(0.0, |panel| {
+            crate::scroll_bar::notch_points(ui.ctx(), panel.height())
+        });
         for event in &events {
             match event {
                 // Ctrl/Cmd+C reaches egui as a copy and not as a key (egui-winit turns

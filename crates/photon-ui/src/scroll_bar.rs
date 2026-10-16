@@ -9,19 +9,37 @@
 //! people a library long could be gone through by the wheel alone (the first person to run
 //! the People page on Windows found it, beside the grid's bar).
 
-use crate::grid::scroll::{BAR_WIDTH, Scroll};
+use crate::grid::scroll::{BAR_WIDTH, NOTCH, Notch, Scroll};
 use eframe::egui::{self, Color32, Event, Id, Rect, Sense, pos2, vec2};
 
-/// What a notch of the wheel moves a column by: what it moves the grid by, which the
-/// application says to egui in every frame from the system's setting (`set_wheel_notch`).
-/// A column moved forty points a notch at first, whatever the system said, and on a
-/// Windows at its own three lines a notch the People page went at two fifths of the grid's
-/// pace. A Windows set to scroll nothing a notch scrolls no column either, as it scrolls
-/// no web page: the bar is the way then.
+fn notch_id() -> Id {
+    Id::new("wheel-notch")
+}
+
+/// What a notch of the wheel moves on this system, kept where every column can read it:
+/// the application says it in every frame, beside what it tells egui for the grid.
+pub fn keep_notch(ctx: &egui::Context, notch: Notch) {
+    ctx.data_mut(|data| data.insert_temp(notch_id(), notch));
+}
+
+/// The points a notch moves a column of which `in_view` points are in view: the system's,
+/// as the grid's (`keep_notch`); where Windows is set to "one screen at a time", a page
+/// of the column's own, as WebView2 pages the element that scrolls - a page of the grid
+/// skipped half a Settings section a notch.
+pub(crate) fn notch_points(ctx: &egui::Context, in_view: f32) -> f32 {
+    let notch = ctx.data(|data| data.get_temp::<Notch>(notch_id()));
+    notch
+        .unwrap_or(Notch::Points(NOTCH))
+        .points(f64::from(in_view)) as f32
+}
+
+/// What a notch of the wheel moves a column by: what it moves the grid by, from the
+/// system's setting (`notch_points`). A column moved forty points a notch at first,
+/// whatever the system said, and on a Windows at its own three lines a notch the People
+/// page went at two fifths of the grid's pace. A Windows set to scroll nothing a notch
+/// scrolls no column either, as it scrolls no web page: the bar is the way then.
 pub(crate) fn turned(ui: &egui::Ui, page: f32) -> f32 {
-    let line = ui
-        .ctx()
-        .options(|options| options.input_options.line_scroll_speed);
+    let line = notch_points(ui.ctx(), page);
     ui.input(|input| {
         (input.events.iter())
             .map(|event| match event {
@@ -196,7 +214,7 @@ mod tests {
     #[test]
     fn a_notch_moves_a_column_as_far_as_it_moves_the_grid() {
         let ctx = egui::Context::default();
-        crate::grid::view::set_wheel_notch(&ctx, 100.0);
+        keep_notch(&ctx, Notch::Points(100.0));
         let input = RawInput {
             screen_rect: Some(PLACE),
             events: vec![Event::MouseWheel {
@@ -211,5 +229,17 @@ mod tests {
         let mut full = ctx.run_ui(input, |ui| moved = turned(ui, 200.0));
         full.textures_delta.clear();
         assert_eq!(moved, -200.0);
+    }
+
+    // Where Windows pages a notch, a column pages by its own height, not the grid's: a
+    // page of the grid is more than a Settings section has in view.
+    #[test]
+    fn a_page_a_notch_is_a_page_of_the_column() {
+        let ctx = egui::Context::default();
+        keep_notch(&ctx, Notch::Page);
+        assert_eq!(notch_points(&ctx, 446.0), 406.0);
+        assert_eq!(notch_points(&ctx, 200.0), 175.0);
+        keep_notch(&ctx, Notch::Points(0.0));
+        assert_eq!(notch_points(&ctx, 446.0), 0.0);
     }
 }

@@ -127,8 +127,10 @@ pub struct PeopleView {
     missing: HashSet<CropOf>,
     /// The names being typed.
     names: HashMap<Naming, String>,
-    /// The name box whose people are offered under it, and the one the arrows are on.
-    offered: Option<(Naming, Option<usize>)>,
+    /// The name box whose people are offered under it, and the person the arrows are on -
+    /// by who they are, not by their place in the list, which a read of the page that
+    /// lands between the arrow and Enter can change under the arrow.
+    offered: Option<(Naming, Option<i64>)>,
     /// The person whose name is being typed in their row, and whether the field has been
     /// drawn since it opened.
     renaming: Option<(i64, bool)>,
@@ -394,7 +396,7 @@ struct Draw<'a, 'u> {
     actions: &'a mut Vec<PeopleAction>,
     clicked: &'a mut Option<(i64, f64)>,
     names: &'a mut HashMap<Naming, String>,
-    offered: &'a mut Option<(Naming, Option<usize>)>,
+    offered: &'a mut Option<(Naming, Option<i64>)>,
     renaming: &'a mut Option<(i64, bool)>,
     /// egui's double-click time.
     double: f64,
@@ -840,8 +842,8 @@ impl Draw<'_, '_> {
         };
         let mut pick = (*self.offered)
             .filter(|(of, _)| *of == naming)
-            .and_then(|(_, at)| at)
-            .filter(|at| *at < before.len());
+            .and_then(|(_, person)| person)
+            .and_then(|person| before.iter().position(|(id, _)| *id == person));
         if !before.is_empty() {
             let (down, up) = self.ui.input_mut(|input| {
                 (
@@ -958,8 +960,10 @@ impl Draw<'_, '_> {
                 *self.offered = None;
             }
         } else {
-            *self.offered = Some((naming, pick));
-            if let Some(name) = self.offered_list(id, rect, bottom, &after, pick) {
+            *self.offered = Some((naming, picked.as_ref().map(|(id, _)| *id)));
+            let on = (picked.as_ref())
+                .and_then(|(person, _)| after.iter().position(|(id, _)| id == person));
+            if let Some(name) = self.offered_list(id, rect, bottom, &after, on) {
                 done = Some(Typed::Commit(name));
                 self.names.remove(&naming);
                 *self.offered = None;
