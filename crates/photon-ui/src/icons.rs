@@ -40,10 +40,13 @@ pub enum Icon {
     Volume2,
     VolumeX,
     X,
+    /// The website's alone, for the window drawn on the GPU: kept here with the app's so
+    /// that the page's copy is held to Lucide's like the rest.
+    Zap,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 31] = [
+    pub const ALL: [Icon; 32] = [
         Icon::ArrowDownUp,
         Icon::Bookmark,
         Icon::Calendar,
@@ -75,6 +78,7 @@ impl Icon {
         Icon::Volume2,
         Icon::VolumeX,
         Icon::X,
+        Icon::Zap,
     ];
 
     fn name(self) -> &'static str {
@@ -110,12 +114,16 @@ impl Icon {
             Icon::VolumeX => "volume-x",
             Icon::Star => "star",
             Icon::TriangleAlert => "triangle-alert",
+            Icon::Zap => "zap",
         }
     }
 
     /// The inside of the icon's `<svg>`.
     fn inner(self) -> &'static str {
         match self {
+            Icon::Zap => {
+                r#"<path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z"/>"#
+            }
             Icon::Calendar => {
                 r#"<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>"#
             }
