@@ -518,9 +518,9 @@ pub fn list_tag_rules(engine: &Engine) -> CmdResult<Vec<TagRule>> {
     Ok(engine.lib.tag_rules()?)
 }
 
-pub fn rename_tag(engine: &Engine, from: &str, to: &str) -> CmdResult<()> {
-    engine.rename_tag(from, to)?;
-    Ok(())
+/// Answers the name stored, which an open view of the keyword now goes by.
+pub fn rename_tag(engine: &Engine, from: &str, to: &str) -> CmdResult<String> {
+    Ok(engine.rename_tag(from, to)?)
 }
 
 pub fn hide_tag(engine: &Engine, tag: &str) -> CmdResult<()> {

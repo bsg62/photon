@@ -467,7 +467,23 @@ impl ViewerView {
         ui.interact(window, Id::new("viewer-photo"), Sense::CLICK);
         let mut actions = self.input(ui, data, zoom, area, &controls, zooms);
 
-        let drawn = shows.then(|| picture(ui, data, area, zoom)).flatten();
+        // A video's picture stops above its strip, as the Svelte `video.full` does, so
+        // that the strip and the bar under it never cover it - a portrait video most. By
+        // where the strip stands whether or not it is drawn: the controls go at rest in a
+        // show, and the picture is not to grow under them as they go. From its poster
+        // on, before the player has opened (seconds, with Media Foundation): fitted to
+        // the whole area until then, the poster shrank as the strip came. A video that
+        // cannot be played keeps the whole area, under what is said of it.
+        let fit_in = if data.video && data.message.is_none() {
+            let strip = strip_place(window, area);
+            Frame {
+                height: (strip.top() - S[1] - area.top).max(0.0),
+                ..area
+            }
+        } else {
+            area
+        };
+        let drawn = shows.then(|| picture(ui, data, fit_in, zoom)).flatten();
         self.drawn = (drawn.filter(|_| zoom.is_fit())).map(|(texture, at)| (texture.clone(), at));
         if let Some((texture, at)) = drawn {
             let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
@@ -3634,6 +3650,32 @@ mod tests {
         assert!(
             matches!(pressed.as_slice(), [ViewerAction::Video(Act::ScrubBegin(along))] if *along > 0.0 && *along < 0.5),
             "{pressed:?}"
+        );
+    }
+
+    // A playing video is fitted above its strip, not under it: the Svelte `video.full`'s
+    // rule. A photo still has the whole area.
+    #[test]
+    fn a_video_is_fitted_above_its_strip() {
+        // Upright, as a phone's video is: fitted by its height.
+        let mut f = Fixture::new().with_preview([800, 1600]);
+        f.video = true;
+        f.frame(Vec::new());
+        // Its poster, before its player has opened, stands where its picture will.
+        let (_, poster) = f.photo().expect("the poster");
+        f.strip = video().strip;
+        f.frame(Vec::new());
+        let strip = f.drew("0:01").expect("the strip").top() - S[1];
+        let (_, picture) = f.photo().expect("the picture");
+        assert!(picture.bottom() <= strip, "{picture:?} reaches {strip}");
+        assert_eq!(poster, picture, "the poster stood elsewhere");
+        f.video = false;
+        f.strip = None;
+        f.frame(Vec::new());
+        let (_, photo) = f.photo().expect("the photo");
+        assert!(
+            photo.height() > picture.height(),
+            "{photo:?} against {picture:?}"
         );
     }
 

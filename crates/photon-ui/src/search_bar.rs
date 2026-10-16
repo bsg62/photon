@@ -40,6 +40,8 @@ const LEFT_GROUPS: usize = 3;
 const PLACEHOLDER: &str = "Search names, camera, keywords, dates…";
 const FIELD_LABEL: &str = "Search photos by file or folder name, camera, lens, keyword or date";
 const HELP_LABEL: &str = "What you can search for";
+/// The cross that empties the box: the name WebView2 and WebKit give their own.
+pub const CLEAR_LABEL: &str = "Clear search";
 const LEAD: &str = "Everything typed must match. Click a term to add it to the search.";
 
 pub struct SearchBarData<'a> {
@@ -55,7 +57,7 @@ pub struct SearchBarData<'a> {
 pub enum SearchAction {
     /// The text was changed by the user: it is to be searched for once they stop.
     Typed,
-    /// The box was emptied with Escape: the empty search is to be made now.
+    /// The box was emptied, by Escape or by its cross: the empty search is to be made now.
     Clear,
     /// The bookmark: the search is to be saved.
     Save,
@@ -70,6 +72,10 @@ pub struct SearchBar {
     slash_held: bool,
     /// Where the panel was last drawn, for a press outside it.
     panel: Option<Rect>,
+    /// Whether the keyboard was the box's, or one of its buttons', in the last frame; and
+    /// the panel's term that had it when the panel was last drawn.
+    had_keys: bool,
+    term_keys: Option<Id>,
 }
 
 /// The field's own name to egui: where the keyboard is, and the caret.
@@ -100,6 +106,20 @@ impl SearchBar {
             vec2(FIELD_WIDTH.min(rect.width()).max(0.0), FIELD_HEIGHT),
         );
         let had_focus = ui.memory(|memory| memory.has_focus(id));
+        // The panel closes when the keyboard leaves the box and its buttons for something
+        // else - Tab walking on to the gear, the photos - as the Svelte box's `focusout`
+        // has it: left open it lay over the grid with nothing to close it but the mouse.
+        // The panel's terms are the box's too: Tab walks from its button into them. Asked
+        // of the panel as it was last drawn (`term_keys`), not of egui's `read_response`,
+        // which takes the keyboard off a focused field whose click is elsewhere - the
+        // People page's name box lost it at the click on a person offered under it.
+        let ours = [id, ui.id().with("search-help"), ui.id().with("search-save")];
+        let focused = ui.memory(|memory| memory.focused());
+        let is_ours = |now: Id| ours.contains(&now) || self.term_keys == Some(now);
+        if self.help && self.had_keys && focused.is_some_and(|now| !is_ours(now)) {
+            self.help = false;
+        }
+        self.had_keys = focused.is_some_and(is_ours);
         let select = self.take_keys(ui);
 
         // The buttons stand inside the field's right end, and the text stops short of them.
@@ -112,8 +132,13 @@ impl SearchBar {
         };
         let help_button = button_at(4.0);
         let save_button = button_at(4.0 + BUTTON + 2.0);
-        let text_right = if holding {
-            save_button.left()
+        // The cross that empties the box, while it holds anything: the Svelte box is a
+        // `type="search"` input, whose cross is the web view's own - which is why no
+        // Svelte line names it, and why the first native box had none (the first person
+        // to run it found it gone).
+        let clear_button = button_at(4.0 + 2.0 * (BUTTON + 2.0));
+        let text_right = if !text.is_empty() {
+            clear_button.left()
         } else {
             help_button.left()
         } - 2.0;
@@ -230,6 +255,30 @@ impl SearchBar {
             );
         }
 
+        // The cross: the box emptied and the empty search made at once, as Escape does,
+        // with the keys left in the box. No stop of the Tab key, as a web view's is not:
+        // Escape is the keyboard's way to the same.
+        if !text.is_empty() {
+            let response = (ui.interact(clear_button, ui.id().with("search-clear"), Sense::CLICK))
+                .on_hover_text(CLEAR_LABEL);
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, CLEAR_LABEL));
+            if response.hovered() {
+                ui.painter()
+                    .rect_filled(clear_button, R[1], color(palette.hover));
+            }
+            let tint = if response.hovered() {
+                palette.text
+            } else {
+                palette.text_dim
+            };
+            Icon::X.paint(ui, clear_button, ICON, false, color(tint));
+            if response.clicked() {
+                text.clear();
+                actions.push(SearchAction::Clear);
+                ui.memory_mut(|memory| memory.request_focus(id));
+            }
+        }
+
         // What the box understands.
         if small_button(
             ui,
@@ -298,6 +347,7 @@ impl SearchBar {
             }
         } else {
             self.panel = None;
+            self.term_keys = None;
         }
         actions
     }
@@ -368,6 +418,7 @@ impl SearchBar {
         // Never taller than the window under the top bar: it scrolls instead.
         let tallest = (window.height() - 64.0).max(0.0);
         let mut picked = None;
+        let mut keyed = None;
         let shown = egui::Area::new(Id::new("search-help-panel"))
             .order(Order::Foreground)
             .fixed_pos(pos2(field.left(), field.bottom() + S[1]))
@@ -405,7 +456,8 @@ impl SearchBar {
                                         SEARCH_HELP.split_at(LEFT_GROUPS.min(SEARCH_HELP.len()));
                                     for (column, groups) in columns.iter_mut().zip([left, right]) {
                                         for group in groups {
-                                            if let Some(term) = self::group(column, group, palette)
+                                            if let Some(term) =
+                                                self::group(column, group, palette, &mut keyed)
                                             {
                                                 picked = Some(term);
                                             }
@@ -416,13 +468,20 @@ impl SearchBar {
                     });
             });
         self.panel = Some(shown.response.rect);
+        self.term_keys = keyed;
         picked
     }
 }
 
 /// One group of the panel: its title, and a row to each entry - what is typed, set apart
 /// as a key cap is, and what it finds. Answers the term that was clicked.
-fn group(ui: &mut egui::Ui, group: &HelpGroup, palette: &Palette) -> Option<&'static str> {
+/// `keyed` is told the term that has the keyboard.
+fn group(
+    ui: &mut egui::Ui,
+    group: &HelpGroup,
+    palette: &Palette,
+    keyed: &mut Option<Id>,
+) -> Option<&'static str> {
     let mut picked = None;
     ui.label(
         egui::RichText::new(group.title)
@@ -446,7 +505,11 @@ fn group(ui: &mut egui::Ui, group: &HelpGroup, palette: &Palette) -> Option<&'st
                         .fill(color(palette.field))
                         .stroke(Stroke::new(1.0, color(palette.line)))
                         .corner_radius(R[1]);
-                    if ui.add(button).clicked() {
+                    let response = ui.add(button);
+                    if response.has_focus() {
+                        *keyed = Some(response.id);
+                    }
+                    if response.clicked() {
                         picked = Some(entry.text);
                     }
                 } else {
@@ -536,6 +599,10 @@ mod tests {
     };
     const HELP: Pos2 = pos2(46.0 + FIELD_WIDTH - 4.0 - BUTTON / 2.0, 22.5);
     const SAVE: Pos2 = pos2(46.0 + FIELD_WIDTH - 4.0 - BUTTON - 2.0 - BUTTON / 2.0, 22.5);
+    const CLEAR: Pos2 = pos2(
+        46.0 + FIELD_WIDTH - 4.0 - 2.0 * (BUTTON + 2.0) - BUTTON / 2.0,
+        22.5,
+    );
 
     fn each_shape(shape: &egui::Shape, visit: &mut impl FnMut(&egui::Shape)) {
         match shape {
@@ -555,6 +622,8 @@ mod tests {
         in_search: bool,
         /// Another text field, under the bar, with the keyboard: a name being typed.
         other: Option<String>,
+        /// A button after the bar, for the Tab key to walk to.
+        after: bool,
         size: egui::Vec2,
         time: f64,
         /// Every text the last frame drew, with where.
@@ -571,6 +640,7 @@ mod tests {
                 can_save: true,
                 in_search: false,
                 other: None,
+                after: false,
                 size: vec2(1280.0, 800.0),
                 time: 0.0,
                 texts: Vec::new(),
@@ -591,6 +661,7 @@ mod tests {
                 in_search: self.in_search,
             };
             let (bar, text, other) = (&mut self.bar, &mut self.text, &mut self.other);
+            let after = self.after;
             let mut actions = Vec::new();
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
@@ -598,6 +669,10 @@ mod tests {
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
                         actions = bar.show(ui, ROOM, text, &data);
+                        if after {
+                            let at = Rect::from_min_size(pos2(600.0, 300.0), vec2(80.0, 24.0));
+                            ui.put(at, egui::Button::new("After"));
+                        }
                         if let Some(typed) = other {
                             let at = Rect::from_min_size(pos2(400.0, 300.0), vec2(200.0, 24.0));
                             ui.put(at, egui::TextEdit::singleline(typed))
@@ -910,6 +985,34 @@ mod tests {
         assert!(!f.bar.help_open());
     }
 
+    // The keyboard taken out of the box and its buttons by Tab closes the panel, as a
+    // press elsewhere does; to the panel's own button it stays.
+    #[test]
+    fn the_keyboard_walking_out_of_the_box_closes_the_panel() {
+        let mut f = Fixture::new("");
+        f.after = true;
+        f.find();
+        f.open_help();
+        f.find();
+        assert!(f.bar.help_open());
+        // Through the panel's own button and its terms it stays; at the button after
+        // the box it closes.
+        let mut walked = 0;
+        while f.bar.help_open() {
+            f.key(Key::Tab);
+            f.frame(Vec::new());
+            walked += 1;
+            assert!(walked < 200, "the Tab key never left the panel");
+        }
+        assert!(walked > 3, "closed after {walked}, among its own terms");
+        let focused = f
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the keyboard is somewhere");
+        let at = f.ctx.read_response(focused).expect("drawn").rect;
+        assert_eq!(at.min, pos2(600.0, 300.0), "on the button after the box");
+    }
+
     // Escape closes the nearest thing: the panel, and the search stays.
     #[test]
     fn escape_with_the_panel_open_closes_the_panel_and_nothing_else() {
@@ -924,6 +1027,22 @@ mod tests {
         // The second Escape is the box's.
         f.find();
         assert_eq!(f.key(Key::Escape), [SearchAction::Clear]);
+    }
+
+    // A box that holds something has a cross that empties it and makes the empty search
+    // at once, as Escape does, the keys left in the box: the web view's own, which the
+    // Svelte box had by being a `type="search"` input, and the first native box had not.
+    #[test]
+    fn the_cross_empties_the_box_and_makes_the_empty_search() {
+        let mut f = Fixture::new("");
+        f.frame(Vec::new());
+        assert_eq!(f.click(CLEAR), [], "no cross over an empty box");
+        f.text = "lake 2024".to_owned();
+        assert_eq!(f.click(CLEAR), [SearchAction::Clear]);
+        assert_eq!(f.text, "");
+        assert!(f.focused(), "the keys are the box's");
+        f.typed("pond");
+        assert_eq!(f.text, "pond");
     }
 
     #[test]

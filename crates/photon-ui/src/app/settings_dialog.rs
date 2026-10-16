@@ -123,6 +123,9 @@ pub(super) enum SettingWrote {
     TagRenamed {
         sent: u64,
         opening: u64,
+        /// The keyword's name before, and the one stored.
+        from: String,
+        to: String,
     },
     /// A keyword's rule made or taken back: the lists are read again.
     TagRules,
@@ -171,7 +174,12 @@ pub(super) fn store(engine: &Arc<Engine>, write: SettingWrite) -> Result<Wrote, 
         SettingWrite::RenameTag { rename, opening } => {
             let sent = rename.sent;
             commands::rename_tag(engine, &rename.from, &rename.to)
-                .map(|()| SettingWrote::TagRenamed { sent, opening })
+                .map(|to| SettingWrote::TagRenamed {
+                    sent,
+                    opening,
+                    from: rename.from.clone(),
+                    to,
+                })
                 .map_err(refused(Refused::Rename { sent, opening }))?
         }
         SettingWrite::HideTag(tag) => commands::hide_tag(engine, &tag)
@@ -453,7 +461,16 @@ impl App {
                 self.settings_lists.ask(());
                 return;
             }
-            SettingWrote::TagRenamed { sent, opening } => {
+            SettingWrote::TagRenamed {
+                sent,
+                opening,
+                from,
+                to,
+            } => {
+                // The engine moved its own view with the rename (`Engine::rename_tag`);
+                // the window's name for it moves too, or it showed the keyword's photos
+                // under a name that is gone, and its row in the sidebar marked nothing.
+                self.nav.renamed_tag(&from, &to);
                 self.collecting.ask(());
                 self.settings_lists.ask(());
                 if let Some(Dialog::Settings(settings)) = &mut self.dialog

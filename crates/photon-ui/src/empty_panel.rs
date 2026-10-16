@@ -110,6 +110,10 @@ pub fn show(ui: &mut egui::Ui, place: Rect, panel: &Panel) -> Option<PanelButton
             fonts::regular(T[2]),
             color(tint),
         );
+        // A stop of the Tab key shows that it is one: Enter presses it.
+        if response.has_focus() {
+            crate::settings_view::ring(ui.painter(), rect, R[2], palette);
+        }
         if response.clicked() {
             pressed = Some(*button);
         }
@@ -365,5 +369,28 @@ mod tests {
         f.frame(&hidden(), Vec::new());
         let (_, show_hidden) = f.button("Show hidden photos");
         assert_eq!(show_hidden, color(palette.field));
+    }
+
+    // A button the Tab key has reached shows it, by the ring Settings' buttons draw.
+    #[test]
+    fn a_button_the_tab_key_reaches_has_its_ring() {
+        let mut f = Fixture::new();
+        let panel = looking();
+        f.frame(&panel, Vec::new());
+        let (rect, _) = f.button(PanelButton::AddFolder.label());
+        let ringed = |f: &Fixture| (f.fills.iter()).any(|(at, _)| *at == rect.expand(2.0));
+        assert!(!ringed(&f));
+        f.frame(
+            &panel,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        f.frame(&panel, Vec::new());
+        assert!(ringed(&f), "no ring round the button the keyboard is on");
     }
 }

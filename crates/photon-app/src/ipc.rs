@@ -331,7 +331,7 @@ pub fn list_tag_rules(engine: Eng<'_>) -> Result<Vec<TagRule>, AppError> {
 
 #[tauri::command(async)]
 pub fn rename_tag(engine: Eng<'_>, from: String, to: String) -> Result<(), AppError> {
-    commands::rename_tag(&engine, &from, &to)
+    commands::rename_tag(&engine, &from, &to).map(|_| ())
 }
 
 #[tauri::command(async)]

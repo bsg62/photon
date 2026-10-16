@@ -3378,6 +3378,37 @@ alone), and over a higher one it is refused - the workflow's summary says so. Th
 are built from paths made whole first (`std::path::absolute`): dpkg-shlibdeps, linuxdeploy
 and light each run in a folder of their own, and `--out dist` was read from there.
 
+**What the switch-over's audit of the Svelte checklist ported** (spec
+`2026-10-16-photon-native-switch-over-design.md`, each with its test). Closing the viewer
+on the photo the keys were on keeps the selection it stands in (`close_viewer`'s
+`on_lead`; Shift+End, Enter, Escape lost the range). A tile's marks have a halo of
+`SHADOW_INK` (`tile::halo`); the tiles of a folder whose watched folder is offline are
+drawn at 0.4 (`offline_folders`, `GridData::offline`); a thumbnail that arrives later than
+two frames after the loader was asked for it, onto a still grid, fades in over 120 ms
+(`Textures::asking`, `arrived`, `upload`'s `fade`, `shown`, `INSTANT_SECS`): timed to when
+the loader hands it over and not to its upload, which is rationed a few a frame, and
+counted from when the loader was asked and not from when a deferred scroll first passed
+over it - either way a screenful of cached thumbnails counted as late and faded in after
+every fast scroll (a review). One arriving while the grid moves does not fade. A mark's
+halo is one enlarged paint of the icon in the shadow's ink, not one a direction: an
+icon's paint goes through egui's loaders, and eight cost a marked grid three times its
+painting. A playing video is
+fitted above its strip (`fit_in` in `ViewerView::show`). The search box has the web
+view's own cross (`CLEAR_LABEL`), and its help closes when the keyboard leaves the box and
+its buttons and its own terms (`had_keys`, `term_keys` - not egui's `read_response`,
+which takes the keyboard off a focused field whose click lands elsewhere, and so took it
+off the People page's name box at the click on a person offered under it). An open keyword's view follows the keyword renamed in Settings
+(`Nav::renamed_tag`, from the stored name `commands::rename_tag` now answers): the engine
+moves its own argument outside the views' queue. The info panel says a whole path under
+the pointer. The sidebar's rows, the empty library's buttons and the top bar's size
+buttons draw the keyboard's ring (`settings_view::ring`); the sidebar draws a row past each
+edge, cut away and only a stop of the Tab key (`Sense::FOCUSABLE`, no press - a press
+just under the list was handed to it as a near miss - and no name field, which drawn
+there was sent in every frame), so that Tab walks on below the edge, and brings the row the keyboard has
+just reached into sight (`keyed`); a name left from the keyboard gives the keyboard back to
+its row (`back_to`), unless the rename was begun on a header in the grid
+(`rename_from_grid`, `menu_on_header`). What was left, and why, is the spec's list.
+
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
 close by themselves, for about two minutes, on a desktop that has to stay awake and

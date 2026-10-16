@@ -39,9 +39,26 @@ use eframe::egui::{
 use jiff::tz::TimeZone;
 use photon_core::{
     grid::GridIndex,
-    library::{Folder, GridTile},
+    library::{Folder, GridTile, WatchedFolder},
 };
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
+
+/// The folders whose watched folder is not there - an unplugged drive, a share that does
+/// not answer: their tiles are dimmed, as the Svelte grid dims them (`isOnline`), the
+/// photos shown from photon's own cache.
+pub fn offline_folders(folders: &HashMap<i64, Folder>, watched: &[WatchedFolder]) -> HashSet<i64> {
+    let gone: HashSet<i64> = (watched.iter())
+        .filter(|watched| !watched.online)
+        .map(|watched| watched.id)
+        .collect();
+    (folders.values())
+        .filter(|folder| gone.contains(&folder.watched_id))
+        .map(|folder| folder.id)
+        .collect()
+}
 
 /// The least a page key scrolls a grid with nothing selected in it.
 const LEAST_PAGE: f64 = 40.0;
@@ -127,6 +144,8 @@ pub struct GridData<'a> {
     pub layout_gen: u64,
     pub index: &'a GridIndex,
     pub folders: &'a HashMap<i64, Folder>,
+    /// The folders whose tiles are dimmed (`offline_folders`).
+    pub offline: &'a HashSet<i64>,
     pub size: GridTile,
     /// The viewer's zone, for the month a folder's header names.
     pub zone: &'a TimeZone,
@@ -448,7 +467,8 @@ impl GridView {
         let motion = self.speed.motion();
         let (first, last) = visible_range(&self.rows, top, viewport, 0.0);
         let (wanted, on_screen) = self.wanted(data.index, top, viewport, motion, (first, last));
-        let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport));
+        let still = matches!(motion, Motion::Still);
+        let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport), still);
 
         let (settled, marked) = self.draw(ui, area, data, thumbs, selection, (first, last));
         self.drawn = Some((area, top));
@@ -1145,7 +1165,8 @@ impl GridView {
             return (true, 0);
         };
         let palette = palette(ui.ctx());
-        let clipped = clipped_to(ui, area);
+        let now = ui.input(|input| input.time);
+        let mut clipped = clipped_to(ui, area);
         let top = snapped(self.scroll.position(), f64::from(ui.pixels_per_point()));
         let (mut settled, mut marks) = (true, 0);
         for row in &self.rows[first..last] {
@@ -1175,7 +1196,8 @@ impl GridView {
                         // blank the eye waits on.
                         let marked =
                             thumbs.failed(entry.thumb_key) || thumbs.troubled(entry.thumb_key);
-                        let texture = thumbs.texture(entry.thumb_key);
+                        let shown = thumbs.shown(entry.thumb_key, now);
+                        let texture = thumbs.texture(entry.thumb_key).map(|t| (t, shown));
                         settled &= marked || texture.is_some();
                         marks += usize::from(marked);
                         let selected = selection.is_selected(entry.id);
@@ -1183,7 +1205,17 @@ impl GridView {
                             has_copies: entry.has_copies && data.copies_marked,
                             ..*entry
                         };
-                        tile::paint(&clipped, rect, entry, texture, marked, selected, palette);
+                        let dimmed = data.offline.contains(&entry.folder_id);
+                        tile::paint(
+                            &mut clipped,
+                            rect,
+                            entry,
+                            texture,
+                            marked,
+                            selected,
+                            dimmed,
+                            palette,
+                        );
                     }
                 }
             }
@@ -1403,6 +1435,8 @@ mod tests {
         rings: Vec<Rect>,
         /// Every filled rectangle the last frame drew.
         fills: Vec<(Rect, egui::Color32)>,
+        /// The folders whose tiles are dimmed.
+        offline: HashSet<i64>,
         /// What the last frame drew: each text with where it is and what it is clipped
         /// to, and the top of every clip rectangle anything was drawn in.
         texts: Vec<(String, Rect, Rect)>,
@@ -1478,6 +1512,7 @@ mod tests {
             told: Modifiers::NONE,
             rings: Vec::new(),
             fills: Vec::new(),
+            offline: HashSet::new(),
             texts: Vec::new(),
             clip_tops: Vec::new(),
         }
@@ -1552,6 +1587,7 @@ mod tests {
                 layout_gen: self.layout_gen,
                 index: &self.index,
                 folders: &folders,
+                offline: &self.offline,
                 size: self.tile,
                 zone: &TimeZone::UTC,
                 library: self.library,
@@ -1622,6 +1658,32 @@ mod tests {
                 .get(&egui::ViewportId::ROOT)
                 .map_or(Duration::MAX, |viewport| viewport.repaint_delay);
             output.unwrap()
+        }
+
+        /// Draws frames until every thumbnail in sight has arrived, and the fades of those
+        /// that arrived late are over: a thumbnail's own frames are not what a test of a
+        /// still grid is about, and on a loaded machine one arrives late enough to fade.
+        fn thumbs_settled(&mut self) {
+            for _ in 0..500 {
+                let frame = self.frame(Vec::new());
+                if frame.settled && !frame.loading {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let fade = crate::thumbs::textures::FADE_SECS;
+            for _ in 0..=(fade / self.dt).ceil() as usize {
+                self.frame(Vec::new());
+            }
+            // And until no frame is owed at once: on a loaded machine the last of them can
+            // still arrive late, and its fade asks for frames of its own.
+            for _ in 0..500 {
+                let frame = self.frame(Vec::new());
+                if self.repaint_delay != Duration::ZERO && !frame.loading {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
         }
 
         fn key(&mut self, key: Key) -> GridOutput {
@@ -3427,6 +3489,7 @@ mod tests {
     fn a_band_held_still_away_from_the_edges_asks_for_no_frame() {
         let mut f = fixture(&[4000]);
         f.frame(Vec::new());
+        f.thumbs_settled();
         f.drag(f.middle(1), f.middle(6));
         f.frame(Vec::new());
         let frame = f.frame(Vec::new());
@@ -3705,6 +3768,7 @@ mod tests {
     fn a_band_resting_in_a_margin_where_the_grid_cannot_move_asks_for_no_frame() {
         let mut f = fixture(&[4000]);
         f.frame(Vec::new());
+        f.thumbs_settled();
         f.drag(f.middle(5), Pos2::new(300.0, 10.0));
         // egui draws a frame of its own after one with input in it.
         f.frame(Vec::new());
@@ -3733,6 +3797,9 @@ mod tests {
         f.frame(Vec::new());
         f.view.scroll_to(f64::INFINITY);
         f.frame(Vec::new());
+        // The thumbnails at the end in, or one arriving late fades and asks for frames of
+        // its own: macOS' CI saw it.
+        f.thumbs_settled();
         f.drag(Pos2::new(300.0, 300.0), Pos2::new(300.0, 590.0));
         f.frame(Vec::new());
         f.frame(Vec::new());
@@ -4286,5 +4353,90 @@ mod tests {
         f.frame(Vec::new());
         f.frame(Vec::new());
         assert_eq!(f.right_click(at).header_menu, None);
+    }
+
+    // A folder whose watched folder is offline has its tiles dimmed, the photos shown from
+    // the cache: the Svelte grid's `dimmed`. Here the first of two folders.
+    #[test]
+    fn the_tiles_of_an_offline_folder_are_dimmed() {
+        let mut f = fixture(&[3, 3]);
+        f.frame(Vec::new());
+        let tile = |f: &Fixture, n: usize| -> egui::Color32 {
+            let at = f.view.rect_of(n).expect("the tile is drawn");
+            (f.fills.iter())
+                .find(|(rect, _)| *rect == at)
+                .map(|(_, fill)| *fill)
+                .expect("its ground")
+        };
+        let (first, second) = (tile(&f, 0), tile(&f, 3));
+        assert_eq!(first, second);
+        f.offline = HashSet::from([1]);
+        f.frame(Vec::new());
+        assert!(
+            tile(&f, 0).a() < first.a(),
+            "{:?} against {first:?}",
+            tile(&f, 0)
+        );
+        assert_eq!(tile(&f, 3), second, "the other folder's");
+    }
+
+    #[test]
+    fn a_folder_is_offline_when_its_watched_folder_is() {
+        let folder = |id, watched_id| Folder {
+            id,
+            watched_id,
+            parent_id: None,
+            path: String::new(),
+            name: String::new(),
+            hidden: false,
+            alias: None,
+        };
+        let watched = |id, online| WatchedFolder {
+            id,
+            path: String::new(),
+            online,
+        };
+        let folders = HashMap::from([(1, folder(1, 7)), (2, folder(2, 7)), (3, folder(3, 8))]);
+        let offline = offline_folders(&folders, &[watched(7, false), watched(8, true)]);
+        assert_eq!(offline, HashSet::from([1, 2]));
+    }
+
+    // A fast scroll lands on cached thumbnails without a fade: they are counted from when
+    // the loader was asked for them, after the scroll's deferral, and not from when the
+    // grid first passed over them - from then, every tile of the screen landed on was
+    // late, and faded in.
+    #[test]
+    fn a_fast_scroll_lands_on_its_thumbnails_without_a_fade() {
+        let mut f = fixture(&[4000]);
+        f.thumbs_settled();
+        // A stream of jumps, as a scrollbar dragged makes: the asking deferred until it
+        // stops, and the tiles it lands on wanted all the while.
+        for step in 1..=10 {
+            f.view.move_to(f64::from(step) * 8000.0);
+            f.frame(Vec::new());
+        }
+        let mut faintest = 255;
+        for _ in 0..120 {
+            f.frame(Vec::new());
+            // Time for the loader's thread to hand over what was asked for by the next
+            // frame, as a cached thumbnail is.
+            std::thread::sleep(Duration::from_millis(5));
+            let tile = f64::from(f.view.rect_of(0).map_or(0.0, |rect| rect.width()));
+            for (rect, fill) in &f.fills {
+                // A thumbnail: an image the tile's size, tinted white at what is seen of it
+                // - not the tile's ground under it, which is a translucent white in the
+                // dark theme.
+                let white = fill.r() == fill.a() && fill.g() == fill.a() && fill.b() == fill.a();
+                let ground = *fill == color(palette(&f.ctx).field);
+                if (f64::from(rect.width()) - tile).abs() < 1.0 && white && !ground && fill.a() > 0
+                {
+                    faintest = faintest.min(fill.a());
+                }
+            }
+        }
+        assert_eq!(
+            faintest, 255,
+            "a thumbnail faded in where the scroll landed"
+        );
     }
 }
