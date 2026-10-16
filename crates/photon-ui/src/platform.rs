@@ -168,9 +168,10 @@ fn keeper() -> std::sync::mpsc::Sender<Job> {
 }
 
 /// `path` shown in Explorer, selected: the shell's own call, as Tauri's opener makes it, on
-/// a thread that has made COM ready. A path Explorer cannot make an item of - it fails
-/// "mysteriously" with "file not found" on some systems, Electron's note says - opens its
-/// folder instead.
+/// a thread that has made COM ready. Where the shell cannot select it - Electron's note
+/// says the call fails "mysteriously" with "file not found" on some systems, where Tauri's
+/// opener opens the folder; here any failure does, the path having been found before -
+/// its folder is opened instead.
 #[cfg(target_os = "windows")]
 fn reveal(path: &Path) -> Result<(), String> {
     use windows::{
@@ -183,7 +184,7 @@ fn reveal(path: &Path) -> Result<(), String> {
     let folder = path.parent().unwrap_or(path);
     // SAFETY: called on this thread before any other COM call it makes; a second call on
     // a thread already ready answers so, which is no error here.
-    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let ready = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
     let (folder_name, path_name) = (HSTRING::from(folder), HSTRING::from(path));
     // SAFETY: both strings outlive the calls, and each list made is freed below.
     let (folder_item, path_item) = unsafe {
@@ -204,9 +205,15 @@ fn reveal(path: &Path) -> Result<(), String> {
         ILFree(Some(folder_item.cast_const()));
         ILFree(Some(path_item.cast_const()));
     }
-    shown.or_else(|()| {
+    let shown = shown.or_else(|()| {
         open::that_detached(folder).map_err(|err| format!("Couldn't show it in Explorer: {err}"))
-    })
+    });
+    if ready {
+        // SAFETY: balances the `CoInitializeEx` above, on the same thread, after its last
+        // COM call.
+        unsafe { windows::Win32::System::Com::CoUninitialize() };
+    }
+    shown
 }
 
 /// `path` shown in the Finder, selected: `open -R`, the Finder's own way to be asked.

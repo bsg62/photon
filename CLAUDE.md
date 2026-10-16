@@ -2225,9 +2225,13 @@ folder's row and About's library in Settings - every "Open in default app", and 
 panel's "Open in OpenStreetMap" (the engine's `item_map_url`). Each asking is a thread of
 its own (`Opening`): the path is the library's, read off the window's thread, and a file
 on a share that has stopped answering or a file manager starting can take seconds; what
-goes wrong is said, in the system's words. Reveal is the shell's
-`SHOpenFolderAndSelectItems` on Windows (COM made ready on that thread; a path the shell
-cannot make an item of opens its folder instead, as Tauri's opener does), `open -R` on a
+goes wrong is said, in the system's words. **The path is asked about before the system
+is** (`there`, as Tauri's opener asks it): the file manager on Linux answers for any path
+and `xdg-open` is let go of before it finds out, so a photo on an unplugged drive was
+revealed to nobody with nothing said. Reveal is the shell's `SHOpenFolderAndSelectItems`
+on Windows (COM made ready on that thread and let go of after; where the shell cannot
+select the file, its folder opens - Tauri's opener does that for the "file not found" it
+sometimes answers, this for any failure, the path having been found first), `open -R` on a
 Mac, and the file manager's D-Bus interface (`FileManager1.ShowItems`) on Linux, with the
 folder opened where no file manager answers; Open is the `open` crate - `ShellExecuteExW`,
 `open`, `xdg-open`. Every stored path is `paths::canonicalize`'s, so a share reaches the

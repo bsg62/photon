@@ -3696,9 +3696,6 @@ impl App {
             self.open_compare(asked.ids);
             return;
         }
-        // The clipboard holds one picture: exactly one photo selected, not the lead of a
-        // wider selection - the Svelte grid's rule, Reveal's too - and no video, of which
-        // the key is simply dead, as the menu offers no copy of one.
         // The file manager shows one photo: exactly one selected, as for a copy.
         if asked.ask == Ask::Reveal {
             if let [id] = asked.ids[..] {
@@ -3706,6 +3703,9 @@ impl App {
             }
             return;
         }
+        // The clipboard holds one picture: exactly one photo selected, not the lead of a
+        // wider selection - the Svelte grid's rule, Reveal's too - and no video, of which
+        // the key is simply dead, as the menu offers no copy of one.
         if asked.ask == Ask::Copy {
             if let [id] = asked.ids[..]
                 && self

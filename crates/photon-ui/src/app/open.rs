@@ -11,7 +11,11 @@
 
 use super::App;
 use photon_engine::{commands, engine::Engine, error::AppError};
-use std::{ffi::OsString, sync::mpsc};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 
 /// What is asked of the system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,11 +36,14 @@ pub(crate) enum Opening {
 
 /// What the system is asked: a path to show, or a file or address to open.
 enum Asked {
-    Reveal(std::path::PathBuf),
+    Reveal(PathBuf),
     Open(OsString),
     /// A photo with no position: nothing to open.
     Nothing,
 }
+
+/// What is said of a path that is not there - a photo deleted since, a drive unplugged.
+pub(crate) const NOT_THERE: &str = "It isn't there any more, or its drive is not connected";
 
 fn asked(engine: &Engine, opening: Opening) -> Result<Asked, AppError> {
     Ok(match opening {
@@ -64,7 +71,11 @@ impl App {
                 let done = asked(&engine, opening)
                     .map_err(|err| err.message)
                     .and_then(|asked| match asked {
-                        Asked::Reveal(path) => platform.reveal(&path),
+                        Asked::Reveal(path) => there(&path).and_then(|()| platform.reveal(&path)),
+                        // A photo's file, asked about; the map's address is no path.
+                        Asked::Open(target) if matches!(opening, Opening::OpenPhoto(_)) => {
+                            there(Path::new(&target)).and_then(|()| platform.open(&target))
+                        }
                         Asked::Open(target) => platform.open(&target),
                         Asked::Nothing => Ok(()),
                     });
@@ -87,6 +98,16 @@ impl App {
         }
         answered
     }
+}
+
+/// Whether `path` is there, asked before the system is: the file manager on Linux answers
+/// for any path, and `xdg-open` is let go of before it finds out, so a photo on a drive
+/// that is unplugged - the likeliest thing of all to be revealed from Settings - was
+/// revealed to nobody, with nothing said. As Tauri's opener asks it.
+fn there(path: &Path) -> Result<(), String> {
+    std::fs::metadata(path)
+        .map(|_| ())
+        .map_err(|err| format!("{NOT_THERE}: {} ({err}).", path.display()))
 }
 
 /// Where the askings say what went wrong.

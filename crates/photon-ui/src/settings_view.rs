@@ -1284,7 +1284,8 @@ impl SettingsView {
             reveal_at,
             Id::new(("settings-reveal", folder.id)),
             watched_list::REVEAL,
-            Look::Plain,
+            // Not of a folder whose removal is on its way, as its other buttons are not.
+            if folder.going { Look::Off } else { Look::Plain },
         );
         if reveal.clicked() {
             page.asked.push(Asked::RevealWatched(folder.id));
@@ -2095,6 +2096,17 @@ mod tests {
             .map(|(_, rect)| rect.center())
             .min_by(|a, b| (a.y - y).abs().total_cmp(&(b.y - y).abs()))
             .unwrap_or_else(|| panic!("no {label}"))
+    }
+    // A folder whose removal is on its way offers nothing: its Reveal no more than its
+    // Rescan and Remove… - pressed after the folder was gone, it said the library's "not
+    // found".
+    #[test]
+    fn a_folder_being_removed_offers_no_reveal() {
+        let mut f = folders();
+        the(&mut f).seen.folders[0].going = true;
+        f.frame(Vec::new());
+        let at = on_row(&f, "f1", watched_list::REVEAL);
+        assert_eq!(asked(f.click(at)), []);
     }
 
     // Each folder's row: its name, path and what is said of it, Rescan - no press while
