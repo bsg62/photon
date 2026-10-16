@@ -133,9 +133,11 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
    link has told it what it is since sub-project 1, which is how the tests read the window;
    what switching it on adds is the system's side - a screen reader can now reach them. **A
    screen reader's press goes through egui's `Modal`** (a dialog's ground keeps the pointer
-   from what lies under it, not an AccessKit action); what keeps it out is the
+   from what lies under it, not an AccessKit action); what keeps it from acting is the
    application's dropping of what the window answers under a dialog, which a test now holds
-   with an AccessKit press. **The photos are not reached**: the grid is one area with no
+   with an AccessKit press. A widget that changes itself as it is drawn still takes such a
+   press - a fold of the People page opens, the splitter takes the keyboard - which changes
+   nothing stored and nothing the dialog is about. **The photos are not reached**: the grid is one area with no
    widget for a tile, so a screen reader hears the grid's controls, the sidebar and the
    status bar ("N selected") and no photo by its name. Giving each tile in view a node of
    its own is left for a later piece of work, with a full audit with a screen reader, which

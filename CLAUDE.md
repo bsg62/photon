@@ -2065,7 +2065,8 @@ drops whatever the shell answers - a click that was over within that first frame
 still a click on the sidebar's row. *The cross in the picker's corner shows the keyboard
 on it*, as every button does. Not closed, and known: a screen reader's press goes
 through egui's modal, and the application's dropping of what the window answers under a
-dialog is what keeps it out (`tests/accesskit.rs`); the picker lays out every keyword in every frame, which is slow in a library of thousands;
+dialog is what keeps it from acting (`tests/accesskit.rs`) - a widget that changes itself as
+it is drawn, a fold of the People page, still takes it; the picker lays out every keyword in every frame, which is slow in a library of thousands;
 and a keyword's removal rule is dropped by adding that keyword again, as the engine has
 it.
 
@@ -2251,8 +2252,12 @@ tests having no adapter); one that no adapter can draw is said where there is no
 (`platform::startup_failed`). **AccessKit is switched on** (eframe's `accesskit`): every row,
 button and face has told it what it is since sub-project 1; a screen reader's press on
 what lies under a dialog is an action on a widget by its id, which egui's `Modal` does not
-stop, and the application's dropping of what the window answers under a dialog does
-(`tests/accesskit.rs`, with kittest's `click_accesskit`).
+stop, and the application's dropping of what the window answers under a dialog keeps from
+acting (`tests/accesskit.rs`, with kittest's `click_accesskit`) - all but a widget that
+changes itself as it is drawn (a fold of the People page, the splitter taking the keyboard),
+which changes nothing stored. **The surface is eframe's own** (`the_surface_is_eframes_own`):
+`WgpuConfiguration::default()` queues two frames where eframe's own options queue one, and
+spreading it under the adapter's choice cost every frame a frame of latency.
 
 **The viewer takes the whole window** (spec `2026-10-12-photon-native-viewer-design.md`;
 `viewer.rs` for which photo is open, `viewer_view.rs` for what is drawn, `App::viewer`
