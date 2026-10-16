@@ -122,3 +122,63 @@ fn the_window_keeps_no_memory_of_egui() {
     let (harness, _driver) = crate::common::opened(&library, 1);
     assert!(!eframe::App::persist_egui_memory(harness.state()));
 }
+
+// What eframe writes of a window closed while minimized is put right by the application
+// as it is saved: the size and place it was last seen at in its normal state, not the
+// 0 by 0 at -32000 that Windows says of a minimized window.
+#[test]
+fn a_window_saved_while_minimized_is_kept_at_its_normal_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = crate::common::library(dir.path(), 1, 0, 0);
+    let (mut harness, mut driver) = crate::common::opened(&library, 1);
+    driver.settle(&mut harness);
+    let root = eframe::egui::ViewportId::ROOT;
+    let info = |minimized| {
+        let mut info = eframe::egui::ViewportInfo {
+            native_pixels_per_point: Some(1.0),
+            inner_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::pos2(40.0, 60.0),
+                vec2(1000.0, 700.0),
+            )),
+            minimized: Some(minimized),
+            maximized: Some(false),
+            fullscreen: Some(false),
+            ..Default::default()
+        };
+        if minimized {
+            info.inner_rect = Some(eframe::egui::Rect::ZERO);
+        }
+        info
+    };
+    harness.input_mut().viewports.insert(root, info(false));
+    harness.step();
+    harness.input_mut().viewports.insert(root, info(true));
+    harness.step();
+    #[derive(Default)]
+    struct Memory(std::collections::HashMap<String, String>);
+    impl eframe::Storage for Memory {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {}
+    }
+    let mut memory = Memory::default();
+    let minimized = "(inner_position_pixels:Some((x:-32000.0,y:-32000.0)),outer_position_pixels:Some((x:-32000.0,y:-32000.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:0.0,y:0.0)))";
+    memory.0.insert("window".to_owned(), minimized.to_owned());
+    eframe::App::save(harness.state_mut(), &mut memory);
+    let kept = memory.0.get("window").unwrap();
+    assert!(
+        kept.contains("inner_size_points:Some((x:1000.0,y:700.0))"),
+        "kept as {kept}"
+    );
+    assert!(
+        kept.contains("inner_position_pixels:Some((x:40.0,y:60.0))"),
+        "kept as {kept}"
+    );
+}

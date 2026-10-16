@@ -5230,6 +5230,7 @@ dependencies = [
  "block2 0.6.2",
  "dirs",
  "eframe",
+ "egui-winit",
  "egui_extras",
  "egui_kittest",
  "fastframe-fonts",

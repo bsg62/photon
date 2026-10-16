@@ -31,31 +31,48 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
 
 ## Decisions
 
-1. **The window's own state is eframe's to keep** - its size, its place, maximized and
-   fullscreen (`NativeOptions::persist_window`, eframe's `persistence` feature), in a file
-   beside `library.db` (`persistence_path`: `window.ron`), not in `layout.json` as the
-   sidebar spec once said. eframe already does what the Tauri plugin does and what photon
-   would otherwise rebuild: it puts a window back only where a monitor still is
-   (`clamp_position_to_monitors`), and on Wayland, where a window has no place it can ask
-   for, it keeps the size alone. egui's own memory is not kept (`persist_egui_memory`
-   off): what photon remembers is in the library and in `layout.json`, and a second
-   record of the same things would disagree with them. A slideshow quit in the middle
-   reopens fullscreen, as the Tauri photon does (`WINDOW_STATE_FLAGS` keeps
-   `FULLSCREEN`), and F11 is the way out. The window gets photon's icon
-   (`ViewportBuilder::with_icon`, from the PNG the installers carry).
+1. **The window's own state is written by eframe and put right by photon** - its size,
+   its place, maximized and fullscreen (`NativeOptions::persist_window`, eframe's
+   `persistence` feature), in a file beside `library.db` (`persistence_path`:
+   `window.ron`), not in `layout.json` as the sidebar spec once said. eframe records the
+   window as it is when it saves, where the Tauri plugin records it only in its normal
+   state: closed from the taskbar while minimized, a Windows window is 0 by 0 at -32000,
+   and closed maximized, its normal size is the screen's. So photon follows the window's
+   normal size and place in every frame and puts them into what eframe has just written
+   (`App::save`, which eframe calls after writing it), with the flags the window had when
+   last seen unminimized. eframe keeps a window on the monitors there are on Windows
+   alone (`clamp_position_to_monitors`); a Mac keeps a window on a screen itself; on X11
+   the window manager places one whose monitor is gone; on Wayland, where a window has no
+   place it can ask for, the size alone is kept. egui's own memory is not kept
+   (`persist_egui_memory` off): what photon remembers is in the library and in
+   `layout.json`. A run asked to be fullscreen (the gate's) keeps nothing, and is
+   fullscreen over what was kept (eframe's `window_builder` hook, applied after it). A
+   slideshow quit in the middle reopens fullscreen, as the Tauri photon does
+   (`WINDOW_STATE_FLAGS` keeps `FULLSCREEN`), and F11 is the way out. The window gets
+   photon's icon (`ViewportBuilder::with_icon`, from the PNG the installers carry).
 
 2. **Folders are chosen through rfd**, the crate Tauri's dialog plugin is built on and
-   already in the lockfile: on Linux with its `xdg-portal` feature alone (ashpd over zbus,
-   pure Rust, no GTK - "No system library dependencies beyond the web view" holds), on
-   Windows and macOS the system's own. "Choose…" beside the export's destination and beside
-   Settings' "Add folder…" field opens it; the folder chosen is put in the field and asked
-   about as a typed one is, so the two ways are one rule. The empty library's "Add
-   folder…" opens the picker straight away, as the Svelte one does, and Settings with its
-   field only where the picker could not be opened. **The picker runs off the window's
-   thread** (rfd's async dialog, polled by a task): a portal answers when the user does,
-   and a window that stopped drawing meanwhile would be reported as not answering. Where no
-   portal answers (a desktop without `xdg-desktop-portal`), the picker says so once and the
-   typed path stays - it is not taken away anywhere.
+   already in the lockfile, with `default-features = false, features = ["xdg-portal",
+   "async-std"]`: on Linux the XDG desktop portal (ashpd over zbus, pure Rust, no GTK -
+   "No system library dependencies beyond the web view" holds), which needs an executor
+   of its own outside a runtime (`async-std`; with tokio, ashpd's default, zbus panics
+   with no runtime running); on Windows and macOS the system's own. Two things to say
+   plainly: **where the portal does not answer, rfd tries `zenity`, and where that is
+   missing too it answers as a cancel does** - photon cannot tell the two apart through
+   rfd, so the typed path stands beside every "Choose…" and nothing is said; and rfd's
+   `wayland` feature is left out, so on Wayland the portal's picker has no parent
+   window. **In a build of the whole workspace Tauri's dialog plugin turns on rfd's
+   `gtk3`, which rfd prefers**, until sub-project 8 takes the Tauri photon away:
+   photon-native built on its own (`-p photon-ui`), as the installers build it, has no
+   GTK, and the packaging checks that it links none. "Choose…" beside the export's
+   destination and beside Settings' "Add folder…" field opens it; the folder chosen is
+   put in the field and asked about as a typed one is, so the two ways are one rule. The
+   empty library's "Add folder…" opens the picker straight away, as the Svelte one does,
+   over Settings' folders with the field open - a picker that could not be opened leaves
+   the field. **The picker runs on a thread of its own**: a portal answers when the user
+   does, and a window that stopped drawing meanwhile would be taken by the system for one
+   that does not answer. One at a time, and **the folder goes only into the dialog that
+   asked**, by the number of its opening.
 
 3. **The questions photon asks stay photon's own dialogs.** The Svelte UI asks through the
    system's `ask`; the native window has a question dialog of its own that is tested,
@@ -67,7 +84,12 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
    written to the standard error and the log.
 
 4. **The clipboard is arboard**, which Tauri's clipboard plugin wraps and the lockfile
-   holds: pure Rust on every system. "Copy photo" and Ctrl/Cmd+C, in the grid with one
+   holds: pure Rust on every system. **One `Clipboard` is kept for the session, on a
+   thread of its own**: on Linux what was copied lives only as long as the `Clipboard`
+   that copied it (unless a clipboard manager takes it), so one made for each copy and
+   dropped with it would lose every copy. Whether arboard's `wayland-data-control`
+   feature is taken - without it a copy on Wayland goes through XWayland - is decided in
+   its pull request, by whether it brings a system library. "Copy photo" and Ctrl/Cmd+C, in the grid with one
    photo selected and in the viewer, copy the picture as shown - `commands::copy_picture`,
    the edit applied, at most 2,560 pixels a side, under `RENDERING` - off the window's
    thread, with "Photo copied" when it is done, and a second press while one is on its
@@ -80,13 +102,15 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
 5. **Reveal and Open are photon's own, small, per system** (`platform::reveal`,
    `platform::open_path`, `platform::open_url`), the same calls Tauri's opener plugin makes:
    Windows `SHOpenFolderAndSelectItems` on an `ILCreateFromPathW` of the path, which the
-   `windows` crate already in the build has; macOS `NSWorkspace
+   `windows` crate already in the build has, on a thread that has called
+   `CoInitializeEx`; macOS `NSWorkspace
    activateFileViewerSelectingURLs` through `objc2`, which the AVFoundation backend
    already uses; Linux the file manager's D-Bus interface
    (`org.freedesktop.FileManager1.ShowItems`, through zbus, already in the lockfile), and
-   where no file manager answers, the folder opened. Open in default app and a URL are
-   `ShellExecuteW`, `NSWorkspace openURL:` and the portal's `OpenURI` (`xdg-open` where no
-   portal answers). **Every stored path is `paths::canonicalize`'s already**, so a share on
+   where no file manager answers, the portal's `OpenDirectory`. Open in default app and a
+   URL are `ShellExecuteW`, `NSWorkspace openURL:` and the portal's `OpenFile` (a file,
+   handed over as an open descriptor) and `OpenURI` (a URL), with `xdg-open` where no
+   portal answers. **Every stored path is `paths::canonicalize`'s already**, so a share on
    Windows reaches the shell as `\\server\share\...`, the form it takes. Each call runs off
    the window's thread - a file manager on a sleeping share can take seconds - and a
    failure is a message with the system's words. Ctrl/Cmd+Shift+R reveals the selected
@@ -95,8 +119,11 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
 
 6. **The GPU's fallback is wgpu's software adapter, chosen by photon from what wgpu lists**
    (`WgpuSetupCreateNew::native_adapter_selector`; egui-wgpu does not expose
-   `force_fallback_adapter`): the adapter egui-wgpu would choose when there is one, and
-   a CPU adapter - WARP, llvmpipe - only when no other can draw to the window's surface.
+   `force_fallback_adapter`). With a selector, egui-wgpu asks wgpu for no adapter of its
+   own, so the selector does what wgpu's choice did - an adapter that can draw to the
+   window's surface, by the power preference - and takes a CPU adapter (WARP, llvmpipe)
+   only when no other can. The choice is a pure function over each adapter's kind and
+   whether it can draw to the surface, tested so; the asking of each adapter is not.
    A window drawn by the CPU says so once in the status bar's place for messages ("Drawn
    without a graphics card: photon will be slow"), since every frame then costs what a
    GPU's would not. Where even that fails, `run_native` returns an error, and the error is
@@ -132,14 +159,23 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
      libraries the binary links and never GStreamer's plugins: video in the AppImage uses
      the host's (`AppRun` points GStreamer's plugin path at the usual places distributions
      put them), and where it finds none the viewer says what is missing, as it does on a
-     Linux without the plugins. Built on the oldest Ubuntu the runners have, for glibc.
+     Linux without the plugins. Built on the oldest Ubuntu the runners have, for glibc -
+     which is also the limit: GStreamer's libraries are that Ubuntu's, and a host's plugin
+     built for a newer GStreamer can refuse to load into them; the viewer then says the
+     plugins are missing. Bundled anyway: without them the AppImage would not start on a
+     system with no GStreamer at all.
    - **Windows**: the `.msi` by WiX 3 (as the Tauri bundler uses), from photon's own
      `main.wxs` - rebuilt from the copied template, which names Tauri's variables
      throughout - keeping what the copied one does: the opt-in desktop shortcut
      (`DESKTOPSHORTCUT`, a checkbox in the install-dir dialog, `msiexec ...
-     DESKTOPSHORTCUT=1` unattended), the Start menu shortcut, the upgrade code the Tauri
-     MSI has so the native one replaces it, and the workflow's check that the shortcut is
-     opt-in, read from the MSI's own tables.
+     DESKTOPSHORTCUT=1` unattended), the Start menu shortcut, and the workflow's check
+     that the shortcut is opt-in, read from the MSI's own tables. **The upgrade code is
+     the Tauri MSI's**, so that the native one replaces it: the template holds only
+     tauri-bundler's placeholder, so it is read from a released MSI's `Property` table and
+     written into `main.wxs` as a literal. The template's `MajorUpgrade` refuses to put a
+     lower version over a higher one, and `native-ui`'s version is behind main's releases
+     until the switch-over: a native MSI from the workflow installs where the Tauri
+     photon is not installed, or once it is removed - said in the workflow's summary.
    - **The version's authority is the workspace's `Cargo.toml`** (`[workspace.package]
      version`), and `xtask versions` checks the others against it - `tauri.conf.json` and
      `ui/package.json` until sub-project 8 deletes them. `xtask metadata` checks the
@@ -147,12 +183,16 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
      licence) in place of the bundle section it reads today.
    - **A Windows "N" edition starts.** The `windows` crate links Media Foundation's DLLs
      when the program loads, so where the Media Feature Pack is missing photon-native
-     cannot start at all. Those DLLs are delay-loaded (`/DELAYLOAD`, `delayimp.lib`), and
-     `video::System::can_play` asks whether `mfplat.dll` can be loaded from System32 before
-     anything of Media Foundation is called: where it cannot, every video says the system
-     cannot play it, as a Windows without the HEVC extension says of HEVC. The workflow
-     checks with `dumpbin /imports` that the DLLs are delay-loaded; that photon starts
-     without them is the smoke checklist's.
+     cannot start at all. Every Media Foundation DLL it imports is delay-loaded
+     (`/DELAYLOAD` for `mfplat.dll`, `mfreadwrite.dll` and whatever else the build shows,
+     with `delayimp.lib`), and `video::System::can_play` asks whether each can be loaded
+     from System32 before anything of Media Foundation is called: a delay-load that fails
+     is an exception Rust cannot catch, so every way in - the poster worker's session as
+     well as the player - goes behind that answer. Where it is no, every video says the
+     system cannot play it, as a Windows without the HEVC extension says of HEVC. The
+     `windows` crate imports through `windows-link`'s raw-dylib, which rustc makes into an
+     import library that `/DELAYLOAD` names by DLL - held by the workflow's `dumpbin
+     /imports` check; that photon starts without them is the smoke checklist's.
    - `THIRD-PARTY-NOTICES.md` gains what the native build adds - egui's fonts, the
      binding crates' licences - checked by `xtask metadata` against the lockfile's licence
      fields for the crates it names.
