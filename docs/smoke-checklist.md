@@ -3,7 +3,7 @@
 Run this before each release, on each OS. The installed-app checks can only be done from a
 real installer, so run them against the draft release's artifacts before publishing it.
 
-Since the switch-over (spec `2026-10-16-photon-switch-over-design.md`) photon's window
+Since the switch-over (spec `2026-10-16-photon-native-switch-over-design.md`) photon's window
 is the one drawn by egui; the items that checked the Svelte UI's web view itself - its find
 bar, its page zoom, its side-button history, its loopback video server, the browser's height
 cap - went with it. The items that came with the window as it was built, sub-project by
@@ -628,7 +628,7 @@ named person (Anna below) and a Picasa contact linked to her by name.
 
 ## The window, sub-project by sub-project
 
-What came with the egui window as it was built (spec `2026-10-09-photon-ui-design.md`
+What came with the egui window as it was built (spec `2026-10-09-photon-native-ui-design.md`
 and the specs after it). Where an item says "from elsewhere", a second photon on the same
 library, a file changed in the file manager, or Picasa will do.
 

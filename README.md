@@ -463,7 +463,7 @@ Verify a download against the `SHA256SUMS` file attached to the release:
 
 ## Development
 
-Prerequisites: Rust (stable, 1.93 or newer; `mise.toml` pins it, so `mise install` gets the
+Prerequisites: Rust (stable, 1.98 or newer; `mise.toml` pins it, so `mise install` gets the
 version CI builds with), and on Linux GStreamer's development files
 (`libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` on Debian and Ubuntu,
 `gstreamer gst-plugins-base` on Arch). nasm is optional: with it the x86 builds use

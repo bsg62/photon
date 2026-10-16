@@ -197,7 +197,8 @@ mod tests {
         }
     }
 
-    /// The words of every file under `dir`, comments left out, as one text.
+    /// The code of every file under `dir`, comments and tests left out, as one text: a
+    /// file is read to its first `#[cfg(test)]`, where this crate's tests begin.
     fn sources(dir: &std::path::Path, into: &mut String) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -205,13 +206,26 @@ mod tests {
                 sources(&path, into);
             } else if path.extension().is_some_and(|ext| ext == "rs") {
                 for line in std::fs::read_to_string(&path).unwrap().lines() {
-                    if !line.trim_start().starts_with("//") {
+                    let code = line.trim_start();
+                    if code.starts_with("#[cfg(test)]") {
+                        break;
+                    }
+                    if !code.starts_with("//") {
                         into.push_str(line);
                         into.push('\n');
                     }
                 }
             }
         }
+    }
+
+    /// Whether `code` names `commands::{name}` as a whole name: called, or handed on.
+    fn names_command(code: &str, name: &str) -> bool {
+        let path = format!("commands::{name}");
+        code.match_indices(&path).any(|(at, _)| {
+            (code[at + path.len()..].chars().next())
+                .is_none_or(|next| !(next.is_alphanumeric() || next == '_'))
+        })
     }
 
     // Every command the engine offers is one this window calls: the successor of the test
@@ -224,16 +238,38 @@ mod tests {
         let commands = include_str!("../../photon-engine/src/commands.rs");
         let mut window = String::new();
         sources(&manifest.join("src"), &mut window);
+        // By its path alone: a method of the window's own with a command's name
+        // (`App::viewer_item`) is no call of the command.
         let uncalled: Vec<&str> = (commands.lines())
             .filter_map(|line| line.strip_prefix("pub fn "))
             .filter_map(|rest| rest.split(['(', '<']).next())
-            .filter(|name| {
-                let called = format!("{name}(");
-                !window.contains(&format!("commands::{called}"))
-                    && !window.contains(&format!(" {called}"))
-                    && !window.contains(&format!("({called}"))
-            })
+            .filter(|name| !names_command(&window, name))
             .collect();
         assert!(uncalled.is_empty(), "commands nothing calls: {uncalled:?}");
+    }
+
+    #[test]
+    fn a_command_called_only_by_a_test_is_not_called_by_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn draw() { commands::star(&e); }\n#[cfg(test)]\nmod tests { fn t() { commands::hide(&e); } }\n",
+        )
+        .unwrap();
+        let mut code = String::new();
+        sources(dir.path(), &mut code);
+        assert!(names_command(&code, "star"));
+        assert!(!names_command(&code, "hide"));
+    }
+
+    #[test]
+    fn a_command_is_named_by_its_whole_path() {
+        assert!(names_command("commands::adopt(&engine)", "adopt"));
+        assert!(names_command("go(commands::adopt)", "adopt"));
+        assert!(!names_command(
+            "fn adopt(&mut self) { self.adopt(x) }",
+            "adopt"
+        ));
+        assert!(!names_command("commands::adopted(&engine)", "adopt"));
     }
 }

@@ -1207,10 +1207,6 @@ pub struct VideoJobDto {
     pub key: String,
 }
 
-/// How long `next_video_job` holds the call open waiting for a job. Under the webview's
-/// own IPC timeouts, and long enough that an idle page asks about twice a minute.
-pub const VIDEO_JOB_WAIT: Duration = Duration::from_secs(25);
-
 /// A thumbnail key from its hex, only in the exact spelling `hex_key` gives it. A looser
 /// parse would read `+1` as key 1 and cache key 1's picture under a URL the UI never asks for.
 fn parse_key(key: &str) -> Option<u64> {

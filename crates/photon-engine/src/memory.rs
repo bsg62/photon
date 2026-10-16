@@ -1,11 +1,9 @@
 //! How much memory photon is using, for Settings → About.
 //!
-//! The web view does not run inside photon's process. On Linux (WebKitGTK) and Windows
-//! (WebView2) its processes are photon's descendants, so the figure is the whole process tree.
-//! On macOS WKWebView's processes are XPC services started by launchd, not by photon: nothing
-//! public ties them to the app that asked for them (Activity Monitor uses a private API), and
-//! matching them by name would count Safari's too. There the figure is photon's own process,
-//! and `includes_webview` says so, so the UI never presents a partial number as the whole.
+//! On Linux and Windows the figure is photon's process tree: photon itself, and whatever
+//! it has started and is still waiting for (a folder picker's `zenity`, a file manager's
+//! helper). The Tauri photon's web view was such a tree, and is why it is walked. On macOS
+//! it is photon's own process.
 //!
 //! Each platform is measured the way its own task manager measures, not by adding up resident
 //! sizes, which counts every shared library once per process: PSS on Linux, the private
@@ -17,9 +15,8 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct MemoryUsage {
     pub bytes: u64,
-    /// How many processes `bytes` covers: photon's own plus the web view's.
+    /// How many processes `bytes` covers.
     pub processes: u32,
-    pub includes_webview: bool,
 }
 
 /// `root` and every process descended from it, given each process's `(pid, parent)`.
@@ -59,7 +56,6 @@ pub fn usage() -> std::io::Result<MemoryUsage> {
             .filter_map(|&pid| platform::footprint(pid))
             .sum(),
         processes: tree.len() as u32,
-        includes_webview: true,
     })
 }
 
@@ -212,7 +208,6 @@ mod macos {
         Ok(MemoryUsage {
             bytes: footprint,
             processes: 1,
-            includes_webview: false,
         })
     }
 }
@@ -263,8 +258,7 @@ mod tests {
         assert_eq!(linux::pss_of(rollup), Some(102_400 * 1024));
     }
 
-    /// Against the real process table: a process photon starts is part of its tree, as the
-    /// web view's are.
+    /// Against the real process table: a process photon starts is part of its tree.
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn a_child_process_is_in_the_tree() {
@@ -286,7 +280,6 @@ mod tests {
         assert!(tree.unwrap().contains(&child.id()));
         let with = with.unwrap();
         assert!(with.bytes > 0 && with.processes > 1, "{with:?}");
-        assert!(with.includes_webview);
     }
 
     #[cfg(target_os = "macos")]
@@ -295,6 +288,5 @@ mod tests {
         let u = usage().unwrap();
         assert!(u.bytes > 0);
         assert_eq!(u.processes, 1);
-        assert!(!u.includes_webview);
     }
 }

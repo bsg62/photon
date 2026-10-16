@@ -8,7 +8,7 @@ on the GPU.
 
 ## Commands
 
-**The Rust gate — all four must pass before any commit.** CI runs exactly these, so a commit
+**The Rust gate — all five must pass before any commit.** CI runs exactly these, so a commit
 that skips one is a commit CI will reject:
 
 ```bash
@@ -979,6 +979,16 @@ the forty stands; a Mac's wheel has not been compared.
 the rows are drawn at `row.top - position`; egui's `ScrollArea` is not used for it, because
 its offset is an `f32`. Several rules of the Svelte grid have no successor (`placeIn`,
 `viewTop`, pages, mounting): the spec of the slice lists them so they are not ported.
+
+**A tile is drawn wider than its size says.** The size chosen is a nominal width;
+`tile_for` (`grid/layout.rs`) widens it so the columns fill the row (whole pixels, at most
+`TILE_MAX`), and that drawn width is what the rows, the tiles and every hit test are
+measured by. So every row's height moves with every pixel of a window or sidebar resize, and
+a narrower grid is a *shorter* one: a place kept as a number names another photo afterwards.
+The place is kept as a `Pin` - the row at the top by its first photo, and the share of it
+scrolled past (`pin_at`, `pin_top`) - and found again in the new rows whenever the tile or
+the column count changes, not only on a new size. Across a rebuilt index alone it is kept as
+the number it was (below, the year strip).
 
 **A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one
 thread polls every pending `request_async`. Three rules a

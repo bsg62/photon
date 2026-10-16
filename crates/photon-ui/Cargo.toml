@@ -31,8 +31,8 @@ path = "tests/video/main.rs"
 harness = false
 
 [features]
-# rav1d's assembly for AVIF, x86-64 targets only, as the Tauri photon's release builds it
-# (photon-core's `avif-asm` says why): the packaging workflow turns it on.
+# rav1d's assembly for AVIF, x86-64 targets only (photon-core's `avif-asm` says why): the
+# installers' workflow turns it on.
 avif-asm = ["photon-core/avif-asm"]
 
 [dependencies]
@@ -56,7 +56,7 @@ parking_lot = "0.12.5"
 # What kind of window this is, to know whether a dropped folder can arrive in it: the
 # crate eframe hands its window out through, at eframe's own version.
 raw-window-handle = "0.6.2"
-# The gate's report (`probe.rs`), in the shape the Svelte probe writes its own.
+# The probe's report (`probe.rs`).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1.44"
@@ -87,10 +87,8 @@ sys-locale = "0.3.2"
 icu_provider = { version = "2.3.1", features = ["sync"] }
 
 # The system's folder picker (`platform.rs`) on Windows and macOS, and its message box on
-# macOS: the
-# crate Tauri's dialog plugin is built on, at its version. Not on Linux, where it must be
-# built with GTK or the portal and refuses both at once - and Tauri's plugin asks for GTK
-# in a build of the whole workspace.
+# macOS: the crate Tauri's dialog plugin is built on, at its version. Not on Linux, where it
+# must be built with GTK or the portal, and its build script refuses both at once.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = { version = "0.16.0", default-features = false }
 

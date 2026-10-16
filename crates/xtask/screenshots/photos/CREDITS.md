@@ -1,12 +1,10 @@
-# Photos for the screenshots
+# Photos for the pictures
 
-Served in place of the generated gradients by `cargo run -p xtask -- screenshots --photos crates/xtask/screenshots/photos`,
-which is how the project website's screenshots are made. Item id *n* shows file *n*, wrapping round
-after the last. `03.jpg` is the photo the viewer shots open, cropped so the mock's face rectangle
-(`mock.js`, Anna) falls on the person in it; the rest are shrunk to thumbnail size.
-`thumbs/03.jpg` is that photo at thumbnail size (`magick 03.jpg -resize 480x -strip -quality 85`):
-a grid tile and a face crop are served the copy in `thumbs/` when a photo has one, because a
-1600px photo in a tile was sometimes not decoded when the screenshot was taken.
+The library `cargo run -p xtask -- native-shot` draws the window over
+(`crates/photon-ui/tests/screenshots.rs`), which is how the project website's pictures are
+made, and the photos some of photon-core's face tests read. `03.jpg` is the photo the viewer's
+pictures open, cropped so the face rectangle the pictures write (Anna) falls on the person in
+it; the rest are shrunk to thumbnail size.
 
 Every photo is from Wikimedia Commons and was marked CC0 or public domain there when it was
 taken (2026-09-29). None of them needs attribution; it is kept here so each can be checked.

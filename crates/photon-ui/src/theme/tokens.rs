@@ -228,4 +228,189 @@ mod tests {
             "still the link colour"
         );
     }
+
+    /// The website's pages (`site/`), hand-written with no build step: their stylesheets
+    /// say their palette is the app's, and this is what holds them to it. It had drifted
+    /// before - two tokens were approximations nobody had compared.
+    const PAGES: [(&str, &str); 2] = [
+        ("index.html", include_str!("../../../../site/index.html")),
+        ("404.html", include_str!("../../../../site/404.html")),
+    ];
+
+    /// The pages' tokens that are their own, with no colour of the app's to be.
+    const OWN: [&str; 1] = ["--shadow"];
+
+    /// The app's colour for a page's token, by the stylesheet's name for it.
+    fn token(theme: &Palette, name: &str) -> Option<Rgba> {
+        Some(match name {
+            "--surface" => theme.surface,
+            "--chrome" => theme.chrome,
+            "--raised" => theme.raised,
+            "--field" => theme.field,
+            "--field-hover" => theme.field_hover,
+            "--hover" => theme.hover,
+            "--line" => theme.line,
+            "--text" => theme.text,
+            "--text-dim" => theme.text_dim,
+            "--accent" => theme.accent,
+            "--accent-soft" => theme.accent_soft,
+            "--on-accent" => theme.on_accent,
+            "--danger" => theme.danger,
+            "--star" => theme.star,
+            _ => return None,
+        })
+    }
+
+    /// `#rrggbb` or `#rrggbbaa`.
+    fn hex(value: &str) -> Option<Rgba> {
+        let digits = value.strip_prefix('#')?;
+        let number = u32::from_str_radix(digits, 16).ok()?;
+        match digits.len() {
+            6 => Some(rgb(number)),
+            8 => Some(rgba(number)),
+            _ => None,
+        }
+    }
+
+    /// A page's CSS: every `<style>` block, since a second would override the first, with
+    /// its comments taken out.
+    fn page_css(html: &str) -> String {
+        let mut css = String::new();
+        let mut rest = html;
+        while let Some(at) = rest.find("<style") {
+            let open = at + rest[at..].find('>').unwrap() + 1;
+            let close = open + rest[open..].find("</style>").unwrap();
+            css.push_str(&rest[open..close]);
+            css.push('\n');
+            rest = &rest[close..];
+        }
+        assert!(!css.is_empty(), "the page has no <style> block");
+        let mut bare = String::new();
+        let mut rest = css.as_str();
+        while let Some(at) = rest.find("/*") {
+            bare.push_str(&rest[..at]);
+            rest = &rest[at + rest[at..].find("*/").unwrap() + 2..];
+        }
+        bare.push_str(rest);
+        bare
+    }
+
+    /// The custom properties a block declares, by name.
+    fn declared(block: &str) -> Vec<(String, String)> {
+        (block.split(';'))
+            .filter_map(|declaration| declaration.split_once(':'))
+            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+            .filter(|(name, _)| name.starts_with("--"))
+            .collect()
+    }
+
+    /// The inside of the first `{ }` after `from` in `css`, and where it ends.
+    fn block(css: &str, from: usize) -> (&str, usize) {
+        let open = from + css[from..].find('{').unwrap() + 1;
+        let close = open + css[open..].find('}').unwrap();
+        (&css[open..close], close + 1)
+    }
+
+    struct Themes {
+        light: Vec<(String, String)>,
+        dark: Vec<(String, String)>,
+        /// Tokens declared anywhere else: a second `:root`, or a `--line` on `body`, would
+        /// override the two blocks compared and be compared with nothing.
+        strays: Vec<String>,
+    }
+
+    /// A page's own tokens: its `:root` block outside any media query, and the one inside
+    /// `prefers-color-scheme: dark`.
+    fn themes(css: &str) -> Themes {
+        let media = css
+            .find("@media (prefers-color-scheme: dark)")
+            .expect("the page has no dark block");
+        let root = media + css[media..].find(":root").expect("no dark :root");
+        let (dark, end) = block(css, root);
+        let media_end = end + css[end..].find('}').unwrap() + 1;
+        let outside = format!("{}{}", &css[..media], &css[media_end..]);
+        let at = outside
+            .find(":root")
+            .expect("the page has no light :root block");
+        let (light, end) = block(&outside, at);
+        let strays = declared(&format!("{}{}", &outside[..at], &outside[end..]))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        Themes {
+            light: declared(light),
+            dark: declared(dark),
+            strays,
+        }
+    }
+
+    #[test]
+    fn the_websites_colours_are_the_apps() {
+        for (page, html) in PAGES {
+            let found = themes(&page_css(html));
+            for (theme, palette, tokens) in
+                [("light", LIGHT, &found.light), ("dark", DARK, &found.dark)]
+            {
+                let shared: Vec<_> = (tokens.iter())
+                    .filter(|(name, _)| !OWN.contains(&name.as_str()))
+                    .collect();
+                assert!(!shared.is_empty(), "{page}: no {theme} tokens");
+                for (name, value) in shared {
+                    assert_eq!(
+                        hex(value),
+                        token(&palette, name),
+                        "{page}: {name} ({theme}) is {value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_page_declares_every_token_for_both_themes_and_nowhere_else() {
+        for (page, html) in PAGES {
+            let found = themes(&page_css(html));
+            let names = |tokens: &[(String, String)]| {
+                let mut names: Vec<String> = tokens.iter().map(|(name, _)| name.clone()).collect();
+                names.sort();
+                names
+            };
+            // One missing from the dark block is no error anywhere: dark shows the light one.
+            assert_eq!(names(&found.dark), names(&found.light), "{page}");
+            assert!(found.strays.is_empty(), "{page}: {:?}", found.strays);
+        }
+    }
+
+    #[test]
+    fn each_page_reads_no_token_it_does_not_declare() {
+        for (page, html) in PAGES {
+            let css = page_css(html);
+            let declared: Vec<String> = themes(&css)
+                .light
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            // `var(--chrome)` left behind after the token went computes to nothing, silently,
+            // however it is spelled: with spaces inside, or a fallback that hides it.
+            let read: Vec<&str> = (css.match_indices("var("))
+                .map(|(at, _)| css[at + 4..].trim_start())
+                .map(|rest| {
+                    rest.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                        .next()
+                        .unwrap()
+                })
+                .collect();
+            assert!(!read.is_empty(), "{page}");
+            for name in read {
+                assert!(declared.iter().any(|known| known == name), "{page}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_colour_is_read_in_both_spellings() {
+        assert_eq!(hex("#1f6fd6"), Some(LIGHT.accent));
+        assert_eq!(hex("#62a0ea33"), Some(DARK.accent_soft));
+        assert_eq!(hex("1f6fd6"), None);
+    }
 }

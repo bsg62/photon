@@ -106,8 +106,8 @@ under the pointer** in the info panel, where a long one is cut short (its `title
    worktree), and the Tauri `release.yml`. `--probe` and `fixture-library` stay: the
    measurement is kept on its own, run by a person. CI installs neither webkit2gtk nor
    Node. `xtask versions` and `metadata` read `Cargo.toml` alone. The engine's commands no
-   one calls go (the web view's paging, `neighbours` - the window's viewer has no preload
-   of its neighbours' pictures, the cache's previews being read as they are wanted - and the
+   one calls go (the web view's paging, the `neighbours` command - the window reads its
+   viewer's neighbours from the `GridIndex` it holds, `GridIndex::neighbours` - and the
    commands the window reaches through `Engine` itself), and so does the engine's list of
    scans a late listener asks for (`scanning_folders`), the window's channel being made
    before the engine opens; `every_command_of_the_engine_is_called_by_the_window` fails on
