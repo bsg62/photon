@@ -429,8 +429,9 @@ pub(crate) fn line_height(ui: &egui::Ui, font: &FontId) -> f32 {
     ui.ctx().fonts_mut(|fonts| fonts.row_height(font)).ceil()
 }
 
-/// The ring round what has the keyboard: Enter or Space presses it.
-fn ring(painter: &egui::Painter, rect: Rect, radius: f32, palette: &Palette) {
+/// The ring round what has the keyboard: Enter or Space presses it. Drawn by every
+/// button a Tab stops at, here and in the top bar and the empty library's panel.
+pub(crate) fn ring(painter: &egui::Painter, rect: Rect, radius: f32, palette: &Palette) {
     painter.rect_stroke(
         rect.expand(2.0),
         radius + 2.0,

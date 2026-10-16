@@ -210,6 +210,9 @@ fn reverse(ui: &mut egui::Ui, rect: Rect, on: bool, palette: &Palette) -> bool {
         ui.painter().rect_filled(rect, R[2], color(fill));
     }
     Icon::ArrowDownUp.paint(ui, rect, BUTTON_ICON, false, color(tint));
+    if response.has_focus() {
+        crate::settings_view::ring(ui.painter(), rect, R[2], palette);
+    }
     response.clicked()
 }
 
@@ -234,6 +237,10 @@ fn segment(ui: &mut egui::Ui, rect: Rect, label: &str, chosen: bool, palette: &P
         fonts::regular(T[2]),
         color(tint),
     );
+    // A stop of the Tab key shows that it is one, as Settings' segments do.
+    if response.has_focus() {
+        crate::settings_view::ring(ui.painter(), rect, R[1], palette);
+    }
     response.clicked()
 }
 
@@ -597,5 +604,30 @@ mod tests {
         assert!(!f.bar.sort.open() && f.bar.group.open());
         f.click(places.sizes[0].center());
         assert!(!f.bar.open());
+    }
+
+    // The size buttons are stops of the Tab key, and show it, as Settings' segments do.
+    #[test]
+    fn a_size_button_the_tab_key_reaches_has_its_ring() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let ringed = |f: &Fixture| {
+            (f.places().sizes.iter()).any(|size| f.filled(size.expand(2.0)).is_some())
+        };
+        assert!(!ringed(&f));
+        for _ in 0..6 {
+            f.frame(vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }]);
+            f.frame(Vec::new());
+            if ringed(&f) {
+                return;
+            }
+        }
+        panic!("the Tab key never showed it was on a size button");
     }
 }

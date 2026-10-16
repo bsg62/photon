@@ -3378,6 +3378,27 @@ alone), and over a higher one it is refused - the workflow's summary says so. Th
 are built from paths made whole first (`std::path::absolute`): dpkg-shlibdeps, linuxdeploy
 and light each run in a folder of their own, and `--out dist` was read from there.
 
+**What the switch-over's audit of the Svelte checklist ported** (spec
+`2026-10-16-photon-native-switch-over-design.md`, each with its test). Closing the viewer
+on the photo the keys were on keeps the selection it stands in (`close_viewer`'s
+`on_lead`; Shift+End, Enter, Escape lost the range). A tile's marks have a halo of
+`SHADOW_INK` (`tile::halo`); the tiles of a folder whose watched folder is offline are
+drawn at 0.4 (`offline_folders`, `GridData::offline`); a thumbnail that arrives later than
+two frames after it was asked for, onto a still grid, fades in over 120 ms
+(`Textures::upload`'s `fade`, `shown`, `INSTANT_SECS` - one arriving while the grid moves
+does not, the grid's lead being there so no blank slides into view). A playing video is
+fitted above its strip (`fit_in` in `ViewerView::show`). The search box has the web
+view's own cross (`CLEAR_LABEL`), and its help closes when the keyboard leaves the box and
+its buttons (`had_keys`). An open keyword's view follows the keyword renamed in Settings
+(`Nav::renamed_tag`, from the stored name `commands::rename_tag` now answers): the engine
+moves its own argument outside the views' queue. The info panel says a whole path under
+the pointer. The sidebar's rows, the empty library's buttons and the top bar's size
+buttons draw the keyboard's ring (`settings_view::ring`); the sidebar draws a row past each
+edge, cut away, so that Tab walks on below the edge, and brings the row the keyboard has
+just reached into sight (`keyed`); a name left from the keyboard gives the keyboard back to
+its row (`back_to`), unless the rename was begun on a header in the grid
+(`rename_from_grid`, `menu_on_header`). What was left, and why, is the spec's list.
+
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
 close by themselves, for about two minutes, on a desktop that has to stay awake and

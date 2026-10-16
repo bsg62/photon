@@ -130,6 +130,9 @@ pub struct App {
     /// The photos picked in the grid on screen.
     selection: Selection,
     /// The menu that is open: one for the whole window, so opening any closes any other.
+    /// Whether the menu open was opened on a folder's header in the grid, and not on a
+    /// row of the sidebar.
+    menu_on_header: bool,
     menu: Option<Open>,
     menu_view: MenuView,
     /// The name being typed in the sidebar.
@@ -1337,6 +1340,7 @@ impl App {
             nav: Nav::new(Place { view, arg }, engine.sort()),
             selection: Selection::default(),
             menu: None,
+            menu_on_header: false,
             menu_view: MenuView::default(),
             rename: Rename::default(),
             dialog: None,
@@ -1944,6 +1948,7 @@ impl App {
     /// Opens the menu of `of` at `at`, in the place of any that was open.
     fn open_menu(&mut self, ctx: &egui::Context, at: egui::Pos2, of: MenuOf) {
         self.menu = Some(Open { at, of });
+        self.menu_on_header = false;
         self.menu_view.reset();
         // The one photo's copies are counted for its menu, a round trip that the menu
         // does not wait for: its item is put in when the answer is in.
@@ -1986,6 +1991,9 @@ impl App {
                     return;
                 };
                 self.rename.start(Of::Folder(id), folder_label(folder));
+                // Begun from the grid, a rename closed from the keyboard gives the keys
+                // back to the grid, not to the row: `backToRow`'s own exception.
+                self.shell.rename_from_grid(self.menu_on_header);
                 if self.layout.sidebar_hidden {
                     self.layout.sidebar_hidden = false;
                     self.layout_store.ask(self.layout);
@@ -2267,7 +2275,11 @@ impl App {
             return;
         };
         let (offset, id) = open.viewer.hand_back(&self.index);
-        if id.is_some() {
+        // Closed on the photo the keys were on - the one Enter opened - the selection it
+        // stands in is kept, as the Svelte store's `selectItem` keeps it: Shift+End, Enter
+        // and Escape lost the range. Stepped to another photo, it is that photo alone.
+        let on_lead = (self.selection.lead()).is_some_and(|lead| Some(lead.id) == id);
+        if id.is_some() && !on_lead {
             self.selection.select(&self.index, offset);
         }
         self.showing = (self.index.rows(offset, 1).first()).map(|entry| entry.id);
@@ -2699,7 +2711,7 @@ impl App {
                     })
                 }),
         );
-        self.previews.frame(&ctx, &wanted, false);
+        self.previews.frame(&ctx, &wanted, false, false);
 
         // The full picture, once the viewer has rested on a photo that has one to make.
         // (A video is asked about like a photo: the engine refuses it at once.)
@@ -3408,7 +3420,7 @@ impl App {
                 key: want.key,
             })
             .collect();
-        self.previews.frame(&ctx, &previews, false);
+        self.previews.frame(&ctx, &previews, false, false);
         // Once zoomed, the full pictures, one after another, the pane with the keys first:
         // fitted, a pane is drawn from its preview, which a zoom soon outgrows.
         if open.compare.wants_full() && open.asking.is_none() {
@@ -4863,10 +4875,12 @@ impl eframe::App for App {
 
         // Before the grid's data borrows the index: it remembers whether it drew the band.
         let foot = self.foot_shown();
+        let offline = crate::grid::view::offline_folders(self.held.folders(), &self.watched);
         let data = GridData {
             layout_gen: self.layout_gen,
             index: &self.index,
             folders: self.held.folders(),
+            offline: &offline,
             size: self.size,
             zone: &self.zone,
             library: self.nav.settled().view == View::All,
@@ -4996,6 +5010,7 @@ impl eframe::App for App {
         // On a folder's header, real or pinned: the menu its row in the sidebar has.
         if let Some((folder, at)) = header_menu {
             self.open_menu(ui.ctx(), at, MenuOf::Folder(folder));
+            self.menu_on_header = true;
         }
         for ask in asked {
             self.ask(ask);

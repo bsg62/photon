@@ -11,6 +11,9 @@ use std::{collections::HashSet, time::Duration};
 pub struct Thumbs {
     textures: Textures<TextureHandle>,
     loader: Loader,
+    /// Whether a thumbnail that arrives late fades in: the grid's do, the viewer's
+    /// previews do not.
+    fades: bool,
 }
 
 /// Bytes of preview kept as textures. A preview is at most 1600 pixels on its longer
@@ -24,6 +27,7 @@ impl Thumbs {
         Self {
             textures: Textures::new(DEFAULT_LIMIT),
             loader,
+            fades: true,
         }
     }
 
@@ -34,6 +38,7 @@ impl Thumbs {
         Self {
             textures: Textures::new(PREVIEW_LIMIT),
             loader,
+            fades: false,
         }
     }
 
@@ -41,8 +46,15 @@ impl Thumbs {
     /// uploads within the budget, and tells the loader what is wanted now - `wanted`, most
     /// wanted first, or nothing at all while `defer` holds, since a tile that will be gone
     /// before it settles must not cost a render. Answers whether any of them is still on
-    /// its way: wanted and not yet a texture, a failure or a thing put off.
-    pub fn frame(&mut self, ctx: &egui::Context, wanted: &[Want], defer: bool) -> bool {
+    /// its way: wanted and not yet a texture, a failure or a thing put off. `still` is
+    /// whether the grid is at rest, the one place a late thumbnail fades in.
+    pub fn frame(
+        &mut self,
+        ctx: &egui::Context,
+        wanted: &[Want],
+        defer: bool,
+        still: bool,
+    ) -> bool {
         self.textures.begin_frame();
         let keys: Vec<TexKey> = wanted.iter().map(|want| TexKey::grid(want.key)).collect();
         let wanted_keys: HashSet<TexKey> = keys.iter().copied().collect();
@@ -58,12 +70,11 @@ impl Thumbs {
                 Err(LoadError::Unavailable) => self.textures.put_off(key, now),
             }
         }
-        let more = self
-            .textures
-            .upload(UPLOADS_PER_FRAME, &wanted_keys, |key, pixels| {
-                upload(ctx, key, pixels)
-            });
-        if more {
+        let fade = (now, self.fades && still);
+        let more = (self.textures).upload(UPLOADS_PER_FRAME, &wanted_keys, fade, |key, pixels| {
+            upload(ctx, key, pixels)
+        });
+        if more || self.textures.fades(now) {
             ctx.request_repaint();
         }
 
@@ -94,6 +105,11 @@ impl Thumbs {
     /// The texture of the picture cached under `key`, if it has been uploaded.
     pub fn texture(&mut self, key: u64) -> Option<&TextureHandle> {
         self.textures.get(TexKey::grid(key))
+    }
+
+    /// How much of the thumbnail under `key` is seen at `now`: less while it fades in.
+    pub fn shown(&self, key: u64, now: f64) -> f32 {
+        self.textures.shown(TexKey::grid(key), now)
     }
 
     /// Whether the picture cached under `key` is a texture, without counting it as drawn.

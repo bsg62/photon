@@ -143,6 +143,11 @@ impl Shell {
         self.sidebar.reveal(what);
     }
 
+    /// Whether the rename being begun was asked for from the grid (`SidebarView`'s).
+    pub fn rename_from_grid(&mut self, yes: bool) {
+        self.sidebar.rename_from_grid(yes);
+    }
+
     /// Whether the splitter is being dragged.
     pub fn resizing(&self) -> bool {
         self.grab.is_some()

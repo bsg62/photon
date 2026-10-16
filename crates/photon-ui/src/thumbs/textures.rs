@@ -41,6 +41,15 @@ pub const UPLOADS_PER_FRAME: usize = 32;
 /// is gone - would be asked for again on every frame it is in view.
 pub const RETRY_SECS: f64 = 5.0;
 
+/// How soon after it was asked for a thumbnail counts as already there, in seconds: by the
+/// next frame or the one after at 60Hz - a thumbnail read from photon's cache, which would
+/// have been on screen before a fade could be seen starting (`tile-fade.ts`'s
+/// `INSTANT_LOAD_MS`).
+pub const INSTANT_SECS: f64 = 0.032;
+/// How long a thumbnail that arrives late takes to fade in, in seconds: the Svelte tile's
+/// `transition: opacity 120ms`.
+pub const FADE_SECS: f64 = 0.12;
+
 struct Held<T> {
     texture: T,
     bytes: usize,
@@ -62,6 +71,10 @@ pub struct Textures<T> {
     /// `put_off`, whose entry goes when the delay is over: the mark must not blink off for
     /// as long as the next attempt takes.
     troubled: HashSet<TexKey>,
+    /// When each thumbnail on its way was first asked for, and when each one fading in
+    /// arrived: a late one fades in (`upload`'s `fade`).
+    asked: HashMap<TexKey, f64>,
+    fading: HashMap<TexKey, f64>,
     bytes: usize,
     limit: usize,
     frame: u64,
@@ -76,6 +89,8 @@ impl<T> Textures<T> {
             failed: HashSet::new(),
             put_off: HashMap::new(),
             troubled: HashSet::new(),
+            asked: HashMap::new(),
+            fading: HashMap::new(),
             bytes: 0,
             limit,
             frame: 0,
@@ -149,7 +164,7 @@ impl<T> Textures<T> {
     /// for upload, nor a failure, and are not put off past `now`: what to ask the loader for.
     pub fn missing(&mut self, wanted: &[TexKey], now: f64) -> Vec<TexKey> {
         self.put_off.retain(|_, until| *until > now);
-        wanted
+        let missing: Vec<TexKey> = wanted
             .iter()
             .copied()
             .filter(|key| {
@@ -158,17 +173,45 @@ impl<T> Textures<T> {
                     && !self.failed.contains(key)
                     && !self.put_off.contains_key(key)
             })
-            .collect()
+            .collect();
+        // When each was first asked for, for as long as it is still wanted.
+        self.asked.retain(|key, _| wanted.contains(key));
+        for key in &missing {
+            self.asked.entry(*key).or_insert(now);
+        }
+        missing
+    }
+
+    /// How much of the thumbnail under `key` is seen at `now`: fading in from its arrival
+    /// over `FADE_SECS`, or all of it.
+    pub fn shown(&self, key: TexKey, now: f64) -> f32 {
+        self.fading
+            .get(&key)
+            .map_or(1.0, |at| ((now - at) / FADE_SECS).clamp(0.0, 1.0) as f32)
+    }
+
+    /// Lets go of the fades that are over at `now`: whether any is still running, and a
+    /// frame owed for it.
+    pub fn fades(&mut self, now: f64) -> bool {
+        self.fading.retain(|_, at| now - *at < FADE_SECS);
+        !self.fading.is_empty()
     }
 
     /// Uploads up to `budget` waiting thumbnails through `make`, then lets go of the least
     /// recently drawn textures until the limit holds. A texture in `wanted` is never let
     /// go, so a view that needs more than the limit keeps what it shows. `true` when
     /// thumbnails are still waiting, and another frame is owed.
+    ///
+    /// With `fade`, one that arrives at `now` later than `INSTANT_SECS` after it was asked
+    /// for fades in (`shown`), as the Svelte tile's `fadesIn` has it: one the cache had
+    /// would be on screen before a fade could be seen, and one that arrives while the grid
+    /// moves is sliding into view, where a fade still running is the blank tile the
+    /// grid's lead is there to prevent - the caller says `fade` only of a still grid.
     pub fn upload(
         &mut self,
         budget: usize,
         wanted: &HashSet<TexKey>,
+        (now, fade): (f64, bool),
         mut make: impl FnMut(TexKey, &Pixels) -> T,
     ) -> bool {
         let mut uploaded = 0;
@@ -180,6 +223,12 @@ impl<T> Textures<T> {
             // Decoded for a place the grid has left since: not worth an upload.
             if !wanted.contains(&key) {
                 continue;
+            }
+            if let Some(asked) = self.asked.remove(&key)
+                && fade
+                && now - asked > INSTANT_SECS
+            {
+                self.fading.insert(key, now);
             }
             let bytes = pixels.rgba.len();
             self.troubled.remove(&key);
@@ -262,7 +311,43 @@ mod tests {
         for key in wanted {
             textures.offer(*key, pixels(), &wanted_set);
         }
-        textures.upload(usize::MAX, &wanted_set, |key, _| key.key);
+        textures.upload(usize::MAX, &wanted_set, (0.0, false), |key, _| key.key);
+    }
+
+    /// A thumbnail asked for at `asked` and uploaded at `arrived`, with `fade` said of the
+    /// grid then: how much of it is seen as it arrives, and `FADE_SECS` later.
+    fn arriving(asked: f64, arrived: f64, fade: bool) -> (f32, f32, bool) {
+        let mut textures: Textures<u64> = Textures::new(DEFAULT_LIMIT);
+        let wanted = keys(0..1);
+        let wanted_set = set(&wanted);
+        assert_eq!(textures.missing(&wanted, asked), wanted);
+        textures.offer(wanted[0], pixels(), &wanted_set);
+        textures.upload(usize::MAX, &wanted_set, (arrived, fade), |key, _| key.key);
+        let at_once = textures.shown(wanted[0], arrived);
+        let after = textures.shown(wanted[0], arrived + FADE_SECS);
+        (at_once, after, textures.fades(arrived + FADE_SECS))
+    }
+
+    // A thumbnail that arrives late onto a still grid fades in over `FADE_SECS`, and then
+    // asks for no more frames; one the cache had at once, and one that arrives while the
+    // grid moves, are there whole (`tile-fade.ts`'s `fadesIn`).
+    #[test]
+    fn a_thumbnail_that_arrives_late_on_a_still_grid_fades_in() {
+        assert_eq!(arriving(1.0, 1.5, true), (0.0, 1.0, false));
+        assert_eq!(
+            arriving(1.0, 1.0 + INSTANT_SECS / 2.0, true),
+            (1.0, 1.0, false)
+        );
+        assert_eq!(arriving(1.0, 1.5, false), (1.0, 1.0, false));
+        // Half way, half of it, and a frame owed for the rest.
+        let mut textures: Textures<u64> = Textures::new(DEFAULT_LIMIT);
+        let wanted = keys(0..1);
+        let wanted_set = set(&wanted);
+        textures.missing(&wanted, 0.0);
+        textures.offer(wanted[0], pixels(), &wanted_set);
+        textures.upload(usize::MAX, &wanted_set, (1.0, true), |key, _| key.key);
+        assert!((textures.shown(wanted[0], 1.0 + FADE_SECS / 2.0) - 0.5).abs() < 1e-3);
+        assert!(textures.fades(1.0 + FADE_SECS / 2.0));
     }
 
     #[test]
@@ -286,12 +371,15 @@ mod tests {
             assert!(textures.offer(*key, pixels(), &wanted_set));
         }
         let mut made = Vec::new();
-        let more = textures.upload(2, &wanted_set, |key, _| made.push(key.key));
+        let more = textures.upload(2, &wanted_set, (0.0, false), |key, _| made.push(key.key));
         assert_eq!(made, [0, 1], "oldest first");
         assert!(more, "three are still waiting");
         // Waiting for upload is not missing: the loader is not asked for it again.
         assert!(textures.missing(&wanted, 0.0).is_empty());
-        assert!(!textures.upload(usize::MAX, &wanted_set, |key, _| made.push(key.key)));
+        assert!(
+            !textures.upload(usize::MAX, &wanted_set, (0.0, false), |key, _| made
+                .push(key.key))
+        );
         assert_eq!(made, [0, 1, 2, 3, 4]);
     }
 
@@ -342,7 +430,7 @@ mod tests {
         // Wanted when it was decoded, not by the frame that would upload it.
         assert!(textures.offer(TexKey::grid(10), pixels(), &now_wanted));
         let moved_on = set(&keys(20..22));
-        assert!(!textures.upload(usize::MAX, &moved_on, |key, _| key.key));
+        assert!(!textures.upload(usize::MAX, &moved_on, (0.0, false), |key, _| key.key));
         assert!(textures.is_empty());
         assert_eq!(
             textures.missing(&keys(10..11), 0.0),
@@ -361,7 +449,7 @@ mod tests {
             !textures.offer(wanted[0], pixels(), &wanted_set),
             "already waiting"
         );
-        textures.upload(usize::MAX, &wanted_set, |key, _| key.key);
+        textures.upload(usize::MAX, &wanted_set, (0.0, false), |key, _| key.key);
         assert!(
             !textures.offer(wanted[0], pixels(), &wanted_set),
             "already held"
@@ -399,7 +487,7 @@ mod tests {
         assert!(textures.troubled(wanted[0]));
         // And no longer once the picture is there.
         assert!(textures.offer(wanted[0], pixels(), &wanted_set));
-        textures.upload(usize::MAX, &wanted_set, |key, _| key.key);
+        textures.upload(usize::MAX, &wanted_set, (0.0, false), |key, _| key.key);
         assert!(!textures.troubled(wanted[0]));
         assert!(!textures.troubled(wanted[1]));
     }

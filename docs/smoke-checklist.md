@@ -815,3 +815,18 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] On a machine with no working GPU driver (a virtual machine; on Linux `LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl`): the window opens, slower, and says once "Drawn without a graphics card: photon will be slow." On a machine with a GPU it says nothing. Where nothing at all can draw, a message box says so and photon quits.
 - [ ] With a screen reader (Orca, NVDA, VoiceOver): the sidebar's rows, the buttons, the search box and a dialog's title are read by their names, and a row can be pressed from the reader. The photos themselves are not read (known). Under an open dialog, pressing a sidebar row from the reader does nothing.
 - [ ] The installers from the `native-packages` workflow's artifacts: the `.deb` installs on Ubuntu 22.04 or later and on Debian, puts "photon" with its icon in the menu, and starts; the AppImage starts on another distribution, and plays a video where GStreamer's plugins are installed; each `.dmg` holds `photon.app`, which starts after right-click → Open (unsigned) on its Mac (Apple silicon and Intel); the MSI installs on a Windows where the Tauri photon is not installed - over one of the same or a lower version it removes it, keeping the library, and over a higher one it is refused - offers the desktop shortcut unticked, puts photon in the Start menu, and uninstalls cleanly. On a Windows "N" edition without the Media Feature Pack, photon starts and says videos cannot be played.
+
+### The switch-over's parity (photon-native, sub-project 8)
+
+- [ ] Select several photos, open the one the keys are on with Enter, close the viewer: they are all still selected. Step to another photo and close: that one alone.
+- [ ] On a bright photo the tile's star, copies mark and a video's play glyph and length stand out over a dark halo.
+- [ ] Unplug a drive photon watches: its photos stay in the grid, dimmed, until it is back.
+- [ ] Import new photos with photon open: each thumbnail fades in as it arrives; scrolling through a library whose thumbnails are made already, nothing fades.
+- [ ] An upright video: the picture stops above the play strip and the bar, and none of it is under them.
+- [ ] Type in the search box: a cross at its right empties it and shows all photos again, with the caret still in it.
+- [ ] Open the search help with `?`, then Tab out of the box past its buttons: the help closes.
+- [ ] With a keyword's photos on screen, rename the keyword in Settings → Tags: the photos stay, the sidebar marks the keyword under its new name.
+- [ ] Info panel in a narrow window, a long path: the whole path under the pointer.
+- [ ] Tab through the sidebar: a ring shows the row the keyboard is on, the list scrolls to keep it in sight, and Tab goes on below the edge. The empty library's buttons and the top bar's size buttons show the ring too.
+- [ ] Rename an album in the sidebar and press Enter or Escape: the keyboard is back on its row (Tab goes on from it). Rename a folder from its header in the grid: the arrows move the photos after.
+

@@ -573,13 +573,16 @@ impl Page {
         }
     }
 
-    /// One line, cut short where the column ends: a path.
+    /// One line, cut short where the column ends: a path. The whole of it is said under
+    /// the pointer, as the Svelte panel's `title` says it: cut short, the end of a long
+    /// path - the file's own folder - could not be read anywhere.
     fn line(&mut self, ui: &egui::Ui, words: &str, font: FontId, tint: Color32) {
         let height = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
         let rect = Rect::from_min_size(pos2(self.left, self.y), vec2(self.width, height));
         self.y += height;
         if self.sees(rect) {
             ui.interact(rect, Id::new(("viewer-info-line", words)), Sense::hover())
+                .on_hover_text(words)
                 .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
             let middle = rect.center().y;
             paint_line(
@@ -1704,6 +1707,21 @@ mod tests {
             [InfoAction::ShowCopies(7)]
         );
         assert_eq!(f.press("1600 × 1200"), []);
+    }
+
+    // The path, cut short in a narrow panel, is said whole under the pointer.
+    #[test]
+    fn the_whole_path_is_said_under_the_pointer() {
+        let mut f = Fixture::of(full());
+        let path = "/photos/2024/Lisbon/IMG_0412.jpg";
+        let at = f.drew(path).expect("the path").center();
+        let seen = |f: &Fixture| (f.texts.iter()).filter(|(words, _)| words == path).count();
+        assert_eq!(seen(&f), 1);
+        f.frame(vec![Event::PointerMoved(at)]);
+        for _ in 0..60 {
+            f.frame(Vec::new());
+        }
+        assert_eq!(seen(&f), 2, "said again beside the pointer");
     }
 
     // A panel taller than its place scrolls by what the wheel turns, as far as its end

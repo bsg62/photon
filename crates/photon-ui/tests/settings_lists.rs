@@ -493,3 +493,47 @@ fn the_card_over_the_add_field_says_what_a_drop_does_there() {
         "the card says what a drop does over the field"
     );
 }
+
+// A keyword's view open while the keyword is renamed in Settings is the view of the new
+// name: the engine moves its own argument with the rename, and the window went on calling
+// the view by the name that is gone (the switch-over's audit found it).
+#[test]
+fn a_keywords_view_follows_its_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = opened_at(dir.path(), "Tags");
+    keyworded(&mut driver, &mut harness);
+    key(&mut driver, &mut harness, Key::Escape);
+    driver.until(&mut harness, "Settings closed", |app| {
+        app.dialog().is_none()
+    });
+    // Its row, under the sidebar's Tags, which opens folded - and is folded again, so that
+    // Settings' row of the keyword is the one "hiking" names.
+    crate::common::click(&mut driver, &mut harness, "Tags");
+    crate::common::click(&mut driver, &mut harness, "hiking");
+    driver.until(&mut harness, "the keyword's photos", |app| {
+        app.settled().view == photon_core::grid::GridView::Tag
+            && app.settled().arg == "hiking"
+            && app.photos() == 2
+    });
+    crate::common::click(&mut driver, &mut harness, "Tags");
+    harness.get_by_label("Settings").click();
+    driver.act(&mut harness);
+    driver.until(&mut harness, "Settings read", |app| {
+        settings(app).is_some_and(|settings| settings.rules.is_some())
+    });
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    press(&mut driver, &mut harness, "Tags");
+    press_near(
+        &mut driver,
+        &mut harness,
+        tag_manager::RENAME,
+        Some("hiking"),
+    );
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, "walks");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the view under its new name", |app| {
+        app.settled().arg == "walks" && app.photos() == 2 && !app.busy()
+    });
+}

@@ -471,6 +471,32 @@ fn a_photo_hidden_in_the_viewer_stays_and_the_next_step_goes_on_from_its_place()
     assert_eq!(harness.state().selected(), [ids[0]]);
 }
 
+// A selection of several, the viewer opened on the photo the keys are on and closed on
+// it: the selection is still there. Stepped to another photo and closed there, it is that
+// photo alone.
+#[test]
+fn closing_on_the_photo_it_was_opened_on_keeps_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three(dir.path());
+    click(&mut driver, &mut harness, 0);
+    driver.frames_in(&mut harness, 1.0);
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::End);
+    driver.act(&mut harness);
+    assert_eq!(harness.state().selected().len(), 3);
+    key(&mut driver, &mut harness, Key::Enter);
+    assert_eq!(viewing(&harness), Some(ids[2]));
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::Escape);
+    assert_eq!(viewing(&harness), None);
+    assert_eq!(harness.state().selected(), ids);
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::ArrowLeft);
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::Escape);
+    assert_eq!(harness.state().selected(), [ids[1]]);
+}
+
 // Closed on a photo the view no longer holds, the viewer hands the grid no photo: the
 // selection must not hold one no tile shows, and the photo that stands where it stood
 // is one nobody asked about. What was selected before stays.

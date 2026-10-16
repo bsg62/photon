@@ -191,6 +191,21 @@ impl Nav {
         }
     }
 
+    /// A keyword renamed from `from` to `to`: the view of it, on screen or a step on its
+    /// way to it, is the view of the new name - the engine has moved its own argument with
+    /// the rename, outside the views' queue.
+    pub fn renamed_tag(&mut self, from: &str, to: &str) {
+        let of = |place: &mut Place| {
+            if place.view == GridView::Tag && place.arg == from {
+                place.arg = to.to_owned();
+            }
+        };
+        of(&mut self.settled);
+        for (_, landed) in &mut self.landed {
+            of(&mut landed.place);
+        }
+    }
+
     /// What the grid on screen shows.
     pub fn settled(&self) -> &Place {
         &self.settled

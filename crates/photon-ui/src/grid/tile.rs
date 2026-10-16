@@ -6,7 +6,7 @@ use crate::{
     theme::{
         apply::color,
         fonts,
-        tokens::{PHOTO_LINE, Palette, R, T},
+        tokens::{PHOTO_LINE, Palette, R, SHADOW_INK, T},
     },
 };
 use eframe::egui::{
@@ -45,23 +45,50 @@ pub fn cover_uv(width: f32, height: f32) -> Rect {
 const RING: f32 = 2.0;
 const RING_EDGE: f32 = 1.0;
 
-/// Paints `entry`'s tile in `rect`. `texture` is its thumbnail when it has arrived,
-/// `failed` whether it never will, and `selected` whether it is one of the photos picked.
+/// How much of a tile is seen whose folder is offline: the Svelte tile's `.dimmed`.
+const DIMMED: f32 = 0.4;
+
+/// Paints `entry`'s tile in `rect`. `texture` is its thumbnail when it has arrived, with
+/// how much of it is seen (less while it fades in),
+/// `failed` whether it never will, `selected` whether it is one of the photos picked, and
+/// `dimmed` whether its folder is offline - the whole tile at `DIMMED`, as the Svelte
+/// tile's opacity takes its marks and its ring with it.
+#[allow(clippy::too_many_arguments)]
 pub fn paint(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    entry: &GridEntry,
+    texture: Option<(&TextureHandle, f32)>,
+    failed: bool,
+    selected: bool,
+    dimmed: bool,
+    palette: &Palette,
+) {
+    if !dimmed {
+        return paint_tile(ui, rect, entry, texture, failed, selected, palette);
+    }
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.multiply_opacity(DIMMED);
+        paint_tile(ui, rect, entry, texture, failed, selected, palette);
+    });
+}
+
+fn paint_tile(
     ui: &egui::Ui,
     rect: Rect,
     entry: &GridEntry,
-    texture: Option<&TextureHandle>,
+    texture: Option<(&TextureHandle, f32)>,
     failed: bool,
     selected: bool,
     palette: &Palette,
 ) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, R[1], color(palette.field));
-    if let Some(texture) = texture {
+    if let Some((texture, shown)) = texture {
         let size = texture.size_vec2();
         egui::Image::from_texture(texture)
             .uv(cover_uv(size.x, size.y))
+            .tint(Color32::WHITE.gamma_multiply(shown))
             .corner_radius(R[1])
             .paint_at(ui, rect);
     }
@@ -80,15 +107,20 @@ pub fn paint(
     if video {
         let corner = rect.min + Vec2::splat(INSET);
         let play = Rect::from_min_size(corner, Vec2::splat(PLAY));
-        Icon::Play.paint(ui, play, PLAY, true, on_photo);
+        halo(on_photo, |shift, tint| {
+            Icon::Play.paint(ui, play.translate(shift), PLAY, true, tint);
+        });
         if let Some(ms) = entry.duration_ms {
-            painter.text(
-                pos2(play.right() + 3.0, play.center().y),
-                Align2::LEFT_CENTER,
-                format_duration(ms),
-                fonts::regular(T[0]),
-                on_photo,
-            );
+            let words = format_duration(ms);
+            halo(on_photo, |shift, tint| {
+                painter.text(
+                    pos2(play.right() + 3.0, play.center().y) + shift,
+                    Align2::LEFT_CENTER,
+                    &words,
+                    fonts::regular(T[0]),
+                    tint,
+                );
+            });
         }
     }
     if entry.starred {
@@ -120,13 +152,31 @@ pub fn paint(
 }
 
 fn mark(ui: &egui::Ui, icon: Icon, corner: Pos2, filled: bool, tint: Color32) {
-    icon.paint(
-        ui,
-        Rect::from_min_size(corner, vec2(MARK, MARK)),
-        MARK,
-        filled,
-        tint,
-    );
+    let place = Rect::from_min_size(corner, vec2(MARK, MARK));
+    halo(tint, |shift, tint| {
+        icon.paint(ui, place.translate(shift), MARK, filled, tint);
+    });
+}
+
+/// Something drawn on the photo, with a dark halo round it: drawn in the shadow's ink a
+/// point out each way, then itself. The Svelte tile's `drop-shadow(0 0 2px
+/// var(--shadow-ink))` - without it a white mark, the copies mark or a video's length,
+/// was lost on a bright photo, and the star on an amber one.
+fn halo(tint: Color32, mut paint: impl FnMut(Vec2, Color32)) {
+    let shadow = color(SHADOW_INK).gamma_multiply(0.5);
+    for (x, y) in [
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ] {
+        paint(vec2(x, y), shadow);
+    }
+    paint(Vec2::ZERO, tint);
 }
 
 #[cfg(test)]
@@ -155,5 +205,55 @@ mod tests {
     fn a_picture_with_no_size_is_shown_as_it_is() {
         assert_eq!(uv(0.0, 100.0), (0.0, 0.0, 1.0, 1.0));
         assert_eq!(uv(100.0, 0.0), (0.0, 0.0, 1.0, 1.0));
+    }
+
+    // A video's length is drawn over a halo of the shadow's ink, a point out each way, as
+    // every mark on the photo is: alone, white on a bright photo, it was not there.
+    #[test]
+    fn a_mark_on_the_photo_has_a_halo() {
+        let ctx = egui::Context::default();
+        let entry = GridEntry {
+            id: 1,
+            folder_id: 1,
+            taken_at: 0,
+            aspect: 1.0,
+            kind: MediaKind::Video,
+            duration_ms: Some(5_000),
+            starred: false,
+            has_copies: false,
+            thumb_key: 0,
+            size: 0,
+            mtime_ms: 0,
+        };
+        let mut full = ctx.run_ui(Default::default(), |ui| {
+            let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(120.0, 120.0));
+            paint(
+                ui,
+                rect,
+                &entry,
+                None,
+                false,
+                false,
+                false,
+                &crate::theme::tokens::LIGHT,
+            );
+        });
+        full.textures_delta.clear();
+        let lengths: Vec<Color32> = (full.shapes.iter())
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == format_duration(5_000) => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .collect();
+        let shadow = color(SHADOW_INK).gamma_multiply(0.5);
+        assert_eq!(lengths.len(), 9, "the length and its halo");
+        assert_eq!(lengths.iter().filter(|tint| **tint == shadow).count(), 8);
+        assert_eq!(
+            lengths.last(),
+            Some(&color(PHOTO_LINE)),
+            "the length over it"
+        );
     }
 }

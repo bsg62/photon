@@ -143,6 +143,15 @@ pub struct SidebarView {
     menu_button: bool,
     /// An entry to bring into sight when the sidebar is next drawn.
     reveal: Option<What>,
+    /// The entry that had the keyboard when the list was last drawn: one the keyboard has
+    /// just been taken to is brought into sight, once, as it gets there.
+    keyed: Option<What>,
+    /// The row whose name was left from the keyboard - Enter or Escape - to which the
+    /// keyboard goes back once its field has closed (`backToRow`): the field had it, and
+    /// with the field gone nothing had, so Tab could not go on from the row nor Enter open
+    /// it. Not where the rename was begun from the grid, whose keys they then are.
+    back_to: Option<What>,
+    from_grid: bool,
 }
 
 /// An entry and where it was when the list was last drawn. When the entries are built
@@ -242,6 +251,12 @@ impl SidebarView {
         self.reveal = Some(what);
     }
 
+    /// Whether the rename being begun was asked for from the grid: then, closed from the
+    /// keyboard, it leaves the keys to the grid rather than to its row.
+    pub fn rename_from_grid(&mut self, yes: bool) {
+        self.from_grid = yes;
+    }
+
     /// The sidebar is not drawn in this frame: it is hidden. A field left open under
     /// it - a name the library refused - is opened again when it is next drawn, and
     /// takes the keyboard then: drawn without it, what was typed "into" it was the
@@ -304,7 +319,12 @@ impl SidebarView {
         let mut shown = Shown::default();
         let mut drawn = None;
         let in_view = self.stack.range(top, top + viewport);
-        for index in in_view.clone() {
+        // And a row past each edge, cut away: a row that is drawn is a stop of the Tab
+        // key, and with only those in sight drawn the keyboard could not walk on to the
+        // rows below the edge - the one it is taken to is then brought into sight (below).
+        let reach = in_view.start.saturating_sub(1)..(in_view.end + 1).min(list.entries.len());
+        let mut keyed = None;
+        for index in reach {
             let entry = &list.entries[index];
             let band = Rect::from_min_max(
                 pos2(
@@ -319,16 +339,55 @@ impl SidebarView {
             match naming {
                 Some((at, naming)) if at == index => {
                     let opened = self.field.as_ref() != Some(naming.of);
+                    // Asked before the field, which takes the two keys out of the frame.
+                    let by_key = ui.input(|input| {
+                        input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
+                    });
                     shown.named = field(ui, &frame, band, &naming, opened);
                     drawn = Some(naming.of.clone());
+                    let closes = (shown.named.iter())
+                        .any(|named| matches!(named, Named::Commit | Named::Cancel));
+                    if by_key && closes {
+                        self.back_to = (!self.from_grid).then(|| entry.what.clone());
+                    }
                 }
                 _ => {
                     if let Some(clicked) = draw(ui, &frame, band, entry) {
                         shown.clicked = Some(clicked);
                     }
+                    if self.back_to.as_ref() == Some(&entry.what) {
+                        self.back_to = None;
+                        // Only where nothing else has taken the keyboard meanwhile: the
+                        // field itself may still hold it, egui letting go of a field
+                        // only at the end of the frame that no longer draws it.
+                        let focused = ui.memory(|memory| memory.focused());
+                        if focused.is_none() || focused == Some(field_id()) {
+                            let id = ui.id().with(("sidebar", &entry.what));
+                            ui.memory_mut(|memory| memory.request_focus(id));
+                        }
+                    }
+                    if has_keys(ui, entry) {
+                        keyed = Some((index, entry.what.clone()));
+                    }
                 }
             }
         }
+        // A row the keyboard has just been taken to is brought into sight, as a browser
+        // brings a focused row: Tab into rows below the edge walked into rows nobody saw.
+        // Once, as it gets there, so that the wheel can take the list away from it.
+        if let Some((index, what)) = &keyed
+            && self.keyed.as_ref() != Some(what)
+            && let Some(to) = into_view(
+                self.stack.top(*index),
+                self.stack.bottom(*index),
+                self.scroll.position(),
+                viewport,
+            )
+        {
+            self.scroll.set(to);
+            ui.ctx().request_repaint();
+        }
+        self.keyed = keyed.map(|(_, what)| what);
         self.draw_scrollbar(&painter, bar, palette);
         // A field whose row is not drawn has nowhere to be typed in, and egui has taken
         // the keyboard off a widget that is gone: left open, the next name typed would
@@ -747,9 +806,37 @@ fn field(
     named
 }
 
+/// Whether one of `entry`'s buttons has the keyboard.
+fn has_keys(ui: &egui::Ui, entry: &Entry) -> bool {
+    let ids = [
+        ui.id().with(("sidebar", &entry.what)),
+        ui.id().with(("sidebar", &What::PeoplePage)),
+    ];
+    let people = matches!(entry.what, What::Group(Group::People));
+    ui.memory(|memory| memory.has_focus(ids[0]) || (people && memory.has_focus(ids[1])))
+}
+
+/// Draws `entry` in `band`, and the ring round it while the keyboard is on it - Enter or
+/// Space presses it - as Settings' rows draw theirs: without it a row reached by Tab was
+/// a stop nobody could see. Inside the row, where the next row's ground cannot cover it.
+/// Answers what a click on it asks for.
+fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> Option<What> {
+    let clicked = draw_row(ui, frame, band, entry);
+    if has_keys(ui, entry) {
+        let row = Rect::from_min_max(pos2(band.left() + INSET, band.bottom() - ROW), band.max);
+        frame.painter.rect_stroke(
+            row,
+            R[2],
+            Stroke::new(2.0, color(frame.palette.accent)),
+            StrokeKind::Inside,
+        );
+    }
+    clicked
+}
+
 /// Draws `entry` in `band`. Answers what a click on it asks for: the entry itself, or the
 /// People page for the label half of People's heading.
-fn draw(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> Option<What> {
+fn draw_row(ui: &mut egui::Ui, frame: &Frame<'_>, band: Rect, entry: &Entry) -> Option<What> {
     let clicked = |yes: bool| yes.then(|| entry.what.clone());
     let palette = frame.palette;
     let painter = frame.painter;
@@ -1157,6 +1244,8 @@ mod tests {
         left_typed: Vec<String>,
         /// How often the field has said its name is to be stored, in every frame so far.
         stores: usize,
+        /// The rings the last frame drew round what has the keyboard.
+        rings: Vec<Rect>,
     }
 
     impl Fixture {
@@ -1182,6 +1271,7 @@ mod tests {
                 left_over: Vec::new(),
                 left_typed: Vec::new(),
                 stores: 0,
+                rings: Vec::new(),
             }
         }
 
@@ -1262,6 +1352,7 @@ mod tests {
             self.fills.clear();
             self.icons.clear();
             self.clip_tops.clear();
+            self.rings.clear();
             for clipped in &full.shapes {
                 let clip_top = clipped.clip_rect.top();
                 each_shape(&clipped.shape, &mut |shape| {
@@ -1282,7 +1373,12 @@ mod tests {
                             let texture = rect.brush.as_ref().unwrap().fill_texture_id;
                             self.icons.push((rect.rect, texture));
                         }
-                        egui::Shape::Rect(rect) => self.fills.push((rect.rect, rect.fill)),
+                        egui::Shape::Rect(rect) => {
+                            if rect.stroke.width == 2.0 {
+                                self.rings.push(rect.rect);
+                            }
+                            self.fills.push((rect.rect, rect.fill));
+                        }
                         _ => {}
                     }
                 });
@@ -2334,6 +2430,30 @@ mod tests {
         assert_eq!(f.left_over, [Key::ArrowLeft]);
     }
 
+    // A name left from the keyboard gives the keyboard back to its row once the field has
+    // closed - stored by Enter, or given up by Escape - so that Tab goes on from there and
+    // Enter opens it (`backToRow`); begun from the grid, it leaves the keys to the grid.
+    #[test]
+    fn a_name_left_from_the_keyboard_gives_the_keyboard_back_to_its_row() {
+        for (key, grid) in [
+            (Key::Enter, false),
+            (Key::Escape, false),
+            (Key::Enter, true),
+        ] {
+            let mut f = Fixture::new(3);
+            f.frame(Vec::new());
+            f.view.rename_from_grid(grid);
+            f.name(Of::Album(4), "Best of");
+            f.key(key);
+            // The application closes the field: at once for Escape, once stored for Enter.
+            f.naming = None;
+            f.frame(Vec::new());
+            f.frame(Vec::new());
+            let back = (!grid).then_some(What::Album(4));
+            assert_eq!(f.view.keyed, back, "{key:?}, begun from the grid: {grid}");
+        }
+    }
+
     // A frame can be long, and a letter and the Enter after it in it together: the name
     // stored is the one with the letter, which is said before the Enter is.
     #[test]
@@ -2678,5 +2798,36 @@ mod tests {
         f.view.reveal(folder(9999));
         f.frame(Vec::new());
         assert_eq!(f.view.position(), before);
+    }
+
+    // The Tab key walks down the list past its bottom edge: the row it reaches is brought
+    // into sight, and a ring shows it - before, the rows below the edge were not drawn and
+    // so no stops of the key, and a row that had the keyboard looked like any other.
+    #[test]
+    fn the_tab_key_walks_down_the_list_and_shows_where_it_is() {
+        let mut f = Fixture::new(60);
+        f.frame(Vec::new());
+        let height = f.size.y;
+        let mut deepest = 0;
+        for _ in 0..120 {
+            f.key(Key::Tab);
+            f.frame(Vec::new());
+            let Some(what) = f.view.keyed.clone() else {
+                continue;
+            };
+            let band = f.band(&what);
+            assert!(
+                band.top() >= -0.5 && band.bottom() <= height + 0.5,
+                "{what:?} out of sight at {band:?}"
+            );
+            assert_eq!(f.rings.len(), 1, "one ring, round {what:?}");
+            assert!(
+                band.contains_rect(f.rings[0]),
+                "{:?} not in {band:?}",
+                f.rings[0]
+            );
+            deepest = deepest.max(f.index(&what));
+        }
+        assert!(deepest > 40, "the keyboard stopped at entry {deepest}");
     }
 }
