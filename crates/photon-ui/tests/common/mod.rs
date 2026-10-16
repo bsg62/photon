@@ -240,6 +240,14 @@ pub fn library(dir: &Path, photos: usize, starred: usize, hidden: usize) -> fixt
 
 /// The application over `library`, in a window 1000 by 700.
 pub fn launch<'a>(library: &fixture::Fixture) -> Harness<'a> {
+    launch_with(library, no_platform())
+}
+
+/// The application over `library`, with `platform` for the system.
+pub fn launch_with<'a>(
+    library: &fixture::Fixture,
+    platform: std::sync::Arc<Picker>,
+) -> Harness<'a> {
     let dirs = library.dirs();
     egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
@@ -247,7 +255,7 @@ pub fn launch<'a>(library: &fixture::Fixture) -> Harness<'a> {
         .build_eframe(move |cc| {
             (App::new(cc, dirs, None).unwrap())
                 .with_videos(no_videos())
-                .with_platform(no_platform())
+                .with_platform(platform)
         })
 }
 
@@ -261,7 +269,16 @@ pub fn click(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
 
 /// Launches over `library` and waits until its grid is there.
 pub fn opened<'a>(library: &fixture::Fixture, photos: usize) -> (Harness<'a>, Driver) {
-    let mut harness = launch(library);
+    opened_with(library, photos, no_platform())
+}
+
+/// `opened`, with `platform` for the system.
+pub fn opened_with<'a>(
+    library: &fixture::Fixture,
+    photos: usize,
+    platform: std::sync::Arc<Picker>,
+) -> (Harness<'a>, Driver) {
+    let mut harness = launch_with(library, platform);
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the library shown", |app| {
         app.photos() == photos && app.last_frame().is_some_and(|frame| frame.settled)
@@ -394,8 +411,11 @@ pub fn no_platform() -> std::sync::Arc<Picker> {
 /// A stand-in for the system's folder picker and clipboard. The picker answers `answer`
 /// (a cancel until told otherwise), says what it was asked under `asked`, and - while
 /// `held` holds a receiver - waits until it is sent to. The clipboard keeps the size of
-/// every picture put on it in `copied`, or refuses with `refused`.
+/// every picture put on it in `copied`, or refuses with `refused`. The file manager and the
+/// opener say what they were asked in `opened` - "reveal <path>", "open <target>".
 pub struct Picker {
+    pub opened: std::sync::Mutex<Vec<String>>,
+    pub open_refused: std::sync::Mutex<Option<String>>,
     pub answer: std::sync::Mutex<photon_ui::platform::Picked>,
     pub asked: std::sync::Mutex<Vec<String>>,
     pub held: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
@@ -411,11 +431,26 @@ impl Default for Picker {
             held: Default::default(),
             copied: Default::default(),
             refused: Default::default(),
+            opened: Default::default(),
+            open_refused: Default::default(),
         }
     }
 }
 
 impl photon_ui::platform::Platform for Picker {
+    fn reveal(&self, path: &Path) -> Result<(), String> {
+        if let Some(refused) = self.open_refused.lock().unwrap().clone() {
+            return Err(refused);
+        }
+        (self.opened.lock().unwrap()).push(format!("reveal {}", path.display()));
+        Ok(())
+    }
+
+    fn open(&self, target: &std::ffi::OsStr) -> Result<(), String> {
+        (self.opened.lock().unwrap()).push(format!("open {}", target.to_string_lossy()));
+        Ok(())
+    }
+
     fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String> {
         assert_eq!(rgba.len(), width * height * 4, "a picture of its own size");
         if let Some(refused) = self.refused.lock().unwrap().clone() {

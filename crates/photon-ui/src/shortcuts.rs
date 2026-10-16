@@ -8,10 +8,8 @@
 //! test does not name: a new one is added there, with its group. Pure mouse gestures are
 //! not keys and are not listed.
 //!
-//! The Svelte list less what this window does not answer yet: revealing a photo
-//! (Ctrl+Shift+R) comes with the file manager in sub-project 7. Ctrl+C reaches the
-//! handlers as `Event::Copy` and not as a key; the tripwire counts it by the `C` that
-//! another key of the same groups names.
+//! The Svelte list, every row. Ctrl+C reaches the handlers as `Event::Copy` and not as a
+//! key; the tripwire counts it by the `C` that another key of the same groups names.
 
 /// Where a group of keys works.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +90,10 @@ pub const SHORTCUTS: &[Group] = &[
             row(&[&["."]], "Star the selection, or take its stars off"),
             row(&[&["H"]], "Hide the selection; in Hidden, unhide it"),
             row(&[&["Mod", "C"]], "Copy the selected photo as a picture"),
+            row(
+                &[&["Mod", "Shift", "R"]],
+                "Reveal the photo in the file manager",
+            ),
         ],
     },
     Group {

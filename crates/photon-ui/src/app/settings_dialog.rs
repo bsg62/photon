@@ -610,6 +610,10 @@ impl App {
                     settings.ask(Question::RemoveFolder { id, path });
                 }
                 Asked::AddChoose => self.pick_folder(super::pick::PickFor::AddFolder),
+                Asked::RevealWatched(id) => {
+                    self.open_with_system(super::open::Opening::RevealWatched(id));
+                }
+                Asked::RevealLibrary => self.open_with_system(super::open::Opening::RevealLibrary),
                 Asked::AddOpen => {
                     settings.adding = Some(Default::default());
                 }

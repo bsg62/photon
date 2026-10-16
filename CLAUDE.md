@@ -1398,8 +1398,9 @@ application has been made.
 with its splitter, the status bar, the content), drawn by `shell.rs`, a view that answers
 what the user did as a list of `Action`s; `app.rs` is the one place an action changes
 anything (and its child modules, `app/settings_dialog.rs`, which are `app.rs` in a file of
-their own). What needs a later sub-project is drawn in place and takes no press (a
-Reveal): a button that will be there is there, so nothing moves when it starts to work
+their own). What needs a later sub-project is drawn in place and takes no press (the
+Reveals were, until the platform's): a button that will be there is there, so nothing
+moves when it starts to work
 (spec `2026-10-10-photon-native-sidebar-views-search-design.md`).
 
 **A step that moves the engine's view goes through `tasks::Queue`, never `Latest`.** The
@@ -1927,7 +1928,8 @@ tile's menu when nothing is selected. A folder's menu is one list on its row in 
 sidebar, on its header in the grid and on the copy of that header pinned over the photos
 (`header_at`, in `grid/layout.rs`, says which header a point is on; a period's names no
 folder and has no menu). "Delete…" asks before it acts, through the dialog layer
-(below); "Reveal in file manager" is in its place and takes no press. The other button on a row is read from its own press (`menu_press`), as on a
+(below); "Reveal in file manager" shows the folder in the system's file manager
+(`app/open.rs`, below). The other button on a row is read from its own press (`menu_press`), as on a
 photo, and not through what lies over the list.
 
 **A name is typed in the row itself, in the one field the sidebar has**
@@ -2216,6 +2218,23 @@ is. A test's clipboard is the
 stand-in (`common::Picker`'s `copied`, `refused`), and a copy is held behind a render by
 holding `RENDERING`.
 
+**Reveal and Open ask the system, off the window's thread** (`app/open.rs`,
+`platform.rs`; spec decision 5): every "Reveal in file manager" - the tile menu's and
+Ctrl/Cmd+Shift+R for one photo selected, the viewer's menu, a folder's menu, a watched
+folder's row and About's library in Settings - every "Open in default app", and the info
+panel's "Open in OpenStreetMap" (the engine's `item_map_url`). Each asking is a thread of
+its own (`Opening`): the path is the library's, read off the window's thread, and a file
+on a share that has stopped answering or a file manager starting can take seconds; what
+goes wrong is said, in the system's words. Reveal is the shell's
+`SHOpenFolderAndSelectItems` on Windows (COM made ready on that thread; a path the shell
+cannot make an item of opens its folder instead, as Tauri's opener does), `open -R` on a
+Mac, and the file manager's D-Bus interface (`FileManager1.ShowItems`) on Linux, with the
+folder opened where no file manager answers; Open is the `open` crate - `ShellExecuteExW`,
+`open`, `xdg-open`. Every stored path is `paths::canonicalize`'s, so a share reaches the
+shell as `\\server\share`. A video that cannot be played has its way out in the viewer's
+menu ("Open in default app"), as in the Svelte viewer, not a button of its own under the
+message. A test's system is the stand-in (`common::Picker`'s `opened`, `open_refused`).
+
 **The viewer takes the whole window** (spec `2026-10-12-photon-native-viewer-design.md`;
 `viewer.rs` for which photo is open, `viewer_view.rs` for what is drawn, `App::viewer`
 while it is open). The shell is not drawn under it, so the grid's keys cannot be answered
@@ -2407,8 +2426,8 @@ search half typed, which would land after the jump. From Hidden too, where a fol
 for is looked up in the grid on screen: a copy the panel lists is never a hidden photo, and
 a photo unhidden in the viewer stays on screen in Hidden with its copies listed - looked up
 there, the press closed the viewer and found nothing. "Show N duplicates in the grid" is
-the view of the photo's copies (below); "Open in OpenStreetMap" is in its place and takes
-no press; no text of the panel can be
+the view of the photo's copies (below); "Open in OpenStreetMap" opens the place in the
+browser and leaves the viewer open (`InfoAction::Map`); no text of the panel can be
 selected. Known and left: a double click on a copy's link lands its second click on the grid
 that is by then under the pointer, and selects that photo in the copy's place.
 
@@ -2614,8 +2633,8 @@ and with nothing said of the photo - one that is gone, a viewer that is shut - i
 items and closes. "Not Anna" is `Write::PersonRemove` with the one photo, the grid's
 Remove; "Locate in photon" shuts the viewer and finds the photo in All photos, or **in
 Hidden when the library says it is hidden** (`App::locate`'s `hidden`), the one view that
-holds it then; "Reveal in file manager" and "Open in default app" are in their places and
-take no press. The menu is dark in both themes, as the viewer is (`MenuView::show_in`) -
+holds it then; "Reveal in file manager" and "Open in default app" ask the system
+(`app/open.rs`), as the tile menu's do. The menu is dark in both themes, as the viewer is (`MenuView::show_in`) -
 seen in a picture, where it was light in a light window; the frame test holds `show_in`,
 and nothing holds that the application calls it so but the picture.
 
@@ -3193,7 +3212,8 @@ in the list on hand at once and counts as being scanned (`Scans::added`), as a d
 does, and a folder dropped on the window while the field is open is put in the field and
 watched by nothing. A folder's row says its count of photos only once that is read, where
 the Svelte list says "0 photos" until it is; its Rescan takes no press while it is
-scanned (`rescan_folder` does nothing then and says nothing back); Reveal is in its place.
+scanned (`rescan_folder` does nothing then and says nothing back); its Reveal, and About's,
+ask the system's file manager.
 **The counts and the changes are read again at every change of the library's data** while
 Settings is open (`settings_lists`), so a keyword removed from elsewhere, or a scan, shows
 in it. A keyword is renamed in its row (`Renamer`): its field opens with its name chosen,

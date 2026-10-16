@@ -61,6 +61,10 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Wayland library is loaded at run time, as winit loads it - where without it a copy
 # goes through XWayland.
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
+# A file or a web address opened by what the system opens it with (`platform.rs`): the
+# shell's `ShellExecuteExW` on Windows, `open` on a Mac, `xdg-open` on Linux. Tauri's
+# opener's own crate, at its version.
+open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
 # A video's poster encoded for the engine (`posters.rs`), and the tests' pictures read
 # back. photon-core's version.
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
@@ -83,8 +87,11 @@ rfd = { version = "0.16.0", default-features = false }
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 # Video (`video/mf.rs`): Media Foundation, part of the system. The version already in the
-# lockfile, which wgpu brings.
+# lockfile, which wgpu brings. And the shell, which shows a file in Explorer
+# (`platform.rs`).
 windows = { version = "0.62.2", features = [
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
@@ -108,6 +115,11 @@ pollster = "1.0.1"
 # ashpd runs on, at their versions.
 async-io = "2.6.0"
 futures-lite = "2.6.1"
+# The file manager's D-Bus interface, which shows a file in its folder (`platform.rs`):
+# the D-Bus client ashpd runs on, and the crate that makes a path a `file://` address, at
+# their versions.
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+url = "2.5.8"
 gstreamer = "0.25.4"
 gstreamer-app = "0.25.2"
 gstreamer-video = "0.25.4"

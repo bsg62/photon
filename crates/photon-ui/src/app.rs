@@ -81,6 +81,7 @@ use photon_engine::{
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
 mod copy;
+mod open;
 mod people;
 mod pick;
 mod settings_dialog;
@@ -243,6 +244,12 @@ pub struct App {
     /// The system photon asks for a folder chosen and a message shown (`platform.rs`), or
     /// a test's stand-in.
     platform: Arc<dyn Platform>,
+    /// What went wrong when the system was asked to show or open something
+    /// (`app/open.rs`).
+    open_said: (
+        std::sync::mpsc::Sender<String>,
+        std::sync::mpsc::Receiver<String>,
+    ),
     /// A copy of a photo to the clipboard, while one is on its way, and the photo
     /// (`app/copy.rs`).
     copying: Option<(i64, std::sync::mpsc::Receiver<Result<(), String>>)>,
@@ -1377,6 +1384,7 @@ impl App {
             picking: None,
             copying: None,
             next_copy: None,
+            open_said: open::said(),
             dialog_openings: 0,
             poster_worker: None,
             checking,
@@ -1918,8 +1926,8 @@ impl App {
                 self.shut_viewer();
                 self.locate(photo, hidden);
             }
-            // What does not work yet takes no press, and so answers nothing.
-            ViewerPick::Reveal | ViewerPick::OpenInApp => {}
+            ViewerPick::Reveal => self.open_with_system(open::Opening::RevealPhoto(photo)),
+            ViewerPick::OpenInApp => self.open_with_system(open::Opening::OpenPhoto(photo)),
         }
     }
 
@@ -2002,8 +2010,9 @@ impl App {
                     self.open_dialog(Dialog::Confirm(Confirm::Search { id, name }));
                 }
             }
-            // What does not work yet takes no press, and so answers nothing.
-            SideAction::RevealFolder(_) => {}
+            SideAction::RevealFolder(folder) => {
+                self.open_with_system(open::Opening::RevealFolder(folder));
+            }
         }
     }
 
@@ -2992,6 +3001,10 @@ impl App {
                     // A copy, of the photo the frame was drawn for: the picture, and the
                     // caption's file name.
                     ViewerAction::Copy if copyable => self.copy_photo(id),
+                    // In the browser, and the viewer stays: no link that leaves it.
+                    ViewerAction::Panel(InfoAction::Map) => {
+                        self.open_with_system(open::Opening::Map(id));
+                    }
                     ViewerAction::CopyName => {
                         if let Some(item) = open.item.as_ref() {
                             ctx.copy_text(item.file_name.clone());
@@ -3166,7 +3179,10 @@ impl App {
                 }
                 // (Written above.)
                 ViewerAction::Panel(
-                    InfoAction::AddTag(_) | InfoAction::RemoveTag(_) | InfoAction::Album { .. },
+                    InfoAction::AddTag(_)
+                    | InfoAction::RemoveTag(_)
+                    | InfoAction::Album { .. }
+                    | InfoAction::Map,
                 )
                 | ViewerAction::Copy
                 | ViewerAction::CopyName => false,
@@ -3609,6 +3625,19 @@ impl App {
                 self.show_copies(id);
                 return;
             }
+            // The menu offers the file manager and the system's app for one photo.
+            TileAction::Reveal => {
+                if let [id] = ids[..] {
+                    self.open_with_system(open::Opening::RevealPhoto(id));
+                }
+                return;
+            }
+            TileAction::OpenInApp => {
+                if let [id] = ids[..] {
+                    self.open_with_system(open::Opening::OpenPhoto(id));
+                }
+                return;
+            }
             // The clipboard holds one picture: the menu offers it for one photo that is
             // no video.
             TileAction::CopyPhoto => {
@@ -3644,7 +3673,7 @@ impl App {
                     .map_or(String::new(), |person| person.name.clone());
                 Write::PersonRemove { person, name, ids }
             }
-            // What does not work yet takes no press, and so answers nothing.
+            // (Answered by `pick`, as the system's and the clipboard's.)
             TileAction::Reveal
             | TileAction::OpenInApp
             | TileAction::CopyPhoto
@@ -3670,6 +3699,13 @@ impl App {
         // The clipboard holds one picture: exactly one photo selected, not the lead of a
         // wider selection - the Svelte grid's rule, Reveal's too - and no video, of which
         // the key is simply dead, as the menu offers no copy of one.
+        // The file manager shows one photo: exactly one selected, as for a copy.
+        if asked.ask == Ask::Reveal {
+            if let [id] = asked.ids[..] {
+                self.open_with_system(open::Opening::RevealPhoto(id));
+            }
+            return;
+        }
         if asked.ask == Ask::Copy {
             if let [id] = asked.ids[..]
                 && self
@@ -3691,7 +3727,7 @@ impl App {
             }
             Ask::Hide => TileAction::Hide(self.nav.settled().view != View::Hidden),
             Ask::Compare => TileAction::Compare,
-            Ask::Copy => return,
+            Ask::Copy | Ask::Reveal => return,
         };
         self.write(action, asked.ids);
     }
@@ -4662,6 +4698,7 @@ impl eframe::App for App {
         let reported = self.more_answers(now) || reported;
         let reported = self.picked(now) || reported;
         let reported = self.copied(now) || reported;
+        let reported = self.open_answers(now) || reported;
         if let Some(seen) = &mut self.window_seen {
             ui.ctx().input(|input| seen.frame(input.viewport()));
         }

@@ -39,29 +39,6 @@ pub enum TileAction {
     ShowCopies(i64),
 }
 
-impl TileAction {
-    /// Whether the item works yet. The others are in their place and take no press: what
-    /// they open is a later sub-project's (the platform's file manager), and a menu that grew as they arrived would move every
-    /// item under a hand that had learnt where it was.
-    pub fn works(&self) -> bool {
-        matches!(
-            self,
-            Self::Star(_)
-                | Self::Hide(_)
-                | Self::Export
-                | Self::AddKeyword
-                | Self::RemoveKeyword
-                | Self::AddToPerson
-                | Self::RemoveFromPerson(_)
-                | Self::RemoveFromAlbum(_)
-                | Self::AddToAlbum(_)
-                | Self::Compare
-                | Self::ShowCopies(_)
-                | Self::CopyPhoto
-        )
-    }
-}
-
 /// The photo a menu takes its direction from (`Selection::deciding`): the photo itself
 /// when one is selected, and among several the one the star key goes by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,16 +108,14 @@ fn named_person<'a>(facts: &Facts<'a>) -> Option<(i64, &'a str)> {
 }
 
 pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
-    let pick = |label: String, hint: Option<&'static str>, look: Look, does: TileAction| {
-        let works = does.works();
-        Item::Pick {
+    let pick =
+        |label: String, hint: Option<&'static str>, look: Look, does: TileAction| Item::Pick {
             label,
             hint,
-            works,
+            works: true,
             look,
             does,
-        }
-    };
+        };
     let plain = |label: String, hint, does| pick(label, hint, Look::Plain, does);
     let subject = subject(facts.count);
     let mut items = Vec::new();
@@ -469,8 +444,8 @@ mod tests {
         assert_eq!(
             World::one().lines(),
             [
-                "Reveal in file manager [Ctrl+Shift+R] (off)",
-                "Open in default app (off)",
+                "Reveal in file manager [Ctrl+Shift+R]",
+                "Open in default app",
                 "Copy photo [Ctrl+C]",
                 "---",
                 "Star photo [.]",
@@ -516,7 +491,7 @@ mod tests {
         let mut w = World::one();
         w.mac = true;
         let lines = w.lines();
-        assert_eq!(lines[0], "Reveal in file manager [⌘+Shift+R] (off)");
+        assert_eq!(lines[0], "Reveal in file manager [⌘+Shift+R]");
         assert_eq!(lines[2], "Copy photo [⌘+C]");
     }
 
@@ -701,27 +676,6 @@ mod tests {
                 "(No albums of your own yet — create one in the sidebar.)"
             ]
         );
-    }
-
-    #[test]
-    fn what_writes_works_and_what_waits_for_a_later_surface_does_not() {
-        for works in [
-            TileAction::Star(true),
-            TileAction::Hide(false),
-            TileAction::RemoveFromPerson(1),
-            TileAction::RemoveFromAlbum(1),
-            TileAction::AddToAlbum(1),
-            TileAction::AddKeyword,
-            TileAction::RemoveKeyword,
-            TileAction::AddToPerson,
-            TileAction::Export,
-            TileAction::CopyPhoto,
-        ] {
-            assert!(works.works(), "{works:?}");
-        }
-        for waits in [TileAction::Reveal, TileAction::OpenInApp] {
-            assert!(!waits.works(), "{waits:?}");
-        }
     }
 
     // One export at a time: the one that runs has the status bar's line, and a second
