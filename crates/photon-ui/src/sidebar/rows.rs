@@ -54,24 +54,10 @@ pub struct Counts {
 /// zone between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Today {
+    pub year: i32,
     pub month: u32,
     pub day: u32,
 }
-
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
 
 impl Today {
     /// The search for photos taken on this day in any year, in `search::Query`'s grammar.
@@ -79,13 +65,13 @@ impl Today {
         format!("on:{:02}-{:02}", self.month, self.day)
     }
 
-    /// "14 July", for the row's hint.
+    /// "July 14" - "14. Juli" - for the row's hint, as the locale writes a day of the
+    /// year (the Svelte `searches.ts`'s `toLocaleDateString`).
     pub fn label(self) -> String {
-        let month = MONTHS
-            .get(self.month.saturating_sub(1) as usize)
-            .copied()
-            .unwrap_or_default();
-        format!("{} {month}", self.day)
+        let (month, day) = (u8::try_from(self.month), u8::try_from(self.day));
+        (month.ok().zip(day.ok()))
+            .and_then(|(month, day)| crate::locale::current().day_month((self.year, month, day)))
+            .unwrap_or_default()
     }
 }
 
@@ -201,7 +187,11 @@ pub fn fixed_rows(counts: &Counts, at: &Place, today: Today) -> Vec<Row> {
 mod tests {
     use super::*;
 
-    const TODAY: Today = Today { month: 7, day: 4 };
+    const TODAY: Today = Today {
+        year: 2026,
+        month: 7,
+        day: 4,
+    };
 
     fn kinds(rows: &[Row]) -> Vec<Fixed> {
         rows.iter().map(|row| row.what).collect()
@@ -329,8 +319,17 @@ mod tests {
     #[test]
     fn on_this_day_is_a_search_for_todays_date_in_any_year() {
         assert_eq!(TODAY.query(), "on:07-04");
-        assert_eq!(TODAY.label(), "4 July");
-        assert_eq!(Today { month: 12, day: 25 }.query(), "on:12-25");
+        // As English writes a day of the year (the locale's, `locale.rs`).
+        assert_eq!(TODAY.label(), "July 4");
+        assert_eq!(
+            Today {
+                year: 2026,
+                month: 12,
+                day: 25
+            }
+            .query(),
+            "on:12-25"
+        );
         assert_eq!(
             Fixed::OnThisDay.step(TODAY),
             Some(Step::Search("on:07-04".to_owned()))
@@ -341,7 +340,7 @@ mod tests {
             .find(|row| row.what == Fixed::OnThisDay)
             .unwrap();
         assert!(row.active);
-        assert_eq!(row.hint, "Photos taken on 4 July, in any year");
+        assert_eq!(row.hint, "Photos taken on July 4, in any year");
         // Another search is not this row's, and yesterday's is not today's.
         let rows = fixed_rows(&Counts::default(), &Place::search("on:07-03"), TODAY);
         assert!(rows.iter().all(|row| !row.active));

@@ -719,7 +719,24 @@ impl Page {
                         Sense::hover(),
                     )
                     .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, value));
-                    self.painter.galley(value_rect.min, value_galley, text);
+                    if dates {
+                        // A date in the locale's words, which in Hebrew or Arabic run
+                        // right to left, and egui draws as written: through `paint_line`,
+                        // which turns them round. Never wrapped, so one line.
+                        let middle = value_rect.center().y;
+                        let at = (value_rect.left(), middle);
+                        paint_line(
+                            ui,
+                            &self.painter,
+                            at,
+                            value_width,
+                            value,
+                            font.clone(),
+                            text,
+                        );
+                    } else {
+                        self.painter.galley(value_rect.min, value_galley, text);
+                    }
                 }
             }
         }
@@ -1707,6 +1724,23 @@ mod tests {
             [InfoAction::ShowCopies(7)]
         );
         assert_eq!(f.press("1600 × 1200"), []);
+    }
+
+    // A date in a language written right to left is drawn turned round, as a browser
+    // draws it: in Hebrew the year stands left of the month's name, which egui, drawing
+    // the date as written, put on its right.
+    #[test]
+    fn a_date_written_right_to_left_is_turned_round() {
+        crate::locale::for_this_thread(crate::locale::Locale::of("he-IL"));
+        let f = Fixture::of(full());
+        crate::locale::for_this_thread(None);
+        let at = |part: &str| {
+            (f.texts.iter())
+                .find(|(words, _)| words.contains(part) && !words.contains(' '))
+                .map(|(_, rect)| rect.left())
+                .unwrap_or_else(|| panic!("{part} not drawn apart: {:?}", f.texts))
+        };
+        assert!(at("2024") < at("ביוני"), "the year right of the month");
     }
 
     // The path, cut short in a narrow panel, is said whole under the pointer.

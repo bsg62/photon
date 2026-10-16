@@ -568,7 +568,11 @@ mod tests {
     use super::*;
     use photon_core::sort::{Grouping, SortKey};
 
-    const TODAY: Today = Today { month: 7, day: 4 };
+    const TODAY: Today = Today {
+        year: 2026,
+        month: 7,
+        day: 4,
+    };
     /// Noon UTC on 2024-06-01 and on 2019-02-02.
     const IN_2024: i64 = 1_717_243_200;
     const IN_2019: i64 = 1_549_108_800;
@@ -1140,11 +1144,25 @@ mod tests {
             (&What::AddFolder, "Add a folder in Settings…")
         );
         assert_eq!(height(&What::AddFolder), Some(f64::from(ROW)));
-        assert_eq!(What::AddFolder.step(Today { month: 1, day: 1 }), None);
+        assert_eq!(
+            What::AddFolder.step(Today {
+                year: 2026,
+                month: 1,
+                day: 1
+            }),
+            None
+        );
         // Words, like the notes of the empty groups: wrapped where they are drawn, and
         // nothing to press.
         assert_eq!(height(&What::NoFolders), None);
-        assert_eq!(What::NoFolders.step(Today { month: 1, day: 1 }), None);
+        assert_eq!(
+            What::NoFolders.step(Today {
+                year: 2026,
+                month: 1,
+                day: 1
+            }),
+            None
+        );
         let svelte = include_str!("../../../../ui/src/components/FolderTree.svelte");
         assert!(svelte.contains(&format!("<p class=\"empty\">{}</p>", last.label)));
         assert!(svelte.contains(&format!(">{}</button>", button.label)));

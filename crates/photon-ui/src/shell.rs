@@ -736,7 +736,11 @@ mod tests {
     use eframe::egui::{Modifiers, PointerButton, Pos2, RawInput};
     use photon_core::grid::GridView;
 
-    const TODAY: Today = Today { month: 7, day: 4 };
+    const TODAY: Today = Today {
+        year: 2026,
+        month: 7,
+        day: 4,
+    };
 
     /// The sidebar of a library with `counts` and nothing else in it, for a user at `at`.
     fn list(counts: &Counts, at: &Place) -> List {

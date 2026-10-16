@@ -3409,6 +3409,26 @@ just reached into sight (`keyed`); a name left from the keyboard gives the keybo
 its row (`back_to`), unless the rename was begun on a header in the grid
 (`rename_from_grid`, `menu_on_header`). What was left, and why, is the spec's list.
 
+**Dates and counts are written in the system's locale** (`locale.rs`, the user's answer,
+over English only): a period's header, a folder's month, the viewer's caption and the info
+panel's dates, "On this day" and every count with thousands (`grid::labels::grouped`), as
+the Svelte photon's `Intl` wrote them. ICU4X's formatters over its compiled data
+(`icu_datetime`, `icu_decimal`, pure Rust, new to the lock but on the `icu_provider` and
+`icu_locale_core` it had already; `icu_provider`'s `sync` feature, so the formatters can be
+one process-wide value). The locale is read once, by `main` and not by `App::new`, which
+every test calls (`sys-locale`, `Locale::system`, a Linux `de_DE.UTF-8` read as `de-DE`),
+and held for the process (`locale::set`, `current`); English until set, which is what
+every test reads - and a unit test's other locale is its own thread's
+(`for_this_thread`), so that under `cargo test`, one process, it is no other test's. A
+locale ICU4X has no words for is none, and English is written: its own fallback is the
+root's "2026 M10 4", where a browser falls back to its default. A month and a day are of
+the real day, never a month's first or a stand-in year: a locale's calendar may be another
+(the Persian's months turn round the 21st). Dates in the info panel go through
+`paint_line`, which turns a right-to-left run round (Hebrew, Arabic). ICU4X's narrow
+no-break spaces are written as plain ones (`plain`): the faces photon draws with are the
+system's, and not each has that glyph. Folder names keep `natural_cmp`, the grid's own order
+(the spec says why). The words photon writes itself stay English.
+
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
 close by themselves, for about two minutes, on a desktop that has to stay awake and

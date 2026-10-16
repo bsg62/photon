@@ -1,42 +1,15 @@
 //! What the grid writes: a header's name, count and month, and a video's running time.
 //!
-//! Dates are written in English. The Svelte UI wrote them in the system's locale, through
-//! the browser; photon takes no ICU, so a locale is a decision for the sub-project that
-//! brings the sidebar, which reads the same instants.
+//! Dates and counts in the system's language and order (`locale.rs`), as the Svelte UI
+//! wrote them through the browser; the words around them in English, as it did.
 
-use jiff::{Timestamp, civil::Weekday, tz::TimeZone};
+use jiff::{Timestamp, tz::TimeZone};
 use photon_core::{grid::Period, library::Folder};
 
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
-fn month_name(month: i64) -> &'static str {
-    MONTHS[(month.clamp(1, 12) - 1) as usize]
-}
-
-/// `1234567` as `1,234,567`.
+/// A count with its thousands as the locale groups them: `1,234,567` in English,
+/// `1.234.567` in German.
 pub fn grouped(number: usize) -> String {
-    let digits = number.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
+    crate::locale::current().count(i64::try_from(number).unwrap_or(i64::MAX))
 }
 
 pub fn photo_count(count: usize) -> String {
@@ -63,48 +36,40 @@ pub fn folder_summary(count: usize, taken_at_min: i64, zone: &TimeZone) -> Strin
     match Timestamp::from_second(taken_at_min) {
         Ok(instant) => {
             let local = instant.to_zoned(zone.clone());
-            format!(
-                "{count} · {} {}",
-                month_name(i64::from(local.month())),
-                local.year()
-            )
+            let locale = crate::locale::current();
+            let day = (
+                i32::from(local.year()),
+                local.month().unsigned_abs(),
+                local.day().unsigned_abs(),
+            );
+            match locale.month_year(day) {
+                Some(month) => format!("{count} · {month}"),
+                None => count,
+            }
         }
         // A date no calendar holds: the count alone.
         Err(_) => count,
     }
 }
 
-/// A period's header: "2024", "June 2024" or "Saturday, June 15, 2024". From the section's
-/// own numbers, never from an instant, which would be read again in the viewer's zone.
+/// A period's header: "2024", "June 2024" or "Saturday, June 15, 2024", in the locale's
+/// words and order. From the section's own numbers, never from an instant, which would be
+/// read again in the viewer's zone.
 pub fn period_label(period: Period) -> String {
-    let Some(month) = period.month else {
-        return period.year.to_string();
+    let year = period.year.to_string();
+    let Some(month) = period.month.and_then(|month| u8::try_from(month).ok()) else {
+        return year;
     };
-    let month_and_year = |day: Option<u32>| match day {
-        Some(day) => format!("{} {day}, {}", month_name(i64::from(month)), period.year),
-        None => format!("{} {}", month_name(i64::from(month)), period.year),
+    let Ok(at) = i32::try_from(period.year) else {
+        return year;
     };
-    let Some(day) = period.day else {
-        return month_and_year(None);
-    };
-    let weekday = i16::try_from(period.year)
-        .ok()
-        .zip(i8::try_from(month).ok())
-        .zip(i8::try_from(day).ok())
-        .and_then(|((year, month), day)| jiff::civil::Date::new(year, month, day).ok())
-        .map(|date| match date.weekday() {
-            Weekday::Monday => "Monday",
-            Weekday::Tuesday => "Tuesday",
-            Weekday::Wednesday => "Wednesday",
-            Weekday::Thursday => "Thursday",
-            Weekday::Friday => "Friday",
-            Weekday::Saturday => "Saturday",
-            Weekday::Sunday => "Sunday",
-        });
-    match weekday {
-        Some(weekday) => format!("{weekday}, {}", month_and_year(Some(day))),
-        None => month_and_year(Some(day)),
-    }
+    let locale = crate::locale::current();
+    // A day no calendar holds - the library's numbers, not a date - is its month.
+    let day = period.day.and_then(|day| u8::try_from(day).ok());
+    // A month's own header is its first day's month, as the Svelte grouping wrote it.
+    (day.and_then(|day| locale.day(at, month, day)))
+        .or_else(|| locale.month_year((at, month, 1)))
+        .unwrap_or(year)
 }
 
 /// A video's running time: "0:07", "12:34", "1:02:03".
@@ -178,8 +143,8 @@ mod tests {
             period_label(period(Some(6), Some(15))),
             "Saturday, June 15, 2024"
         );
-        // A day no month has is written without a weekday, not refused.
-        assert_eq!(period_label(period(Some(2), Some(31))), "February 31, 2024");
+        // A day no month has is its month, not refused - and not a date that is none.
+        assert_eq!(period_label(period(Some(2), Some(31))), "February 2024");
     }
 
     #[test]
@@ -188,5 +153,26 @@ mod tests {
         assert_eq!(format_duration(754_000), "12:34");
         assert_eq!(format_duration(3_723_000), "1:02:03");
         assert_eq!(format_duration(-5), "0:00");
+    }
+
+    // A folder's month is the month its oldest photo stands in, in the locale's calendar:
+    // in the Persian one the 25th of October 2026 is in Aban, the 1st in Mehr - written
+    // from the month's first day, the folder said the month before (a review).
+    #[test]
+    fn a_folders_month_is_its_photos_own_in_the_locales_calendar() {
+        crate::locale::for_this_thread(crate::locale::Locale::of("fa-IR"));
+        let at = |day: i8| {
+            jiff::civil::date(2026, 10, day)
+                .to_zoned(TimeZone::UTC)
+                .unwrap()
+                .timestamp()
+                .as_second()
+        };
+        let (early, late) = (
+            folder_summary(3, at(1), &TimeZone::UTC),
+            folder_summary(3, at(25), &TimeZone::UTC),
+        );
+        crate::locale::for_this_thread(None);
+        assert_ne!(early, late);
     }
 }

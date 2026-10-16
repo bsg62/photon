@@ -1133,7 +1133,11 @@ mod tests {
         sort::Sort,
     };
 
-    const TODAY: Today = Today { month: 7, day: 4 };
+    const TODAY: Today = Today {
+        year: 2026,
+        month: 7,
+        day: 4,
+    };
     /// Noon UTC on 2024-06-01.
     const IN_2024: i64 = 1_717_243_200;
     const WIDTH: f32 = 260.0;

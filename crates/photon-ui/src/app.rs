@@ -5370,6 +5370,7 @@ fn check_dest(
 fn today(zone: &TimeZone) -> Today {
     let now = jiff::Timestamp::now().to_zoned(zone.clone());
     Today {
+        year: now.year().into(),
         month: now.month().unsigned_abs().into(),
         day: now.day().unsigned_abs().into(),
     }

@@ -29,6 +29,11 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // Dates and counts in the system's language and order, from the first frame. Here,
+    // where the window is the program's, and not in `App::new`, which every test of the
+    // whole application calls too: a test's words are English whatever the machine's.
+    photon_ui::locale::set(photon_ui::locale::Locale::system());
+
     let probe = args.probe.clone();
     let fullscreen = args.fullscreen;
     let options = photon_ui::window::native_options(&args, &dirs);
