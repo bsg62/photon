@@ -1,5 +1,5 @@
-//! The folders the sidebar lists, and their order: `ui/src/lib/folders.ts`'s list, case for
-//! case, until the switch-over deletes that file.
+//! The folders the sidebar lists, and their order: the Svelte UI's `folders.ts`, case for
+//! case.
 //!
 //! No egui here.
 

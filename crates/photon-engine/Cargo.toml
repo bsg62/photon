@@ -8,18 +8,11 @@ description.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[features]
-# `testutil` and the event recorder, for another crate's tests: photon-app's protocol and
-# media-server tests build their fixtures with them. Inside this crate `cfg(test)` is enough.
-test-support = ["dep:tempfile", "dep:image"]
-
 [dependencies]
 photon-core = { path = "../photon-core" }
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive"] }
 tracing = "0.1.44"
-tempfile = { version = "3.27.0", optional = true }
-image = { version = "0.25.10", default-features = false, features = ["jpeg"], optional = true }
 
 # Settings' memory figure (`memory.rs`): the page size on Linux, the physical footprint on
 # macOS; the process table and private working set on Windows.

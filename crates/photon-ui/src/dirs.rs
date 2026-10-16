@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// `identifier` in `crates/photon-app/tauri.conf.json`.
+/// The Tauri photon's `identifier`, which named the folders its library is in.
 pub const IDENTIFIER: &str = "io.github.bsg62.photon";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,13 +54,12 @@ mod tests {
         assert_eq!(dirs.window_path, Path::new("/data/app/window.ron"));
     }
 
+    // The identifier the Tauri photon had, which names the directories its library and
+    // its cache are in on every system: another, and an upgrade from it would open an
+    // empty library beside the user's own.
     #[test]
     fn the_identifier_is_the_tauri_shells() {
-        let conf = include_str!("../../photon-app/tauri.conf.json");
-        assert!(
-            conf.contains(&format!("\"identifier\": \"{IDENTIFIER}\"")),
-            "tauri.conf.json names another identifier"
-        );
+        assert_eq!(IDENTIFIER, "io.github.bsg62.photon");
     }
 
     /// The directory a platform keeps application data in, read from the environment the

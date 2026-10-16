@@ -545,45 +545,4 @@ mod tests {
             Err("Nothing could be exported to /d".to_owned())
         );
     }
-
-    // The words are the Svelte dialog's: read out of the two files that hold them.
-    #[test]
-    fn the_words_are_the_svelte_dialogs() {
-        let dialog = include_str!("../../../ui/src/components/ExportDialog.svelte");
-        // The note is wrapped there: compared word for word, whatever the lines, and
-        // with the tags it stands between - cut short, it is still in the whole one.
-        let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let note = format!("<p class=\"note\"> {} </p>", words(NOTE));
-        assert!(words(dialog).contains(&note), "the note");
-        // Each with what stands on either side of it there: a label cut short is still
-        // found inside the whole one.
-        for text in [
-            format!("<span>{APPLY_EDITS}</span>").as_str(),
-            format!("<span>{LONGEST_EDGE}</span>").as_str(),
-            format!(">{EXPORT}</button>").as_str(),
-            format!(">{CANCEL}</button>").as_str(),
-            "Export {dialog.count === 1 ? '1 photo' : `${dialog.count.toLocaleString()} photos`}",
-        ] {
-            assert!(
-                dialog.lines().any(|line| line.contains(text)),
-                "ExportDialog.svelte no longer says {text:?}"
-            );
-        }
-        let state = include_str!("../../../ui/src/lib/export-dialog.svelte.ts");
-        for (edge, label) in SIZES {
-            let line = format!("{{ value: {}, label: '{label}' }}", edge.unwrap_or(0));
-            assert!(state.lines().any(|at| at.contains(&line)), "{line}");
-        }
-        for text in [
-            "`Nothing could be exported to ${to}`",
-            "`${done.written.toLocaleString()} of ${counted(asked)}`",
-            "` — ${done.reason}`",
-            "`Exported ${landed} to ${to}${why}`",
-        ] {
-            assert!(
-                state.lines().any(|line| line.contains(text)),
-                "export-dialog.svelte.ts no longer says {text:?}"
-            );
-        }
-    }
 }

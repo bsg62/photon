@@ -328,27 +328,4 @@ mod tests {
         assert_eq!(rows[0].search, "lens:\"EF50mm f/1.8 STM\"");
         assert_eq!(rows[0].share, 1.0);
     }
-
-    // The section's words are the Svelte dialog's.
-    #[test]
-    fn the_words_are_the_svelte_dialogs() {
-        let joined = (include_str!("../../../ui/src/components/Settings.svelte").lines())
-            .map(str::trim)
-            .collect::<Vec<_>>()
-            .join(" ");
-        for words in [
-            "'Counting…'",
-            "'The library could not be counted.'",
-            SUMMARY_TAIL,
-            "title: 'Years'",
-            "title: 'Cameras'",
-            "title: 'Lenses'",
-            "without camera data.",
-        ] {
-            assert!(
-                joined.contains(words),
-                "Settings.svelte no longer says {words:?}"
-            );
-        }
-    }
 }

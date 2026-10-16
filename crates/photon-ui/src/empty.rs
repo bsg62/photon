@@ -640,45 +640,4 @@ mod tests {
         use PanelButton::{AddFolder, ShowHidden, WatchedFolders};
         assert!(AddFolder.primary() && !ShowHidden.primary() && !WatchedFolders.primary());
     }
-
-    // The words are the Svelte grid's, until the switch-over.
-    #[test]
-    fn the_panel_is_worded_as_the_svelte_grid_words_it() {
-        let grid_svelte = include_str!("../../../ui/src/components/Grid.svelte");
-        // Markup wraps its sentences; a Windows checkout ends its lines otherwise.
-        let said: String = grid_svelte.split_whitespace().collect::<Vec<_>>().join(" ");
-        let (empty, all) = (grid(2, 0), Place::of(GridView::All));
-        let pictures = [on("/p")];
-        let panels = [
-            library_panel(&empty, &all, &facts(&pictures, false, 9)).unwrap(),
-            library_panel(&empty, &all, &facts(&[], false, 0)).unwrap(),
-            library_panel(&empty, &all, &facts(&pictures, true, 0)).unwrap(),
-        ];
-        for panel in &panels {
-            assert!(
-                said.contains(&format!("<h2>{}</h2>", panel.title)),
-                "{}",
-                panel.title
-            );
-            assert!(said.contains(&panel.text), "{}", panel.text);
-            for button in panel.buttons {
-                assert!(
-                    said.contains(&format!(">{}</button>", button.label())),
-                    "{button:?}"
-                );
-            }
-        }
-        assert!(said.contains(
-            "Add the folder your photos are in: photon never moves, changes or deletes them."
-        ));
-        let rules = include_str!("../../../ui/src/lib/grid-state.ts");
-        for words in [
-            "and has found no photos or videos there.",
-            "folders and has found no photos or videos in them.",
-            "right now.",
-            "it watches cannot be reached right now.",
-        ] {
-            assert!(rules.contains(words), "{words}");
-        }
-    }
 }

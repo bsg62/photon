@@ -454,10 +454,5 @@ mod tests {
         let options = native_options(&Args::default(), &dirs());
         let icon = options.viewport.icon.expect("an icon");
         assert_eq!((icon.width, icon.height), (256, 256));
-        // The installers' icon, not a stand-in: the same bytes as the Tauri bundle's.
-        assert_eq!(
-            ICON_PNG,
-            include_bytes!("../../photon-app/icons/128x128@2x.png").as_slice()
-        );
     }
 }

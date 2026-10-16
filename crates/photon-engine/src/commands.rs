@@ -1,5 +1,5 @@
-//! Command implementations as plain functions over `Engine`. photon-app's `ipc.rs` exposes
-//! them to the UI as Tauri commands.
+//! The commands over `Engine`, as plain functions: what the window asks of the library.
+//! Every one is called by it (`every_command_of_the_engine_is_called_by_the_window`).
 
 pub use crate::memory::MemoryUsage;
 use crate::{engine::Engine, error::AppError, memory};
@@ -7,7 +7,7 @@ use photon_core::{
     Error,
     edit::{Crop, Edit},
     face_detect::{Rect, merge},
-    grid::{FolderTally, GridEntry, GridView, Section, hex_key},
+    grid::{FolderTally, GridView, Section, hex_key},
     library::{
         Album, AlbumSummary, CopiesArg, FaceFilter, Folder, GridTile, ItemFace, NamedItems,
         NamedPerson, PageFace, PeoplePage, Person, RemovedItems, SavedSearch, TagCount, TagRule,
@@ -16,7 +16,6 @@ use photon_core::{
     media::{MediaKind, ThumbState},
     now_ms,
     sort::Sort,
-    thumbs::Priority,
 };
 use serde::Serialize;
 use std::{
@@ -24,9 +23,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-
-pub const MAX_ROWS: usize = 1000;
-pub const MAX_RADIUS: usize = 10;
 
 type CmdResult<T> = Result<T, AppError>;
 
@@ -125,21 +121,6 @@ pub struct CopiesOf {
     /// True once the user has hidden the anchor. Its copies stay in the view - the filter
     /// still reads the anchor's row - but the anchor itself does not, and the UI says why.
     pub hidden: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GridRows {
-    pub version: u64,
-    pub rows: Vec<GridEntry>,
-}
-
-/// One folder's photos in the grid, and the index version they were read from.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FolderIds {
-    pub version: u64,
-    pub ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -319,10 +300,6 @@ pub struct AppInfo {
     pub licence: &'static str,
 }
 
-pub fn clamp_count(count: usize) -> usize {
-    count.min(MAX_ROWS)
-}
-
 pub fn list_folders(engine: &Engine) -> CmdResult<FolderList> {
     Ok(FolderList {
         watched: engine.lib.watched_folders()?,
@@ -336,13 +313,6 @@ pub fn add_folder(engine: &Arc<Engine>, path: &str) -> CmdResult<WatchedFolder> 
 
 pub fn remove_folder(engine: &Arc<Engine>, watched_id: i64) -> CmdResult<()> {
     Ok(engine.remove_folder(watched_id)?)
-}
-
-/// The watched folders being scanned, for a UI that was not listening when their scans
-/// said so (`Engine::scanning_folders`): asked once, after it has subscribed to
-/// `scan-progress`, which is what tells it about every scan from then on.
-pub fn scanning_folders(engine: &Engine) -> Vec<i64> {
-    engine.scanning_folders()
 }
 
 /// Kept apart from `list_folders`, which runs on every scan completion and folder-status
@@ -607,38 +577,6 @@ pub fn set_search_query(engine: &Engine, query: &str) -> CmdResult<Option<u64>> 
     Ok(engine.set_search_query(query)?)
 }
 
-pub fn grid_rows(engine: &Engine, offset: usize, count: usize) -> GridRows {
-    let (version, grid) = engine.grid();
-    GridRows {
-        version,
-        rows: grid.rows(offset, clamp_count(count)).to_vec(),
-    }
-}
-
-/// The photos of the folder the photo at `offset` is in, read with the version of the index
-/// the offset is resolved against: an offset is only meaningful against one version, so the
-/// two come from one read and the UI discards an answer for a version it has moved past.
-/// `None` when the offset is past the end.
-pub fn grid_folder_ids_at(engine: &Engine, offset: usize) -> Option<FolderIds> {
-    let (version, grid) = engine.grid();
-    let ids = grid.folder_ids_at(offset)?;
-    Some(FolderIds { version, ids })
-}
-
-pub fn grid_offset_of_folder(engine: &Engine, folder_id: i64) -> Option<usize> {
-    engine.grid().1.offset_of_folder(folder_id)
-}
-
-/// Where `item_id` sits in the current grid, or `None` if it is not in this view at all.
-///
-/// The viewer holds an offset, and an offset is only meaningful against one version of the
-/// index: a scan that indexes a photo into an earlier folder shifts every later offset by
-/// one, and the viewer would then be showing a different photo than the one it was opened
-/// on. This is how it re-finds the photo it is actually displaying after a rebuild.
-pub fn grid_offset_of_item(engine: &Engine, item_id: i64) -> Option<usize> {
-    engine.grid().1.position_of(item_id)
-}
-
 /// The folder the grid should scroll back to on launch, or `None` when there is nothing to
 /// restore — a first run, or a folder that has been removed since it was recorded.
 pub fn last_folder(engine: &Engine) -> CmdResult<Option<i64>> {
@@ -685,11 +623,6 @@ pub fn set_similar_distance(engine: &Arc<Engine>, distance: i64) -> CmdResult<i6
     let clamped = engine.lib.set_similar_distance(distance)?;
     engine.request_similar_pass();
     Ok(clamped)
-}
-
-/// Whether photon looks for faces itself.
-pub fn face_detection(engine: &Engine) -> CmdResult<bool> {
-    Ok(engine.face_detection())
 }
 
 /// Switches face detection. On starts a pass in the background; off stops it and deletes
@@ -1165,8 +1098,8 @@ fn unreadable(err: Error) -> AppError {
 }
 
 /// The photo as the clipboard gets it: as shown, edits applied, capped at
-/// `edit::CLIPBOARD_MAX_EDGE`. The clipboard write itself is photon-app's `ipc::copy_photo`'s,
-/// which holds the app handle this layer does not; here is everything a test can reach.
+/// `edit::CLIPBOARD_MAX_EDGE`. The clipboard write itself is the window's (`app/copy.rs`),
+/// which holds the system's clipboard this layer does not.
 pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::ClipboardPicture> {
     let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
     if item.kind != MediaKind::Image {
@@ -1178,11 +1111,6 @@ pub fn copy_picture(engine: &Engine, id: i64) -> CmdResult<photon_core::edit::Cl
     let _one_at_a_time = crate::engine::RENDERING.lock();
     photon_core::edit::clipboard_picture(Path::new(&item.path), item.orientation, item.edit)
         .map_err(unreadable)
-}
-
-pub fn set_star(engine: &Engine, id: i64, starred: bool) -> CmdResult<()> {
-    engine.set_star(id, starred)?;
-    Ok(())
 }
 
 /// Stars or unstars several photos, returning how many landed. See `Engine::set_stars` for
@@ -1271,29 +1199,6 @@ pub fn set_export_apply_edits(engine: &Engine, apply: bool) -> CmdResult<()> {
     Ok(())
 }
 
-/// Items around `id`, nearest first, queued at neighbour priority so the viewer's
-/// next and previous previews are ready early.
-///
-/// The ids returned are the ones whose *full image* is worth fetching ahead, which leaves
-/// out edited photos: their full image is rendered per request and the viewer asks for it
-/// under a keyed URL, so a preload of the bare URL costs a full-size decode and encode whose
-/// result nothing ever reads; and videos, which the viewer plays rather than preloads. Their
-/// thumbnails are still queued.
-pub fn neighbours(engine: &Engine, id: i64, radius: usize) -> Vec<i64> {
-    let ids = engine.grid().1.neighbours(id, radius.min(MAX_RADIUS));
-    engine.thumbs.prioritize(&ids, Priority::Neighbour);
-    ids.into_iter()
-        .filter(|&id| {
-            engine
-                .lib
-                .item(id)
-                .ok()
-                .flatten()
-                .is_some_and(|item| item.kind == MediaKind::Image && item.edit.is_identity())
-        })
-        .collect()
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoJobDto {
@@ -1302,13 +1207,9 @@ pub struct VideoJobDto {
     pub key: String,
 }
 
-/// How long `next_video_job` holds the call open waiting for a job. Under the webview's
-/// own IPC timeouts, and long enough that an idle page asks about twice a minute.
-pub const VIDEO_JOB_WAIT: Duration = Duration::from_secs(25);
-
 /// A thumbnail key from its hex, only in the exact spelling `hex_key` gives it. A looser
 /// parse would read `+1` as key 1 and cache key 1's picture under a URL the UI never asks for.
-pub fn parse_key(key: &str) -> Option<u64> {
+fn parse_key(key: &str) -> Option<u64> {
     u64::from_str_radix(key, 16)
         .ok()
         .filter(|&parsed| hex_key(parsed) == key)
@@ -1450,8 +1351,6 @@ mod tests {
             (info.len, info.layout.as_ref().unwrap().sections.len()),
             (2, 2)
         );
-        let sub = list.folders.iter().find(|x| x.name == "sub").unwrap();
-        assert_eq!(grid_offset_of_folder(&f.engine, sub.id), Some(1));
     }
 
     /// Recent is laid out as one headerless run whatever order its folders fall in, and the
@@ -1510,38 +1409,6 @@ mod tests {
             f.dir.path().join("data").join("library.db")
         );
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
-    }
-
-    /// The offset the viewer holds is only meaningful against one version of the index.
-    /// Indexing a photo into an earlier folder renumbers everything after it, and without a
-    /// way to re-find the open photo by id the viewer silently shows its neighbour.
-    #[test]
-    fn an_items_offset_follows_it_when_the_grid_is_renumbered() {
-        let img = jpeg(16, 16);
-        let f = fixture(&[("b/second.jpg", &img)]);
-        f.add_photos();
-        let watched = f.engine.lib.watched_folders().unwrap()[0].clone();
-        let open = f.ids()[0];
-        assert_eq!(grid_offset_of_item(&f.engine, open), Some(0));
-
-        // A folder that sorts ahead of it appears, the way a scan of a newly-copied
-        // directory would add one.
-        std::fs::create_dir_all(f.photos.join("a")).unwrap();
-        std::fs::write(f.photos.join("a").join("first.jpg"), &img).unwrap();
-        f.engine.start_scan(watched);
-        f.settle();
-
-        assert_eq!(f.ids().len(), 2);
-        assert_eq!(
-            grid_offset_of_item(&f.engine, open),
-            Some(1),
-            "the photo moved, and says where it moved to"
-        );
-        assert_eq!(
-            grid_offset_of_item(&f.engine, 9_999),
-            None,
-            "a photo no longer in this view says so, rather than answering with a neighbour"
-        );
     }
 
     #[test]
@@ -2040,18 +1907,6 @@ mod tests {
             viewer_item(&f.engine, orig).unwrap().copies.len()
         );
         assert_eq!(copy_count(&f.engine, id_of("unrelated.jpg")).unwrap(), 0);
-    }
-
-    /// Gives a scanned photo keywords the way the scanner's metadata backfill writes them.
-    #[test]
-    fn an_edited_neighbour_is_not_offered_for_a_full_size_preload() {
-        let img = jpeg(16, 16);
-        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img), ("c.jpg", &img)]);
-        f.add_photos();
-        let ids = f.ids();
-        assert_eq!(neighbours(&f.engine, ids[1], 1).len(), 2);
-        rotate_item(&f.engine, ids[2], true).unwrap();
-        assert_eq!(neighbours(&f.engine, ids[1], 1), vec![ids[0]]);
     }
 
     /// The viewer gets Picasa's named faces as before, and beside them every face without
@@ -2598,19 +2453,7 @@ mod tests {
     }
 
     #[test]
-    fn grid_rows_are_capped_and_versioned() {
-        let img = jpeg(16, 16);
-        let f = fixture(&[("a.jpg", &img), ("b.jpg", &img)]);
-        f.add_photos();
-        let rows = grid_rows(&f.engine, 0, 5_000);
-        assert_eq!(rows.rows.len(), 2);
-        assert_eq!(rows.version, grid_info(&f.engine, None).version);
-        assert_eq!(clamp_count(5_000), MAX_ROWS);
-        assert!(grid_rows(&f.engine, 10, 5).rows.is_empty());
-    }
-
-    #[test]
-    fn viewer_item_and_neighbours() {
+    fn viewer_item_reads_the_photo() {
         let img = jpeg(32, 16);
         let f = fixture(&[("a.jpg", &img), ("b.jpg", &img), ("c.jpg", &img)]);
         f.add_photos();
@@ -2624,7 +2467,6 @@ mod tests {
         assert_eq!(item.size, img.len() as i64);
         assert_eq!(item.thumb_key.len(), 16);
         assert!(matches!(item.thumb_state, "pending" | "ready"));
-        assert_eq!(neighbours(&f.engine, ids[1], 50), vec![ids[2], ids[0]]);
         assert_eq!(viewer_item(&f.engine, 9_999).unwrap_err().kind, "notFound");
     }
 
@@ -2784,7 +2626,7 @@ mod tests {
     }
 
     #[test]
-    fn the_viewer_is_told_it_is_a_video_and_neighbours_leave_it_out() {
+    fn the_viewer_is_told_it_is_a_video() {
         let f = fixture(&[
             ("a.jpg", &jpeg(8, 8)),
             ("b.mp4", b"video"),
@@ -2798,7 +2640,6 @@ mod tests {
             .unwrap();
         let item = viewer_item(&f.engine, video).unwrap();
         assert_eq!(item.kind, MediaKind::Video);
-        assert!(!neighbours(&f.engine, f.ids()[0], 2).contains(&video));
     }
 
     /// A video has a poster in the cache like any photo's thumbnail, and still no

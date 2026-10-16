@@ -152,21 +152,4 @@ mod tests {
             "Delete the saved search “Lakes”? Your photos are not affected."
         );
     }
-
-    // The words are the Svelte sidebar's: read out of the component that asks them.
-    #[test]
-    fn the_words_are_the_svelte_sidebars() {
-        let tree = include_str!("../../../ui/src/components/FolderTree.svelte");
-        for words in [
-            "`Delete the album “${album.name}”? The photos stay in your library.`",
-            "`Delete the saved search “${search.name}”? Your photos are not affected.`",
-            "title: 'Delete album',",
-            "title: 'Delete saved search',",
-        ] {
-            assert!(
-                tree.lines().any(|line| line.contains(words)),
-                "FolderTree.svelte no longer says {words:?}"
-            );
-        }
-    }
 }

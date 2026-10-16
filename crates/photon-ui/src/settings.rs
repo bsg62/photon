@@ -545,47 +545,6 @@ mod tests {
         settings
     }
 
-    // The words are the Svelte component's: read out of it, its lines joined, since a
-    // paragraph there runs over several.
-    #[test]
-    fn the_words_are_the_svelte_dialogs() {
-        let source = include_str!("../../../ui/src/components/Settings.svelte");
-        let joined = (source.lines())
-            .map(str::trim)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut words = vec![
-            FOLDERS_HINT,
-            TAGS_HINT,
-            APPEARANCE_HINT,
-            PHOTO_SIZE_HINT,
-            SLIDESHOW_HINT,
-            INTERVAL_BEFORE,
-            SHUFFLE,
-            LOOK_ALIKES_HINT,
-            FIND_FACES_HINT,
-            FIND_FACES_PRIVATE,
-            FIND_FACES_BOX,
-            STOP_FINDING,
-        ];
-        words.extend(SECTIONS.iter().map(|section| section.label()));
-        words.extend(THEMES.iter().map(|(_, label)| *label));
-        words.extend(DISTANCES.iter().flat_map(|d| [d.label, d.hint]));
-        for words in words {
-            assert!(
-                joined.contains(words),
-                "Settings.svelte no longer says {words:?}"
-            );
-        }
-        let people = include_str!("../../../ui/src/lib/people.ts");
-        assert!(
-            people.lines().any(|line| line.contains(
-                "`This deletes ${named} ${named === 1 ? 'person' : 'people'} you named and everything photon found.`"
-            )),
-            "people.ts no longer says the switch-off warning"
-        );
-    }
-
     // A question says its words and offers its own button; another question in its
     // place, over a rename's, is that rename declined - its name typed stays, and the
     // field takes typing again.

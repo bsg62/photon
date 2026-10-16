@@ -1,11 +1,9 @@
-//! Every colour in photon, and the scales: `ui/src/tokens.css` as constants.
-//!
-//! Until the switch-over that file is the source and this one a copy, held to it by
-//! `the_tokens_are_the_stylesheets`. Afterwards this is the source, and the contrast
-//! assertions of `lib/tokens.test.ts` move here with it.
+//! Every colour in photon, and the scales - the source, as the Svelte photon's
+//! `tokens.css` was until the switch-over, held to WCAG 2's contrast by its tests (the
+//! assertions that stylesheet's test made).
 
-/// A colour as the stylesheet writes it: straight (not premultiplied) red, green, blue and
-/// alpha.
+/// A colour, written as a stylesheet writes one: straight (not premultiplied) red, green,
+/// blue and alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
 
@@ -77,28 +75,6 @@ pub const DARK: Palette = Palette {
     star: rgb(0xffd24a),
 };
 
-impl Palette {
-    /// Each colour under its name in the stylesheet.
-    pub fn named(&self) -> [(&'static str, Rgba); 14] {
-        [
-            ("--surface", self.surface),
-            ("--chrome", self.chrome),
-            ("--raised", self.raised),
-            ("--field", self.field),
-            ("--field-hover", self.field_hover),
-            ("--hover", self.hover),
-            ("--line", self.line),
-            ("--text", self.text),
-            ("--text-dim", self.text_dim),
-            ("--accent", self.accent),
-            ("--accent-soft", self.accent_soft),
-            ("--on-accent", self.on_accent),
-            ("--danger", self.danger),
-            ("--star", self.star),
-        ]
-    }
-}
-
 /// Ink for shadows cast onto photos, which are not themed: dark in both themes.
 pub const SHADOW_INK: Rgba = rgba(0x000000b3);
 /// Drawn onto a photo: a tile's copies mark and video badge. The same in both themes,
@@ -115,20 +91,6 @@ pub const GLASS_LINE: Rgba = rgba(0xffffff1a);
 /// A link on the glass, which over a white photo is a far lighter ground than any panel:
 /// lighter than the accent, of the same hue.
 pub const ACCENT_GLASS: Rgba = rgb(0x77aef0);
-
-/// The viewer's colours, which only the dark theme has, under their names.
-pub const VIEWER: [(&str, Rgba); 3] = [
-    ("--glass", GLASS),
-    ("--glass-line", GLASS_LINE),
-    ("--accent-glass", ACCENT_GLASS),
-];
-
-/// The three colours no theme changes, under their names in the stylesheet.
-pub const UNTHEMED: [(&str, Rgba); 3] = [
-    ("--shadow-ink", SHADOW_INK),
-    ("--photo-line", PHOTO_LINE),
-    ("--scrim", SCRIM),
-];
 
 /// A shadow: how far it is offset, how far it is blurred, and its ink.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -167,121 +129,288 @@ pub const T: [f32; 5] = [11.0, 12.0, 13.0, 15.0, 18.0];
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    const CSS: &str = include_str!("../../../../ui/src/tokens.css");
-
-    /// The custom properties declared in `css` from `start` to the end of the block it is
-    /// in, by name.
-    fn properties(css: &str, start: usize) -> HashMap<&str, &str> {
-        let body = &css[start..];
-        let body = &body[..body.find('}').unwrap()];
-        body.lines()
-            .filter_map(|line| line.trim().strip_suffix(';')?.split_once(':'))
-            .filter(|(name, _)| name.starts_with("--"))
-            .map(|(name, value)| (name.trim(), value.trim()))
-            .collect()
+    /// WCAG 2's relative luminance of a colour, its alpha ignored.
+    fn luminance(colour: Rgba) -> f64 {
+        let channel = |value: u8| {
+            let v = f64::from(value) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(colour.0) + 0.7152 * channel(colour.1) + 0.0722 * channel(colour.2)
     }
 
-    /// The custom properties of the block of `css` that opens with `selector`.
-    fn block<'a>(css: &'a str, selector: &str) -> HashMap<&'a str, &'a str> {
-        let start = css
-            .find(selector)
-            .unwrap_or_else(|| panic!("no block for {selector}"));
-        properties(css, start + selector.len())
+    fn contrast(a: Rgba, b: Rgba) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        let (light, dark) = if a > b { (a, b) } else { (b, a) };
+        (light + 0.05) / (dark + 0.05)
     }
 
-    /// The bare `:root` block that holds the scales and the unthemed colours: the block
-    /// that declares the first radius. Found by what it holds and not by its selector
-    /// with the line after it, which is two lines only where a line ends in `\n` alone.
-    fn scales(css: &str) -> HashMap<&str, &str> {
-        let first = css.find("--r-1").expect("no --r-1 in the stylesheet");
-        let open = css[..first].rfind('{').expect("--r-1 is in no block");
-        properties(css, open + 1)
+    /// `top` laid over an opaque `ground`.
+    fn over(top: Rgba, ground: Rgba) -> Rgba {
+        let alpha = f64::from(top.3) / 255.0;
+        let mix =
+            |t: u8, g: u8| (f64::from(t) * alpha + f64::from(g) * (1.0 - alpha)).round() as u8;
+        Rgba(
+            mix(top.0, ground.0),
+            mix(top.1, ground.1),
+            mix(top.2, ground.2),
+            0xff,
+        )
     }
 
-    fn parse(value: &str) -> Rgba {
-        let hex = value.strip_prefix('#').unwrap_or_else(|| panic!("{value}"));
-        let number = u32::from_str_radix(hex, 16).unwrap();
-        match hex.len() {
-            6 => rgb(number),
-            8 => rgba(number),
-            _ => panic!("{value} is neither #rrggbb nor #rrggbbaa"),
-        }
-    }
+    const WHITE: Rgba = rgb(0xffffff);
 
     #[test]
     fn the_two_spellings_of_a_colour_are_read_alike() {
         assert_eq!(rgb(0x1f6fd6), Rgba(0x1f, 0x6f, 0xd6, 0xff));
         assert_eq!(rgba(0x1f6fd633), Rgba(0x1f, 0x6f, 0xd6, 0x33));
-        assert_eq!(parse("#1f6fd6"), rgb(0x1f6fd6));
-        assert_eq!(parse("#1f6fd633"), rgba(0x1f6fd633));
     }
 
     #[test]
-    fn the_tokens_are_the_stylesheets() {
-        for (selector, palette) in [
-            ("[data-theme='light'] {", LIGHT),
-            ("[data-theme='dark'] {", DARK),
-        ] {
-            let css = block(CSS, selector);
-            for (name, colour) in palette.named() {
-                assert_eq!(parse(css[name]), colour, "{name} in {selector}");
+    fn the_contrast_helpers_agree_with_the_wcag_reference_values() {
+        assert!((contrast(rgb(0x000000), WHITE) - 21.0).abs() < 1e-6);
+        assert!((contrast(rgb(0x777777), WHITE) - 4.48).abs() < 0.01);
+    }
+
+    #[test]
+    fn each_theme_is_readable_where_its_colours_are_used() {
+        for (name, t) in [("light", LIGHT), ("dark", DARK)] {
+            for ground in [t.surface, t.chrome] {
+                assert!(contrast(t.text, ground) >= 4.5, "{name}: text");
+                assert!(contrast(t.text_dim, ground) >= 4.5, "{name}: dim text");
+                assert!(contrast(t.danger, ground) >= 4.5, "{name}: danger");
+                assert!(contrast(t.accent, ground) >= 3.0, "{name}: the accent");
             }
-        }
-        let dark = block(CSS, "[data-theme='dark'] {");
-        for (name, colour) in VIEWER {
-            assert_eq!(parse(dark[name]), colour, "{name}");
-        }
-        // The scales and the unthemed colours are in the bare `:root` block.
-        let root = scales(CSS);
-        for (name, colour) in UNTHEMED {
-            assert_eq!(parse(root[name]), colour, "{name}");
-        }
-        let px = |name: &str| {
-            root[name]
-                .strip_suffix("px")
-                .unwrap()
-                .parse::<f32>()
-                .unwrap()
-        };
-        // A shadow is "x y blur colour".
-        let length = |text: &str| text.trim_end_matches("px").parse::<f32>().unwrap();
-        for (name, held) in [
-            ("--shadow-menu", SHADOW_MENU),
-            ("--shadow-dialog", SHADOW_DIALOG),
-        ] {
-            let shadow: Vec<&str> = root[name].split_whitespace().collect();
-            assert_eq!(
-                Shadow {
-                    x: length(shadow[0]),
-                    y: length(shadow[1]),
-                    blur: length(shadow[2]),
-                    ink: parse(shadow[3]),
-                },
-                held,
-                "{name}"
+            assert!(
+                contrast(t.on_accent, t.accent) >= 4.5,
+                "{name}: a primary button"
+            );
+            // A hovered row still shows its dim count; an active row's count is in the
+            // full colour, dim text not reaching 4.5 over the soft accent.
+            assert!(
+                contrast(t.text_dim, over(t.hover, t.chrome)) >= 4.5,
+                "{name}: hovered"
+            );
+            assert!(
+                contrast(t.text, over(t.accent_soft, t.chrome)) >= 4.5,
+                "{name}: active"
+            );
+            // "Delete…" on a menu, hovered or not, and "Remove…" in Settings, hovered.
+            assert!(
+                contrast(t.danger, t.raised) >= 4.5,
+                "{name}: danger on a menu"
+            );
+            assert!(
+                contrast(t.danger, over(t.hover, t.raised)) >= 4.5,
+                "{name}: hovered item"
+            );
+            assert!(
+                contrast(t.danger, over(t.field_hover, t.surface)) >= 4.5,
+                "{name}: Remove"
             );
         }
-        for (i, radius) in R.iter().enumerate() {
-            assert_eq!(px(&format!("--r-{}", i + 1)), *radius);
-        }
-        for (i, space) in S.iter().enumerate() {
-            assert_eq!(px(&format!("--s-{}", i + 1)), *space);
-        }
-        for (i, size) in T.iter().enumerate() {
-            assert_eq!(px(&format!("--t-{}", i + 1)), *size);
+    }
+
+    // The viewer's glass over the brightest photo: its words, dim ones too, and its links,
+    // which have an accent of their own - the app's reaches only 4.10 there.
+    #[test]
+    fn the_viewers_glass_is_readable_over_a_white_photo() {
+        let ground = over(GLASS, WHITE);
+        assert!(contrast(DARK.text_dim, ground) >= 4.5);
+        assert!(contrast(DARK.text, ground) >= 4.5);
+        assert!(contrast(ACCENT_GLASS, ground) >= 4.5);
+        assert!(
+            contrast(ACCENT_GLASS, DARK.surface) >= 4.5,
+            "still the link colour"
+        );
+    }
+
+    /// The website's pages (`site/`), hand-written with no build step: their stylesheets
+    /// say their palette is the app's, and this is what holds them to it. It had drifted
+    /// before - two tokens were approximations nobody had compared.
+    const PAGES: [(&str, &str); 2] = [
+        ("index.html", include_str!("../../../../site/index.html")),
+        ("404.html", include_str!("../../../../site/404.html")),
+    ];
+
+    /// The pages' tokens that are their own, with no colour of the app's to be.
+    const OWN: [&str; 1] = ["--shadow"];
+
+    /// The app's colour for a page's token, by the stylesheet's name for it.
+    fn token(theme: &Palette, name: &str) -> Option<Rgba> {
+        Some(match name {
+            "--surface" => theme.surface,
+            "--chrome" => theme.chrome,
+            "--raised" => theme.raised,
+            "--field" => theme.field,
+            "--field-hover" => theme.field_hover,
+            "--hover" => theme.hover,
+            "--line" => theme.line,
+            "--text" => theme.text,
+            "--text-dim" => theme.text_dim,
+            "--accent" => theme.accent,
+            "--accent-soft" => theme.accent_soft,
+            "--on-accent" => theme.on_accent,
+            "--danger" => theme.danger,
+            "--star" => theme.star,
+            _ => return None,
+        })
+    }
+
+    /// `#rrggbb` or `#rrggbbaa`.
+    fn hex(value: &str) -> Option<Rgba> {
+        let digits = value.strip_prefix('#')?;
+        let number = u32::from_str_radix(digits, 16).ok()?;
+        match digits.len() {
+            6 => Some(rgb(number)),
+            8 => Some(rgba(number)),
+            _ => None,
         }
     }
 
-    // A Windows checkout has CRLF line endings, and `include_str!` hands them over as they
-    // are. The scales' block is found by its first line and the one after, which is two
-    // lines only where a line ends in `\n` alone: the first version found nothing there.
+    /// A page's CSS: every `<style>` block, since a second would override the first, with
+    /// its comments taken out.
+    fn page_css(html: &str) -> String {
+        let mut css = String::new();
+        let mut rest = html;
+        while let Some(at) = rest.find("<style") {
+            let open = at + rest[at..].find('>').unwrap() + 1;
+            let close = open + rest[open..].find("</style>").unwrap();
+            css.push_str(&rest[open..close]);
+            css.push('\n');
+            rest = &rest[close..];
+        }
+        assert!(!css.is_empty(), "the page has no <style> block");
+        let mut bare = String::new();
+        let mut rest = css.as_str();
+        while let Some(at) = rest.find("/*") {
+            bare.push_str(&rest[..at]);
+            rest = &rest[at + rest[at..].find("*/").unwrap() + 2..];
+        }
+        bare.push_str(rest);
+        bare
+    }
+
+    /// The custom properties a block declares, by name.
+    fn declared(block: &str) -> Vec<(String, String)> {
+        (block.split(';'))
+            .filter_map(|declaration| declaration.split_once(':'))
+            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+            .filter(|(name, _)| name.starts_with("--"))
+            .collect()
+    }
+
+    /// The inside of the first `{ }` after `from` in `css`, and where it ends.
+    fn block(css: &str, from: usize) -> (&str, usize) {
+        let open = from + css[from..].find('{').unwrap() + 1;
+        let close = open + css[open..].find('}').unwrap();
+        (&css[open..close], close + 1)
+    }
+
+    struct Themes {
+        light: Vec<(String, String)>,
+        dark: Vec<(String, String)>,
+        /// Tokens declared anywhere else: a second `:root`, or a `--line` on `body`, would
+        /// override the two blocks compared and be compared with nothing.
+        strays: Vec<String>,
+    }
+
+    /// A page's own tokens: its `:root` block outside any media query, and the one inside
+    /// `prefers-color-scheme: dark`.
+    fn themes(css: &str) -> Themes {
+        let media = css
+            .find("@media (prefers-color-scheme: dark)")
+            .expect("the page has no dark block");
+        let root = media + css[media..].find(":root").expect("no dark :root");
+        let (dark, end) = block(css, root);
+        let media_end = end + css[end..].find('}').unwrap() + 1;
+        let outside = format!("{}{}", &css[..media], &css[media_end..]);
+        let at = outside
+            .find(":root")
+            .expect("the page has no light :root block");
+        let (light, end) = block(&outside, at);
+        let strays = declared(&format!("{}{}", &outside[..at], &outside[end..]))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        Themes {
+            light: declared(light),
+            dark: declared(dark),
+            strays,
+        }
+    }
+
     #[test]
-    fn the_stylesheet_is_read_with_either_line_ending() {
-        let unix = CSS.replace("\r\n", "\n");
-        let windows = unix.replace('\n', "\r\n");
-        assert_eq!(scales(&windows), scales(&unix));
-        assert_eq!(scales(&unix)["--r-1"], "4px");
+    fn the_websites_colours_are_the_apps() {
+        for (page, html) in PAGES {
+            let found = themes(&page_css(html));
+            for (theme, palette, tokens) in
+                [("light", LIGHT, &found.light), ("dark", DARK, &found.dark)]
+            {
+                let shared: Vec<_> = (tokens.iter())
+                    .filter(|(name, _)| !OWN.contains(&name.as_str()))
+                    .collect();
+                assert!(!shared.is_empty(), "{page}: no {theme} tokens");
+                for (name, value) in shared {
+                    assert_eq!(
+                        hex(value),
+                        token(&palette, name),
+                        "{page}: {name} ({theme}) is {value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_page_declares_every_token_for_both_themes_and_nowhere_else() {
+        for (page, html) in PAGES {
+            let found = themes(&page_css(html));
+            let names = |tokens: &[(String, String)]| {
+                let mut names: Vec<String> = tokens.iter().map(|(name, _)| name.clone()).collect();
+                names.sort();
+                names
+            };
+            // One missing from the dark block is no error anywhere: dark shows the light one.
+            assert_eq!(names(&found.dark), names(&found.light), "{page}");
+            assert!(found.strays.is_empty(), "{page}: {:?}", found.strays);
+        }
+    }
+
+    #[test]
+    fn each_page_reads_no_token_it_does_not_declare() {
+        for (page, html) in PAGES {
+            let css = page_css(html);
+            let declared: Vec<String> = themes(&css)
+                .light
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            // `var(--chrome)` left behind after the token went computes to nothing, silently,
+            // however it is spelled: with spaces inside, or a fallback that hides it.
+            let read: Vec<&str> = (css.match_indices("var("))
+                .map(|(at, _)| css[at + 4..].trim_start())
+                .map(|rest| {
+                    rest.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                        .next()
+                        .unwrap()
+                })
+                .collect();
+            assert!(!read.is_empty(), "{page}");
+            for name in read {
+                assert!(declared.iter().any(|known| known == name), "{page}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_colour_is_read_in_both_spellings() {
+        assert_eq!(hex("#1f6fd6"), Some(LIGHT.accent));
+        assert_eq!(hex("#62a0ea33"), Some(DARK.accent_soft));
+        assert_eq!(hex("1f6fd6"), None);
     }
 }

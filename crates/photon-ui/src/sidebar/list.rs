@@ -1163,9 +1163,6 @@ mod tests {
             }),
             None
         );
-        let svelte = include_str!("../../../../ui/src/components/FolderTree.svelte");
-        assert!(svelte.contains(&format!("<p class=\"empty\">{}</p>", last.label)));
-        assert!(svelte.contains(&format!(">{}</button>", button.label)));
     }
 
     // The collections and the folder list are too large to compare, and are replaced only

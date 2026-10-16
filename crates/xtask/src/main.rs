@@ -3,25 +3,16 @@
 //! Usage:
 //!   cargo run -p xtask -- versions [--tag v0.1.0]
 //!   cargo run -p xtask -- metadata
-//!   cargo run -p xtask -- screenshots [--out <dir>] [--only <shot>] [--photos <dir>] [--no-build]
-//!   cargo run -p xtask -- scroll-probe [--no-build]
 //!   cargo run -p xtask -- native-shot
 //!   cargo run -p xtask -- fixture-library [--photos <n>] [--out <dir>]
-//!   cargo run -p xtask -- grid-gate (--go --refresh-hz <hz> | --dry-run) [--native-only] [--photos <n>]
 //!   cargo run -p xtask -- package (deb | appimage | dmg --arch <a> | msi) --binary <path> --out <dir>
 
 mod checks;
 mod fixture_library;
-mod grid_gate;
 mod native_shot;
 mod package;
-mod screenshots;
-mod scroll_probe;
 
-use checks::{
-    Versions, check_metadata, check_versions, parse_cargo_version, parse_pkg_version,
-    parse_tauri_version,
-};
+use checks::{check_metadata, check_versions, parse_cargo_version};
 use std::{path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
@@ -31,15 +22,12 @@ fn main() -> ExitCode {
     match command {
         Some("versions") => run_versions(tag.as_deref()),
         Some("metadata") => run_metadata(),
-        Some("screenshots") => screenshots::run(&repo_root(), &args),
-        Some("scroll-probe") => scroll_probe::run(&repo_root(), &args),
         Some("native-shot") => native_shot::run(&repo_root()),
         Some("fixture-library") => fixture_library::run(&repo_root(), &args),
-        Some("grid-gate") => grid_gate::run(&repo_root(), &args),
         Some("package") => package::run(&repo_root(), &args),
         other => {
             eprintln!(
-                "unknown command {other:?}; expected `versions`, `metadata`, `screenshots`, `scroll-probe`, `native-shot`, `fixture-library`, `grid-gate` or `package`"
+                "unknown command {other:?}; expected `versions`, `metadata`, `native-shot`, `fixture-library` or `package`"
             );
             ExitCode::FAILURE
         }
@@ -67,33 +55,17 @@ fn tag_arg(args: &[String]) -> Option<String> {
 }
 
 fn run_versions(tag: Option<&str>) -> ExitCode {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("xtask lives at <root>/crates/xtask")
-        .to_path_buf();
-
-    let read = |rel: &str| -> Result<String, String> {
-        std::fs::read_to_string(root.join(rel)).map_err(|e| format!("cannot read {rel}: {e}"))
-    };
-
-    let parsed = (|| -> Result<Versions, String> {
-        Ok(Versions {
-            tauri: parse_tauri_version(&read("crates/photon-app/tauri.conf.json")?)?,
-            cargo: parse_cargo_version(&read("Cargo.toml")?)?,
-            ui: parse_pkg_version(&read("ui/package.json")?)?,
-        })
-    })();
-
-    let versions = match parsed {
-        Ok(v) => v,
+    let version = std::fs::read_to_string(repo_root().join("Cargo.toml"))
+        .map_err(|e| format!("cannot read Cargo.toml: {e}"))
+        .and_then(|text| parse_cargo_version(&text));
+    let version = match version {
+        Ok(version) => version,
         Err(err) => {
             eprintln!("version check could not run: {err}");
             return ExitCode::FAILURE;
         }
     };
-
-    match check_versions(&versions, tag) {
+    match check_versions(&version, tag) {
         Ok(version) => {
             println!("version check passed: {version}");
             ExitCode::SUCCESS
@@ -109,12 +81,7 @@ fn run_versions(tag: Option<&str>) -> ExitCode {
 }
 
 fn run_metadata() -> ExitCode {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("xtask lives at <root>/crates/xtask")
-        .to_path_buf();
-
+    let root = repo_root();
     let cargo_toml = match std::fs::read_to_string(root.join("Cargo.toml")) {
         Ok(s) => s,
         Err(e) => {
@@ -122,19 +89,7 @@ fn run_metadata() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let conf_path = root
-        .join("crates")
-        .join("photon-app")
-        .join("tauri.conf.json");
-    let tauri_conf = match std::fs::read_to_string(&conf_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("cannot read tauri.conf.json: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    match check_metadata(&cargo_toml, &tauri_conf, root.join("LICENSE").is_file()) {
+    match check_metadata(&cargo_toml, root.join("LICENSE").is_file()) {
         Ok(()) => {
             println!("metadata check passed");
             ExitCode::SUCCESS

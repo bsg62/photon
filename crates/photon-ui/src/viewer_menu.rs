@@ -167,23 +167,4 @@ mod tests {
             }
         );
     }
-
-    // The words are the Svelte viewer's: read out of the component that has them.
-    #[test]
-    fn the_words_are_the_svelte_viewers() {
-        let viewer = include_str!("../../../ui/src/components/Viewer.svelte");
-        for words in [
-            ">Name this face…</button>",
-            ">Not {name}</button>",
-            ">Locate in photon</button>",
-            ">Reveal in file manager</button>",
-            ">Open in default app</button>",
-            "{item.hidden ? 'Unhide photo' : 'Hide photo'} <span class=\"hint\">H</span>",
-        ] {
-            assert!(
-                viewer.lines().any(|line| line.contains(words)),
-                "Viewer.svelte no longer says {words:?}"
-            );
-        }
-    }
 }

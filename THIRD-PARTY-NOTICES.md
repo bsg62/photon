@@ -5,7 +5,7 @@ material compiled into it.
 
 ## Lucide icons
 
-The icons in `ui/src/lib/icons.ts` are from Lucide (https://lucide.dev), lucide-static
+The icons in `crates/photon-ui/src/icons.rs` are from Lucide (https://lucide.dev), lucide-static
 1.47.0, unmodified. Its licence file follows in full.
 
 ```text
@@ -56,10 +56,10 @@ SOFTWARE.
 
 ## Tauri's MSI template
 
-`crates/photon-app/windows/main.wxs`, the template the Windows installer is built from, is
-Tauri's own (`crates/tauri-bundler/src/bundle/windows/msi/main.wxs` at tag
-`tauri-cli-v2.11.4`, https://github.com/tauri-apps/tauri), changed only so that the desktop
-shortcut is opt-in. Tauri is dual-licensed MIT or Apache-2.0; its MIT licence follows in full.
+`crates/photon-ui/packaging/windows/main.wxs`, the template the Windows installer is built
+from, is Tauri's own (`crates/tauri-bundler/src/bundle/windows/msi/main.wxs` at tag
+`tauri-cli-v2.11.4`, https://github.com/tauri-apps/tauri), changed so that the desktop
+shortcut is opt-in and its Tauri placeholders are photon's own values. Tauri is dual-licensed MIT or Apache-2.0; its MIT licence follows in full.
 
 ```text
 MIT License
@@ -87,7 +87,7 @@ SOFTWARE.
 
 ## WiX Toolset install-folder dialog
 
-`crates/photon-app/windows/install-dir-ui.wxs` is WiX Toolset 3.14's `WixUI_InstallDir` and
+`crates/photon-ui/packaging/windows/install-dir-ui.wxs` is WiX Toolset 3.14's `WixUI_InstallDir` and
 `InstallDirDlg` (`src/ext/UIExtension/wixlib/` at tag `wix3141rtm`,
 https://github.com/wixtoolset/wix3), with a desktop-shortcut checkbox added. That one file is
 compiled into the Windows installer and stays under the Microsoft Reciprocal License below; its
@@ -407,75 +407,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-```
-
-## tiny_http
-
-`crates/photon-app` depends on tiny_http 0.12.0 (https://github.com/tiny-http/tiny-http) for
-the loopback server that streams video and poster frames to the webview's `<video>` element.
-Dual-licensed MIT or Apache-2.0; its MIT licence follows in full.
-
-```text
-Copyright (c) 2014-2019 The tiny-http contributors
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-## getrandom
-
-`crates/photon-app` depends on getrandom 0.3.4 (https://github.com/rust-random/getrandom) to
-generate the loopback server's per-launch token. Dual-licensed MIT or Apache-2.0; its MIT
-licence follows in full.
-
-```text
-Copyright (c) 2018-2025 The rust-random Project Developers
-Copyright (c) 2014 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 ```
 
 ## fast_image_resize

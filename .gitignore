@@ -1,8 +1,10 @@
 /target
 **/*.rs.bk
 .DS_Store
+.claude/worktrees/
+.superpowers/
+# What the Svelte UI and the Tauri shell left untracked in a checkout from before the
+# switch-over: kept out of `git status` there.
 node_modules/
 ui/dist/
 crates/photon-app/gen/
-.claude/worktrees/
-.superpowers/

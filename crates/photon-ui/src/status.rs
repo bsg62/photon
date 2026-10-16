@@ -278,21 +278,4 @@ mod tests {
             "Exporting 1,200 / 4,800… (3 could not be written)"
         );
     }
-
-    // The words are the Svelte footer's, until the switch-over.
-    #[test]
-    fn the_lines_are_worded_as_the_svelte_footer_words_them() {
-        let footer = include_str!("../../../ui/src/components/StatusBar.svelte");
-        assert!(footer.contains(LIVE_UPDATES_LIMITED));
-        assert!(footer.contains("could not be written)"));
-        let status = include_str!("../../../ui/src/lib/status.ts");
-        for words in [
-            "new or changed",
-            "Recognising people: ${counted} faces",
-            "Finding faces: ${counted}",
-            "label: `Scanning ${name}… ${parts.join(', ')}`",
-        ] {
-            assert!(status.contains(words), "{words}");
-        }
-    }
 }

@@ -178,51 +178,6 @@ mod tests {
         ("window_layout.rs", include_str!("window_layout.rs")),
     ];
 
-    /// The version of the `windows` crate that `package` is locked to, or `None` when it
-    /// does not depend on it.
-    fn locked_windows_crate(lock: &str, package: &str) -> Option<String> {
-        let entry = lock.split("[[package]]").find(|entry| {
-            // By line, so a checkout with CRLF endings reads the same.
-            let name = format!("name = \"{package}\"");
-            entry.lines().any(|line| line.trim() == name)
-        })?;
-        let dependency = entry
-            .lines()
-            .map(str::trim)
-            .find_map(|line| line.strip_prefix("\"windows "))?;
-        Some(dependency.trim_end_matches(['"', ',']).to_owned())
-    }
-
-    // gpu-allocator takes any `windows` crate from 0.53 to 0.62, and wgpu-hal exactly 0.62.
-    // Tauri, in the same lockfile until the switch-over, brings 0.61 - and cargo, adding
-    // photon-ui to a lock that already held 0.61, gave gpu-allocator that one. Its Direct3D
-    // types are then not wgpu-hal's, and wgpu-hal does not compile: on Windows only, four
-    // minutes into CI, as ten errors about `ID3D12Heap` that name neither crate's version.
-    // A `cargo update` can do it again; this says so on every platform, by name. The cure
-    // is to change gpu-allocator's `"windows 0.61.x"` line in Cargo.lock to wgpu-hal's.
-    #[test]
-    fn the_gpu_crates_are_locked_to_one_windows_crate() {
-        let lock = include_str!("../../../Cargo.lock");
-        let wgpu = locked_windows_crate(lock, "wgpu-hal");
-        assert!(
-            wgpu.is_some(),
-            "wgpu-hal no longer depends on the windows crate"
-        );
-        assert_eq!(locked_windows_crate(lock, "gpu-allocator"), wgpu);
-    }
-
-    // A Windows checkout has CRLF line endings, and `include_str!` hands them over as they
-    // are: the first version of this reader matched a name with its `\n` and found nothing
-    // there, on the one platform the test is about.
-    #[test]
-    fn the_lockfile_is_read_with_either_line_ending() {
-        let lock = include_str!("../../../Cargo.lock").replace("\r\n", "\n");
-        let unix = locked_windows_crate(&lock, "wgpu-hal");
-        assert!(unix.is_some());
-        let windows = lock.replace('\n', "\r\n");
-        assert_eq!(locked_windows_crate(&windows, "wgpu-hal"), unix);
-    }
-
     // A state module that reaches for egui can no longer be tested without a context, and
     // the next one copies it. Comments may name egui; code may not.
     #[test]
@@ -240,5 +195,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The code of every file under `dir`, comments and tests left out, as one text: a
+    /// file is read to its first `#[cfg(test)]`, where this crate's tests begin.
+    fn sources(dir: &std::path::Path, into: &mut String) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                for line in std::fs::read_to_string(&path).unwrap().lines() {
+                    let code = line.trim_start();
+                    if code.starts_with("#[cfg(test)]") {
+                        break;
+                    }
+                    if !code.starts_with("//") {
+                        into.push_str(line);
+                        into.push('\n');
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether `code` names `commands::{name}` as a whole name: called, or handed on.
+    fn names_command(code: &str, name: &str) -> bool {
+        let path = format!("commands::{name}");
+        code.match_indices(&path).any(|(at, _)| {
+            (code[at + path.len()..].chars().next())
+                .is_none_or(|next| !(next.is_alphanumeric() || next == '_'))
+        })
+    }
+
+    // Every command the engine offers is one this window calls: the successor of the test
+    // that held the Svelte UI's mock to its API. A command nobody calls is the engine's
+    // dead weight, or a feature this window has not got - which the switch-over's audit
+    // was about - and is deleted, or answered, rather than left.
+    #[test]
+    fn every_command_of_the_engine_is_called_by_the_window() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let commands = include_str!("../../photon-engine/src/commands.rs");
+        let mut window = String::new();
+        sources(&manifest.join("src"), &mut window);
+        // By its path alone: a method of the window's own with a command's name
+        // (`App::viewer_item`) is no call of the command.
+        let uncalled: Vec<&str> = (commands.lines())
+            .filter_map(|line| line.strip_prefix("pub fn "))
+            .filter_map(|rest| rest.split(['(', '<']).next())
+            .filter(|name| !names_command(&window, name))
+            .collect();
+        assert!(uncalled.is_empty(), "commands nothing calls: {uncalled:?}");
+    }
+
+    #[test]
+    fn a_command_called_only_by_a_test_is_not_called_by_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn draw() { commands::star(&e); }\n#[cfg(test)]\nmod tests { fn t() { commands::hide(&e); } }\n",
+        )
+        .unwrap();
+        let mut code = String::new();
+        sources(dir.path(), &mut code);
+        assert!(names_command(&code, "star"));
+        assert!(!names_command(&code, "hide"));
+    }
+
+    #[test]
+    fn a_command_is_named_by_its_whole_path() {
+        assert!(names_command("commands::adopt(&engine)", "adopt"));
+        assert!(names_command("go(commands::adopt)", "adopt"));
+        assert!(!names_command(
+            "fn adopt(&mut self) { self.adopt(x) }",
+            "adopt"
+        ));
+        assert!(!names_command("commands::adopted(&engine)", "adopt"));
     }
 }

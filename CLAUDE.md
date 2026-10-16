@@ -3,11 +3,12 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 photon is a local photo manager for Linux, macOS and Windows — a spiritual successor to
-Picasa 3. Rust core, Tauri 2 shell, Svelte 5 UI.
+Picasa 3. Rust throughout: a headless core, an engine over it, and a window drawn by egui
+on the GPU.
 
 ## Commands
 
-**The Rust gate — all four must pass before any commit.** CI runs exactly these, so a commit
+**The Rust gate — all five must pass before any commit.** CI runs exactly these, so a commit
 that skips one is a commit CI will reject:
 
 ```bash
@@ -28,35 +29,13 @@ application are one binary**, `all` (`tests/main.rs`, `autotests = false`), each
 file there is a `mod` line in `tests/main.rs`, or it is never built
 (`every_file_in_tests_is_a_module_of_the_binary` says so).
 
-**The UI gate**, from the repo root:
-
-```bash
-npm run check   # svelte-check --fail-on-warnings: 0 errors AND 0 warnings
-npm test        # vitest
-```
-
 **Single test:**
 
 ```bash
 cargo test -p photon-core the_test_name          # by name substring
 cargo test -p photon-core --lib scanner          # one module
 cargo nextest run -p photon-ui --test all dialogs::   # one file of the whole-app tests
-npm test -w ui -- src/lib/nav.test.ts            # one UI file
 ```
-
-**There is no component test harness.** vitest runs with `environment: 'node'`, so a
-`.svelte` file cannot be rendered or asserted on. A `.svelte.ts` module compiles there for
-Svelte's *server* runtime, where effects never run; a test that needs real reactivity
-(an effect, a derived depending on state it reads) is named `*.client.test.ts` and runs in the
-`client` vitest project (`ui/vite.config.ts`), still in Node but with the client runtime -
-`page-signals.client.test.ts` is why: a lazily created per-page signal passed every
-server-runtime test and left every tile deaf to its page. Logic that needs a test goes in a
-`.svelte.ts` factory tested with fake timers (`createSearchBox`, `createThumbRequest`,
-`createSlideshow`, `createCropTool`) or a pure module (`timeline.ts`, `crop.ts`, `picture.ts`);
-what is left in the component is effect wiring, verified by `svelte-check` and the smoke
-checklist (`docs/smoke-checklist.md`), not by a test. Layout *can* be measured without the GUI: a static page
-holding the component's CSS, run through headless Chromium with `--dump-dom` and a load script
-that writes `getBoundingClientRect()` into `document.title`.
 
 **Test fixtures.** Solid-colour JPEGs of different dimensions often encode to the *same byte
 size*; a test that needs distinct sizes appends bytes after the end-of-image marker. A fixture
@@ -84,57 +63,47 @@ its test needs; a Windows machine with an antivirus scanning TEMP pays more stil
 **Repository chores** (also run in CI, so run them before tagging):
 
 ```bash
-cargo run -p xtask -- versions            # tauri.conf.json, ui/package.json agree with Cargo.toml
-cargo run -p xtask -- versions --tag v0.5.0   # ...and match the tag
+cargo run -p xtask -- versions            # the version Cargo.toml states
+cargo run -p xtask -- versions --tag v0.5.0   # ...matches the tag
 cargo run -p xtask -- metadata            # licence and installer metadata are complete
 ```
 
-**Seeing the UI without launching it** (not in CI; needs Chromium on `PATH` or in `CHROMIUM`):
+**Seeing the window without launching it**: `cargo run -p xtask -- native-shot` draws it
+off screen into `target/screenshots/native-*.png` (needs a GPU adapter, no display; not in
+CI - below, "The window"). The project website (`site/`, deployed to photon.webcodr.io by
+`pages.yml`) shows the interface with the CC0 photos in `crates/xtask/screenshots/photos`
+(credited in their `CREDITS.md`), as `site/img/*.webp` (`magick x.png -quality 85 x.webp`)
+and the link preview `site/img/og.jpg` at quality 88. Its pictures are still the Svelte
+UI's until the switch-over's pictures pull request draws them with `native-shot`.
 
-```bash
-cargo run -p xtask -- screenshots                     # forty-four PNGs into target/screenshots/
-cargo run -p xtask -- screenshots --only viewer-info-light --no-build
-cargo run -p xtask -- scroll-probe   # the end of a 300k-photo library is reachable
-```
-
-The project website (`site/`, deployed to photon.webcodr.io by `pages.yml`) uses these
-screenshots with real photos: `--photos crates/xtask/screenshots/photos` serves the CC0 photos
-there (credited in their `CREDITS.md`) in place of the gradients. Regenerate `main-light`,
-`main-dark` and `viewer-info-light` with it and convert them to `site/img/*.webp`
-(`magick x.png -quality 85 x.webp`), and `main-light` to `site/img/og.jpg` at quality 88, the
-link preview. With `--photos` the server puts a flag before `mock.js`, and the mock then leaves
-out the faces it says nobody has named: they are rectangles placed for a gradient, and on a
-real photo they outlined skyline. A photo kept large for the viewer shots has a small copy in
-`photos/thumbs/`, which the server gives to a grid tile and a face crop: a tile's `<img>`
-decodes off the main thread and the virtual-time budget does not wait for it, so the 1600px
-photo was blank in a few `main-dark` shots in a hundred (5 of 70, then 6 of 350; none of 250
-with the `<img>` decoded synchronously), the website's own among them. A loop that checks for
-it needs hundreds of shots: at that rate forty come out clean half the time with nothing fixed.
-
-`npm run dev` runs the app with hot reload. **Do not run it to verify a change** — see
+`cargo run -p photon-ui` runs the window. **Do not run it to verify a change** - see
 Conventions.
 
 ## Architecture
 
-Five crates plus the UI:
+Four crates:
 
-- **`photon-core`** — headless. SQLite library, scanning, thumbnails, metadata. Knows nothing
-  about Tauri.
-- **`photon-engine`** — `Engine`, the commands over it (`commands.rs`) and the folder
+- **`photon-core`** - headless. SQLite library, scanning, thumbnails, metadata, faces. Knows
+  nothing about a window.
+- **`photon-engine`** - `Engine`, the commands over it (`commands.rs`) and the folder
   watcher. No UI runtime is a dependency, and `the_engine_depends_on_no_ui_runtime` reads
-  its manifest to keep it so: it is what a second shell stands on.
-- **`photon-app`** — the Tauri shell. Owns the IPC surface and the custom protocol that
-  serves thumbnails, and re-exports the engine's modules under the names they had there.
-- **`photon-ui`** — the native interface, on egui and wgpu, that is to replace `photon-app`
-  and `ui/` (below, "The native UI"). Unreleased; its binary is `photon-native`.
-- **`xtask`** — repository chores, and `screenshots`. Binary only, no `lib.rs`.
-- **`ui/`** — Svelte 5 runes + TypeScript, an npm workspace.
+  its manifest to keep it so.
+- **`photon-ui`** - the window, on egui and wgpu (below, "The window"). Its binary is
+  `photon-native`.
+- **`xtask`** - repository chores, `native-shot`, `package` (the installers) and
+  `fixture-library`. Binary only, no `lib.rs`.
+
+Until the switch-over (spec `2026-10-16-photon-native-switch-over-design.md`) the interface
+was a Svelte 5 UI in a Tauri 2 shell (`ui/`, `crates/photon-app`); v0.53.1 is its last
+release, and git history before the switch-over holds it. Names of its files and functions
+in the paragraphs below (`Grid.svelte`, `nav.ts`, `createSelect`) say where a rule of the
+window was ported from.
 
 ### The grid index is the spine
 
 `Engine` holds one in-memory `GridIndex` (`grid.rs`) built from a single ordered query, plus a
-version number. Everything downstream — paging, folder sections, viewer navigation, neighbour
-preloading, the sidebar — reads from that one index, which is why a "view" is just a different
+version number. Everything downstream - folder sections, viewer navigation, the selection,
+the sidebar - reads from that one index, which is why a "view" is just a different
 row set rather than a different code path.
 
 The refresh chain is worth knowing end to end, because a change that alters rows without
@@ -145,7 +114,8 @@ scan/mutation → Engine::refresh_grid() → snapshot (view, query, epoch, seq)
               → query + GridIndex::build(), no engine lock held
               → publish_if_current(): discarded if the view changed (epoch) or a
                 later-stamped rebuild already published (seq); else bumps version
-              → events::library_changed → UI listener → api.gridInfo() → re-render
+              → events::library_changed → the window's channel (`events.rs`)
+              → Engine::published → App::adopt → drawn
 ```
 
 Rebuilds run unlocked so a view switch never waits behind a scan's rebuild; the two publish
@@ -157,10 +127,10 @@ for a view change. A discarded rebuild never loses rows: every commit is followe
 thread by a rebuild stamped after it, and the highest stamp always publishes.
 
 `Engine::open` does not build the grid: it publishes an empty index at `NOT_BUILT` (version 0,
-which no real publish reaches, since each adds one) so `setup` - on the main thread, before the
-webview can load - costs a library open, not a whole-library query. `startup` builds it first
-thing. The UI treats that version as "not known yet" (`grid-state.ts`): no empty-library
-notice, no photo count, and no last-folder restore, whose `len === 0` guard waits for it.
+which no real publish reaches, since each adds one) so opening the window, before its first
+frame, costs a library open, not a whole-library query. `startup` builds it first thing. The
+window treats that version as "not known yet" (`empty.rs`): no empty-library notice, no photo
+count, and no last-folder restore.
 `open` still fails on a library the grid query cannot run against, through
 `check_grid_query`, which prepares the query without running it. A first build that fails
 anyway is retried (`FIRST_GRID_BACKOFF`) and then published *empty* (`build_first_grid`):
@@ -169,49 +139,22 @@ switch. The empty grid carries the error (`GridInfo::build_error`), so the UI sa
 library could not be read instead of "No photos yet"; it is never published over a grid something
 else built meanwhile, and the next successful publish clears it.
 
-**An empty library says why, and only what the UI knows** (`emptyLibrary` and `noPhotosLine`
-in `grid-state.ts`, drawn by `Grid.svelte` beside its viewport, in All photos and Recent
-only). The states are not the ones they look like. "No folder is watched" is the rare one:
-`startup` watches the Pictures folder by itself when nothing is watched, so most first runs
-are a watched folder with a scan in it, or with nothing in it - which therefore offers Add
-folder… as well. **The UI knows a scan is running only because it is told, in two ways.**
-A full scan reports once before it walks, with nothing seen, as soon as it has found its
-root (`scan_watched`): the walk's own first report is 64 photos in, a flushed batch, or its
-end, and an empty library said photon had found no photos in a folder it was a minute into
+**An empty library says why, and only what the window knows** (the window's side is
+"The launch" and "The empty library's panel", below). "No folder is watched" is the rare
+state: `startup` watches the Pictures folder by itself when nothing is watched, so most
+first runs are a watched folder with a scan in it, or with nothing in it. **A full scan
+reports once before it walks**, with nothing seen, as soon as it has found its root
+(`scan_watched`): the walk's own first report is 64 photos in, a flushed batch, or its end,
+and an empty library said photon had found no photos in a folder it was a minute into
 reading. Not a root that is not there (an unplugged drive is polled twice a minute), not one
 last found offline (`watched.online`: an unmounted volume leaves an empty mount point, polled
 the same way, and telling it from a live folder reads every known row first - the scan's
 line came and went with each poll; the price is that the first scan after the drive is back
 goes without the report), and not a subtree scan (the watcher runs one for every directory a
-file changed in, each over in milliseconds: announced, each would flash the scan's line). And because the
-startup scans begin before any webview exists and an event sent to no listener is lost, the
-UI asks once, after it has subscribed, which scans are running: `scanning_folders`, which
-answers from `Engine::reporting` - not from the scan slots, which hold INI passes that
-report nothing. `reporting` is kept by the code that sends the events, on the same side of
-each: in before a scan's first not-done event, out *before* its done. That order is the
-whole point - a listener told "scanning" is always still owed the done that ends it - and
-`scanning_folders_names_a_scan_from_its_first_report_until_it_is_done` reads the list from
-inside the event sink to hold it. The UI leaves alone a scan that has reported since it
-asked (its done can overtake the answer). What the UI writes into `scans` for a scan it was
-told of is a note, not an event (`noteRunning`, `unheard`): the scan's first real event must
-still count as its first, or the folder's size is never snapshotted and the status bar
-counts files with nothing to measure them against. The slot's release takes a panicked scan
-out of `reporting`, since it will never report done. `'no-photos'` is still never worded as a finished
-search ("has found no photos", not "looked and found none"): a folder photon may not read is
-scanned and reported like an empty one. Three smaller things beside it: a folder added
-through `library.addFolder` has its scan counted as running at once (the command's answer
-and the scan's opening event arrive in either order), unless a scan there has already
-reported; a scan's first event in a folder the list does not hold reads the list again (the
-list read at launch may predate the automatic Pictures); and a scan that reports done on an
-empty grid counts as running until the grid has been read again (`settling`: the rebuild's
-event and the scan's end arrive a fraction of a millisecond apart, a round trip before the
-photos). Hidden photos
-come before all of it: with any, the library is not empty. Nothing is said before the folder
-list has been read once (`foldersKnown`). The scanning and no-photos states are one block
-with one sentence changing, because a watched folder is rescanned at any time and buttons
-replaced on each flip lost the focus and a click on its way; and the focus is read before
-the panel's DOM changes (`$effect.pre`) and handed to the grid if its button is gone after.
-The panel is outside the viewport because the viewport is the rubber band's surface.
+file changed in, each over in milliseconds: announced, each would flash the scan's line).
+"Has found no photos" is never worded as a finished search ("looked and found none"): a
+folder photon may not read is scanned and reported like an empty one. Hidden photos come
+before all of it: with any, the library is not empty.
 
 `LibraryChanged::data_changed` tells the UI whether to refetch the sidebar's collections
 (albums, people, tags - the tag counts alone are ~220ms at 300k photos carrying three keywords
@@ -262,7 +205,7 @@ fails at `prepare`, only when that view is opened.
 contiguous. Modified, name and size sort every photo together and lay the grid out flat
 (`Sort::layout`), which has no headers, no timeline, and a folder jump that lands on the
 folder's first photo (`offset_of_folder`); the sidebar then drops its year groups and orders
-folders by `FolderTally`'s `bytes`/`modified_ms` or by name (`arrangeFolders`). The sort is part
+folders by `FolderTally`'s `bytes`/`modified_ms` or by name (`arrange_folders`). The sort is part
 of the `ViewState` a rebuild snapshots, so a sort change is guarded by the epoch like a view
 switch; do not read it at query time instead. `GridEntry` carries `size`/`mtime_ms` unserialized
 for it, and a name sort reads the names in a side query, because `GridEntry` is `Copy`.
@@ -274,15 +217,15 @@ order and layout; `Day`, `Month` and `Year` are one timeline across folders, new
 in every view, Recent included; `None` is that timeline flat. Under any other key it is kept and
 ignored, so the sort control changes a `Sort` by spreading it - built from its two fields, it
 dropped the grouping. A `Section` carries its `period` as numbers (`grid::Period`, read with
-`civil_from_unix` like search's `2024-06`), and the UI formats those (`periodLabel`), never
-`takenAtMin`, which it would read again in the viewer's zone. A section has a header when it
-has a folder or a period (`hasHeader`); code that means "flat" asks that, not
-`folderId === null`, which a period section has too - `selectAll` did, and under a month header
-selected a folder's scattered photos. The place photon remembers in the library is a folder, so
-its restore and `returnToAll` ask `laidOutByFolder`, not the sort key. Under a date grouping or
+`civil_from_unix` like search's `2024-06`), and the window formats those (`period_label`),
+never `taken_at_min`, which it would read again in another zone. A section has a header when it
+has a folder or a period (`has_header`); code that means "flat" asks that, not "no folder",
+which a period section has too - the Svelte `selectAll` did, and under a month header selected
+a folder's scattered photos. The place photon remembers in the library is a folder, so its
+restore and the way back to All photos ask `laid_out_by_folder`, not the sort key. Under a date grouping or
 none a folder has no header, so a sidebar click lands on the first of its photos the grid
 reaches (`offset_of_folder`, the flat answer) and the sidebar is no longer an index of the
-grid. The control's dimmed `Select` is `createSelect`'s `disabled`, tested there.
+grid.
 
 **Hidden photos** (`library/hidden.rs`, schema 13) are in no view but `GridView::Hidden`.
 `grid_query` takes a `Shown` argument (`Visible`, `Hidden`, or `Either` for bookkeeping like the
@@ -318,8 +261,7 @@ hidden until it is unhidden in photon.
 **Parameterised views.** `GridView::Search`, `Person`, `Album` and `Tag` are selected by an
 argument held beside the view in `ViewState.arg` (the query, a person's key, an album id,
 a keyword). `entries_for(view, arg)` interprets it per view and binds it as a SQL
-parameter; `GridInfo` reports it in typed fields (`searchQuery`, `person`, `album`, `tag`)
-so the TS mirror stays explicit. `set_view` clears the argument unless it is re-entering the
+parameter; `GridInfo` reports it in typed fields (`search_query`, `person`, `album`, `tag`). `set_view` clears the argument unless it is re-entering the
 same parameterised view, so a query can never be read as a person's key. The membership
 views filter the driver as well as the outer `WHERE`, the same way Starred does, or the
 sidebar's year groups and the grid disagree.
@@ -336,107 +278,19 @@ leading `-` negating a token, dangling pieces ignored. A fact a term reads is a 
 `Haystacks` set per photo in `search_entries` and cleared in `Haystacks::truncate`; one set
 only inside an `if let` (the caption's) and not cleared there carries over to the next photo. People, albums and the face counts are read from side
 tables only when a query names one (`Query::needs`). A new searchable fact is a haystack there, not a view; a new *filter* is a
-prefixed term. **The grammar is listed for the user in `lib/search-help.ts`**, which the `?` in
-the search box draws (`SearchHelp.svelte`): `search-help.test.ts` reads `Query::terms` out of
-`search.rs` and fails on a prefix, an `is:` or a `has:` the list lacks, and on one it offers
-that the parser would drop. It finds them by shape - `prefixed("x:")`, and the `"word" =>` arms
+prefixed term. **The grammar is listed for the user in `search_help.rs`**, which the `?` in
+the search box draws: its tests read `Query::terms` out of `search.rs` and fail on a prefix, an
+`is:` or a `has:` the list lacks, and on one it offers that the parser would drop. It finds them by shape - `prefixed("x:")`, and the `"word" =>` arms
 between `prefixed("is:")` and the next prefix - so a parser rearranged away from that shape
-changes the test with it; the wording and the examples nothing checks. The query string is the whole interface, so UI links (the info panel's camera
-and lens) go through `searchBox.search()`, which cancels a pending debounce first.
-
-**The grid's keys are answered on its viewport, and the focus is kept there.** A click
-focuses the tile itself where a button takes the focus from the mouse (WebView2; WebKit hands
-it to the viewport), and the keys then bubble - until that tile scrolls out of the rendered
-rows and is removed, which drops the focus to `<body>` and leaves every key dead: two Page
-Downs after a click. The viewport's `onfocusin` takes the focus any tile is given. A
-navigation key moves on from `library.keyboardLead`, not from `selected`: Shift with an arrow,
-Home, End or a page key is `extendSelection`, which moves the lead only when the range's ids
-arrive, and a held key repeats faster than that. Page Up and Page Down are `pageMove`
-(`layout.ts`); with nothing selected they are left to the viewport's own scrolling, because a
-move would start from the first photo. The keys reach what a click cannot - a page the grid
-has not loaded - and three rules in the store exist for that. A range takes its lead's photo
-from the ids it fetched, never from the loaded pages (`extendSelection`): Shift+End's far end
-is not loaded, and a lead with no id is collapsed by the viewer closing on it and loses its
-anchor at the next rebuild. A range does not land over anything selected while its ids were
-on their way (`picks`): it is a round trip per thousand photos, and Shift+End then Escape put
-the whole range back under the next `H`. And a lead the plain setter put on an unloaded page
-(End, Home, a folder jump) is selected once the page arrives (`adoptLead`): before, its tile
-lost the ring the moment its entry came, and `H`, the star and Ctrl+C had nothing to act on.
+changes the test with it; the wording and the examples nothing checks. The query string is
+the whole interface, so the window's links (the info panel's camera and lens) go through
+`App::go`, which tells the search box first.
 
 **A grid offset is only meaningful against one index version.** Indexing a photo into a
 folder that sorts earlier shifts every later offset, so anything holding an offset across a
-rebuild — the viewer, the grid selection — must re-find its photo by id through
-`grid_offset_of_item`. Clamping catches only the offset falling off the end; in range the
+rebuild - the viewer, the grid selection - must re-find its photo by id
+(`GridIndex::position_of`). Clamping catches only the offset falling off the end; in range the
 consumer silently shows a different photo.
-
-**The grid's `scrollTop` is the layout's position, not the viewport's.** Engines cap a box
-at 33,554,428 px (less in CSS px on a scaled Windows display), and a large library at large
-tiles in a narrow window is taller; past the cap `.canvas` is held at a measured
-`domHeight` and `scroll-map.ts` maps the layout's position onto it, drawing rows at
-`row.top - shift`. Under the cap the map is the identity. Anything new that reads or writes
-`viewport.scrollTop` in `Grid.svelte` goes through the map (`virtualAt`, `scrollToVirtual`,
-`writeDom`) - a direct read is a DOM position, and in a big library it names another photo.
-`cargo run -p xtask -- scroll-probe` checks the end of a 300,000-photo library is reachable.
-
-**A tile is drawn wider than its size says.** `TILE_WIDTH` is the size chosen; `tileFor`
-widens it so the columns fill the row (whole pixels, at most `TILE_MAX`), and that drawn width -
-`tile` in `Grid.svelte`, never `gridSize.width` - is what the rows, the tiles and the band's hit
-test are measured by. So every row's height moves with every pixel of a window or sidebar
-resize, and a narrower grid is a *shorter* one. Six things follow, and the last three shipped
-to a review before anyone saw them:
-
-- The place is kept as a `Pin` (the row at the top, and the share of it scrolled past) and
-  restored on any change of the tile or the column count, not only on a new size.
-- The restore's own scroll event is not pinned again (`restoredTo`): re-read through the
-  browser's rounding on every frame, a splitter drag walked the grid off its photo, 5px in a
-  60px drag.
-- Rows are keyed by their index in the layout, not by their `top`: keyed by `top`, every frame
-  of a resize unmounted and remounted every tile on screen.
-- Everything is drawn at `viewTop` (`placeIn`), not at `scrollTop`: on the render where the
-  tiles change, `viewTop` is already the pin's place in the new rows, while the viewport is
-  only moved by an effect after it. Drawn at `scrollTop`, that render showed the rows the old
-  number names among the new ones - blank, deep in a library - for a frame on every frame,
-  remounted every tile and named another folder at the top (24 `set_last_folder` writes in
-  one drag). Anything new that asks "what is at the top" asks `viewTop`.
-- The year strip is shown by `showsTimeline`, which asks whether the grid *as it would be
-  beside the strip* has something to scroll (`.grid`'s own width, less the strip and the
-  scrollbar's gutter). Asked of the grid as it stood, the strip narrowed the tiles, the grid
-  then fitted, the strip went, the tiles widened, the grid overflowed: every frame.
-- A scrollbar that takes room keeps it always (`scrollbar-gutter: stable`, `overflow-y:
-  scroll` where that is not known): one that came with the overflow took the overflow away
-  the same way, and Svelte's `bind:clientWidth` watches the border box, which a scrollbar
-  does not change, so the tiles were sized for a row 15px wider than it was.
-
-The effect wiring here has no test. What showed all of it was the built UI in headless
-Chromium, driven by trusted mouse input on the sidebar's splitter, against a build with each
-point taken out - **150,000px down a 5,000-photo library, not near its top**, where the stale
-frame is inside the overscan and every probe passes; with scrollbars that take room, which the
-screenshot harness hides; and in a view about one screen tall with two years in it.
-
-### IPC is three files per command
-
-Adding a command means touching all three, in this order:
-
-1. `commands.rs` (in `photon-engine`) — a plain `pub fn` taking `&Engine`, returning
-   `CmdResult<T>`. The logic.
-2. `ipc.rs` — a `#[tauri::command(async)]` wrapper that only delegates.
-3. `app.rs` — an entry in `tauri::generate_handler![...]`. Forgetting this compiles fine and
-   fails at runtime.
-
-A feature backed by a Tauri plugin has a fourth file: `capabilities/default.json` must grant
-the permission (`clipboard-manager:allow-write-text`, say). A missing grant compiles and fails
-only at runtime, inside the webview.
-
-### TypeScript mirrors are hand-written and unchecked
-
-`ui/src/lib/api.ts` mirrors the serde structs in `photon-engine`'s `commands.rs` and
-`events.rs` (camelCase).
-**Nothing validates the mirror.** A Rust field added without its TS counterpart is silently
-`undefined` at runtime. Change both in the same commit.
-
-Note `ui/tsconfig.json` includes `src/**/*.ts`, so **test files are typechecked too** — adding a
-field to `GridInfo` breaks every `GridInfo` literal in `library.test.ts`, and `npm run check`
-fails on it.
 
 ### Scanning, and why "unchanged" matters
 
@@ -736,53 +590,19 @@ in `engine.rs` bounds the damage of a miss.
 **Edits are rendered by the backend, and the thumbnail key includes them.** An edit
 (`photon_core::edit`: EXIF orientation, then quarter turns, then a crop of the turned picture)
 lives in `items.edit_turns`/`edit_crop` and is applied in exactly three places: the thumbnail
-renderer, `/image/<id>` in `protocol.rs`, and the face rectangles in `viewer_item`. The UI draws
-no edit; it writes one and the refresh chain reloads the picture under its new `thumbKey`.
+renderer, the full-size render (`render_picture`: the viewer's picture, a copy for the
+clipboard, an export), and the face rectangles in `viewer_item`. The window draws no edit; it
+writes one and the refresh chain brings the picture under its new `thumb_key`.
 Anything that names a thumbnail must use `Item::thumb_key()` (or `Edit::thumb_key` over the
 fingerprint, as `map_grid_row` and `live_fingerprints` do); a bare `fingerprint` names the
 *unedited* photo's thumbnail. The untouched photo's key is the bare fingerprint on purpose, so
 caches from before edits existed stay valid. `set_thumb_state_if_unchanged` compares the edit
 too, or a worker that rendered the pre-edit picture marks the row `Ready` with nothing cached
 under the new key. For an edited photo `ViewerItem` reports `width`/`height`/`orientation` and
-`faces` *as shown*. A key names one picture, so the thumb handler serves a
-thumbnail already cached under the URL's key from the key alone, with no database read, as
-`immutable`; only when none is cached does it look the photo up, and since that answers with
-the photo's *current* thumbnail and keys recur ("Original", a fourth turn), it is `immutable`
-only when the file served is the URL key's own and `no-store` otherwise; and
-every write of an edit takes `Engine.edit_write`, because a turn reads the edit it builds on.
-Full-size renders run one at a time (`RENDERING`, in `photon-engine`'s `engine.rs`: `/image`
-in `protocol.rs` takes it and export shares it - held
-across the render and never across the write), outside the thumbnail pool
-that otherwise bounds decode memory, and `neighbours` leaves edited photos out of the preload.
-
-**What reloads the viewer** is `pictureChanged` (`ui/src/lib/picture.ts`), fed by the re-read
-the viewer makes on every grid version. A reload blanks the photo, resets zoom and pan and
-closes the crop tool, so the comparison must stay exact: `thumbState` counts only across
-`failed`. Anything that sends a row back to `pending` (an edit does) would otherwise make the
-*next* unrelated change — a star, a scan finishing — reload the photo on screen.
-`pictureChanged` takes a `Pick` of `ViewerItem` that leaves `faces` and `unnamedFaces` out on
-purpose: a detection landing on the photo on screen must not reload it. The type is the whole
-defence - there is no test, because a field the `Pick` cannot see cannot be compared.
-
-**The viewer's photo has an area, and it is not always the window.** While the info panel is
-open the photo is fitted beside it (`lib/viewer-layout.ts`: `infoRoom`, `photoArea`), in
-`.area`, which clips, so a zoomed photo stops at the panel too. Three things are measured in
-that area and must stay so: the frame the photo and the face outlines are fitted into, the
-zoom's and the pan's bounds (`viewport()`, worked out from the viewer and `info` rather than
-read off the element, which is laid out a render later than the toggle that needs it), and
-the point a zoom holds still (`fromCentre`: measured from the middle of the window, a
-double-click beside the panel zoomed to a place half the panel's room away). Three more
-things stand outside `.area` and are given its width by hand: the slideshow's crossfade
-layer (`.outgoing` - the panel can be opened during a show, and a leaving photo fitted to
-the window jumped larger on its way out), the error message, and the video's controls
-(`VideoControls`' `room`). Anything new drawn over or instead of the photo is a fourth. The panel's
-width and place are set on the element from the same constants. The previous and next
-buttons are `aria-disabled` at the ends, not `disabled`: a button disabled while it holds the
-focus drops the focus to `<body>`.
-
-**The window's fullscreen state is persisted** (`WINDOW_STATE_FLAGS`), and the slideshow uses
-the window's own fullscreen, so quitting mid-show reopens fullscreen with no title bar. `F11`
-(global, `App.svelte`) is the way out and the reason it exists.
+`faces` *as shown*. Every write of an edit takes `Engine.edit_write`, because a turn reads
+the edit it builds on. Full-size renders run one at a time (`RENDERING`, in `photon-engine`'s
+`engine.rs`: the viewer's picture, a copy and an export take it - held across the render and
+never across the write), outside the thumbnail pool that otherwise bounds decode memory.
 
 **The duplicate finder hashes after the scan, in the engine, in two passes.** `items.content_hash`
 (XXH3-128, NULL for almost every row) is filled by `photon_core::duplicates::hash_candidates`,
@@ -953,48 +773,18 @@ People page and its sidebar count of groups to name refetch on `data_changed`, s
 grouped a face rebuilds through `refresh_grid` (`data_dirty`, `counts_epoch`) - at its end,
 and during the embed step at most every 30 seconds whatever the view.
 
-**The People page is `mainPage`, not a `GridView`** (`ui/src/lib/main-page.svelte.ts`): it has no
-rows, so it is not a view of the grid index and does not travel the refresh chain as one. It is
-drawn *over* the grid, which stays mounted beneath it (`visibility: hidden` and `inert`, in
-`App.svelte`'s `.grid-layer`): unmounted, a returning grid starts at the top after the launch
-restore is long done, and its "remember the folder at the top" effect overwrote the user's
-place with the first folder on every return; `display: none` is no better, since it resets
-`scrollTop` and shows the ResizeObserver a zero width. What leaves the page: every sidebar view,
-a folder jump, typing in the search box, the viewer's search links, Locate, Show duplicates and
-Statistics' links. Opening a face's photo does not: the viewer opens over the page, and the grid
-is switched to All photos only when its view lacks the photo. `createPeoplePage`
-(`people-page.svelte.ts`) holds the behaviour and is tested (server runtime: it has no effect or
-derived value): a hide is optimistic and settled by a reload that *started* after the write (one
-already in flight may have read the old rows), and a case-only rename of a person's own name is
-a rename, not a merge. "Show more" survives a reload, re-fetched a page of `MORE` (200, the
-backend's `MAX_FACE_PAGE`) at a time - one call is clamped to 200 and folded a longer strip back
-- and a "Show more" or "Show fewer" made while a reload is in flight wins over it (each strip's
-generation). **A reload keeps the order of the groups on screen**: the backend sorts Unnamed by
-size, and re-sorted rows are keyed, so they moved under the user - the name box being typed in
-lost focus and a click could land on another group; only the page's first answer is taken as
-sorted, and new groups go at the end (a group the 200-group cap below now leaves out simply
-goes; one it now lets in arrives at the end). Library changes reload it through `changed()`, at once
-and then at most once a second (`CHANGE_GAP_MS`, trailing): each reload reads every visible
-face, 148 ms at 150,000 (`people_150k_faces` in the grid bench), and a scan announces a change
-per rebuild; the page's own actions call `load` and are never held back. **Unnamed lists the 200
-largest groups** (`LISTED_GROUPS`) with `unnamed_count` counting all of them; the sidebar's "N
-to name" is `people_to_name`, equal to `unnamed_count`, and is fetched with the collections on
-`data_changed`. A write refused with `notAPerson` (its group is gone) is reported as "That group
-changed". "Confirm all" confirms the faces on screen, not the person's whole suggestion list.
-Confirmations (switching detection off with named people, Delete, Merge) are the native `ask`,
-as everywhere else. The page's crops are `/face/<face id>/<thumb key>/<px>` in `protocol.rs`
-(one size is cut, `CROP_PX`, twice the 72px the page draws; it is in the URL because the
-webview keeps a crop for ever, so a new size must be a new name, and the UI's copy of the
-number is held to the backend's by `people.test.ts`), cut
-only from the cached preview: 404 for a gone face, a stale key or no cached preview (never a
-render, so a page of crops cannot start a burst of renders), 500 for an undecodable one, and
-`immutable` because a face id is never reused and never names another picture. It is the one
-`photon://` route that decodes per request outside the other bounds (an edited `/image` render
-takes `RENDERING`, a thumbnail the pool), so it has its own: a crop waits on `FACE_CROPS`, a
-semaphore of one permit a core, acquired *before* `off_thread` so a waiting request holds no
-blocking thread, and `ThumbCache` keeps the last eight decoded previews by key
-(`decoded_preview`), so a group photo's faces decode it once - a key names one picture, so a
-kept decode is never stale.
+**The People page reads `people_page`, not the grid index**: it has no rows, so it does not
+travel the refresh chain as a view (the window's side: "The People page is not a view of the
+grid", below). `people_page` lists the 200 largest unnamed groups (`LISTED_GROUPS`) with
+`unnamed_count` counting all of them; the sidebar's "N to name" is `people_to_name`, equal to
+`unnamed_count`, and is read with the collections on `data_changed`. A strip of faces is
+fetched a page of at most `MAX_FACE_PAGE` (200) at a time. A write refused with `notAPerson`
+(its group is gone) is reported as "That group changed". Each read of the page reads every
+visible face, 148 ms at 150,000 (`people_150k_faces` in the grid bench). A face's crop is cut
+by `ThumbCache::face_crop` from the cached preview only - never a render, so a page of crops
+cannot start a burst of renders - and `ThumbCache` keeps the last eight decoded previews by
+key (`decoded_preview`), so a group photo's faces decode it once: a key names one picture,
+so a kept decode is never stale.
 
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
@@ -1042,15 +832,14 @@ carries its own id; Picasa's plate of a *linked* person carries the detection be
 beneath it that no named person is confirmed on (it is drawn in that detection's place); and a
 plate of an unlinked contact (`c:`) carries none, since the face beneath may be someone else's.
 A face with no id is Picasa's alone, and the viewer offers nothing on it: its context menu
-hit-tests every face as drawn (`toLayer` through the face layer's own bounding rectangle, which
-already holds the zoom and pan, then `faceAt`) whether or not the info panel shows the outlines,
-and `faceActionsAt` (`lib/faces.ts`) offers "Name this face…" on an unnamed face, "Not Anna" on
-her plate, and elsewhere "Not …" once for each person photon has a face of on the photo. **The
-viewer's "Not Anna" is photo-level**, the grid's Remove for one photo (`remove_from_person`),
-so it is offered only where photon holds a face of hers, and its toast (`removedMessage`) says
-when Picasa keeps her there. A rejection reloads nothing (`pictureChanged`'s `Pick` leaves the
-faces out); in that person's view the photo leaves the grid and `orphaned` keeps it on screen,
-as after Hide. The slideshow's countdown is held (`hold`) while the dialog is over the viewer.
+hit-tests every face as drawn (`viewer_faces.rs`, below) whether or not the info panel shows
+the outlines, and offers "Name this face…" on an unnamed face, "Not Anna" on her plate, and
+elsewhere "Not …" once for each person photon has a face of on the photo. **The viewer's "Not
+Anna" is photo-level**, the grid's Remove for one photo (`remove_from_person`), so it is
+offered only where photon holds a face of hers, and its message (`removed_message`) says when
+Picasa keeps her there. A rejection reloads nothing (`picture_changed` leaves the faces out);
+in that person's view the photo leaves the grid and `orphaned` keeps it on screen, as after
+Hide.
 
 **Only confirmed faces carry a name.** A face the rule puts with a named person is a suggestion
 (`confirmed = 0`), listed among `people_page`'s suggestions and nowhere else: the Person view,
@@ -1114,201 +903,36 @@ through it, so the viewer and `has:face`/`faces:N` cannot disagree, and a new re
 table goes through it too. A Picasa face no INI names counts as a face under that rule, with
 detection on or off: left out, it would hide the detection lying over it.
 
-There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without ICU (a native
-dependency this project does not take), so **case-insensitive matching is done in Rust**, not
-in SQL.
+There is no `COLLATE NOCASE` anywhere and `lower()` is ASCII-only without SQLite's ICU
+extension (C, which this project does not take), so **case-insensitive matching is done in
+Rust**, not in SQL.
 
 ### Styling
 
-Almost every colour is a token in `ui/src/tokens.css`, in a light and a dark block selected by
-`data-theme` on `<html>` plus a theme-independent scales block for the colours that are never
-themed, for two different reasons: `--photo-line`, `--shadow-ink`, and `--scrim` where it lies
-over a photo (a face's name plate in the viewer, the dimming outside a crop) are drawn onto the
-photo itself, which is never themed either, so there is nothing for a second block to vary;
-`--shadow-menu`, `--shadow-dialog`, and `--scrim` where it dims the app behind the Settings
-dialog fall on `--surface` or `--chrome`, which *are* themed, but are dark ink by design in both
-themes - a shadow or a scrim reads dark against a light UI too. The viewer's black ground is a
-literal by design, not an oversight: a
-photo is judged against black regardless of theme, so it is the one colour literal
-`no-literals.test.ts` allows, and only there, only once. That test also fails on a removed
-variable name, a glyph icon, and now (after the reskin's last hardening pass) a named colour
-(`white`/`black`) or a `color-mix`/`oklch`/`oklab`/`lab`/`lch` function used as a component
-colour, and any `var(--x)` a component reads that `tokens.css` does not declare (`--sidebar-width`,
-set by a `style:` binding in `App.svelte`, is the one exception). It does not catch a colour in
-an inline `style=` attribute or written in a form its regex does not know. `tokens.test.ts`
-holds the palette to WCAG contrast, light/dark parity and the dark-after-light block order
-(equal specificity on `<html>`, so source order is what lets dark win). Icons are `Icon.svelte`
-over vendored Lucide path data in `lib/icons.ts`; a new icon is copied from `lucide-static` and
-its licence is already in `THIRD-PARTY-NOTICES.md`.
+Every colour is a token in `photon-ui`'s `theme/tokens.rs`: a light and a dark `Palette`, and
+the colours that are never themed, for two different reasons. `PHOTO_LINE`, `SHADOW_INK`, and
+`SCRIM` where it lies over a photo (a face's name plate, the dimming outside a crop) are drawn
+onto the photo itself, which is never themed either; `SHADOW_MENU`, `SHADOW_DIALOG`, and
+`SCRIM` where it dims the window behind a dialog fall on themed ground but are dark ink by
+design - a shadow or a scrim reads dark against a light window too. The viewer is dark in
+both themes (its glass, `GLASS`, and the dark palette for what stands on it), and its black
+ground is the one colour written where it is used: a photo is judged against black whatever
+the theme. The tokens' tests hold the palette to WCAG 2's contrast where each colour is used.
+Icons are `icons.rs`, Lucide's path data rasterised by egui's SVG loader and tinted with a
+token; a new icon is copied from `lucide-static`, whose licence is already in
+`THIRD-PARTY-NOTICES.md`.
 
-The theme blocks match any element, which is how the viewer is dark in both themes
-(`data-theme="dark"` on its root). An inherited property set from a token on `:root` (`color`,
-`accent-color`) is computed there, in the app's theme, so a themed subtree must set it again on
-its own root - which is why `accent-color` is declared again on the bare `[data-theme]`
-selector rather than only on `:root`.
+**A loop or a timer is worth asking what already-known-broken path it now drives** - the
+Svelte rubber band's missed teardown was a stale rectangle until autoscroll gave it a loop,
+and then it scrolled to the end of the library rewriting the selection. Anything per-frame
+is worth the same question about time: multiply by the frame's own duration, or it runs
+twice as fast on a 120Hz screen as on a 60Hz one.
 
-The theme choice lives in the `settings` table; `theme-boot.js` applies a `localStorage`
-mirror before first paint because the database answers too late, and it is a file rather than
-an inline script because the CSP forbids inline scripts. The database wins when the two
-disagree. `createTheme` is generation-counted like `LibraryStore`, because the singleton
-outlives an App remount. The native title bar is themed twice, on purpose: by `setup` in
-`app.rs`, from the stored choice, as soon as the library has opened, and again by the UI on
-every change. The mirror cannot reach the window, and the UI's own call only lands once the
-webview has loaded and asked for the setting, so without the first a pinned theme opened under
-the desktop's title bar. `System` is `None` in both, never the scheme resolved in code: `None`
-is what lets the title bar keep following the desktop while photon runs.
+### The window (`photon-ui`)
 
-**A hidden sidebar is still there.** The top bar's first button and Ctrl+B
-(`togglesSidebar`) close its two columns and stand it out of the flow at the width it had,
-`visibility: hidden` and `inert` (`.no-sidebar` in `App.svelte`). Not `display: none`, which
-resets the list's scroll position, and not a column of no width, which lays the whole list
-out again as a sliver: unseen at its own width it goes on following the grid, and comes back
-where it was. That is why `.sidebar`, `.splitter` and `.content` each name their grid column -
-placed by order, taking one out of the flow moves the photos into its column. Hiding closes
-the sidebar's menus and moves the focus to the photos *before* the list is inert, which is
-also what stores a name being typed in a rename field. And anything that needs a row of the
-list shows the sidebar first: "Rename in photon…" on a grid header does
-(`renameFolderFromGrid`), because an inert list silently refuses the focus.
-
-**The sidebar's width and open groups are in `localStorage` alone** (`lib/sidebar.ts`), not
-in the settings table: they are how this window is laid out on this machine, and read there
-they are known before the first paint, with no mirror to keep in step. The width is stored
-when a drag or a key sets it, never when a narrow window clamps it. A sidebar rename field
-closed from the keyboard hands the focus to its row (`backToRow`; to the grid, when the rename
-was begun from a header there), and only while the focus is
-on `<body>`: the field is removed while focused. While its write runs a field is `readonly`,
-not `disabled`: one editor serves every row of its list, so a second rename begun during the
-first one's write opened a disabled field that could not take the focus, and the name typed
-for it went to the grid, where `h` hides the selected photo. And a held Enter does not press a
-sidebar row twice (a listener on the list): the focus handed to a row arrives under a key
-that is still down.
-
-**A dialog belongs in `App.svelte`, not in the component that opens it.** `covered` makes the
-topbar, sidebar, splitter and `<main>` `inert` while an overlay is up, and the grid is inside
-`<main>`: a dialog mounted there is made inert *by its own opening* - Tab walks out of an
-`aria-modal` dialog into the tiles and the gear, and Settings can then be opened on top of it.
-A new overlay renders beside `Settings`, counts towards `covered`, and hands focus back when it
-closes - after `await tick()`, because `<main>` is inert until the DOM catches up and focusing
-an inert element silently does nothing. The grid's keys live on its viewport, so a dialog that
-closes onto `<body>` leaves the arrow keys, Enter and Escape dead until the user clicks.
-A dialog opened **over the viewer** (the person dialog, naming a face) has one more thing to
-stop: the viewer's keys live on `<svelte:window>`, not on anything `inert` can reach, so typing
-"h" in the name field would hide the photo behind it and the arrows would step past it. The
-dialog stops the propagation of every `keydown` inside it, and the viewer ignores every key
-while `paused` (App passes `personPicker.visible`) for the key that arrives with focus on
-`<body>`; the viewer itself sits in a `display: contents` wrapper made `inert` while the dialog
-is up, so Tab cannot walk out of the dialog into its controls.
-
-**The keys are listed in one place, `lib/shortcuts.ts`,** which the `?` sheet
-(`ShortcutSheet.svelte`) and Settings → Shortcuts both draw. `shortcuts.test.ts` reads the
-key handlers' source and fails on a key a handler answers that the list does not name, and on
-a listed key no handler answers - but only in the files its `ANSWERED_IN` names, so a handler
-in a new file is added there with its group, and it cannot check the wording: a key whose
-meaning changes needs its row changed. The sheet is the one overlay that opens over the
-viewer *and* over compare, so both sit in an `inert` `display: contents` wrapper while it is
-up and the viewer is `paused`, as under the person dialog; it does not open over another
-dialog, or while the grid holds a rubber band (`Grid.dragging`, the "fourth ending" below).
-
-**A section's header is drawn twice.** In its row, and - once that row has scrolled away -
-pinned over the top of the grid (`pinnedHeader`, a sticky box of no height, so the rows it
-lies over keep their numbers); one snippet draws both, and both open the folder's menu
-(`FolderMenu.svelte`, the one the folder's sidebar row opens, so the two cannot come to offer
-different things - its Rename is the sidebar's inline field, reached through
-`FolderTree.renameFolder`). Because something now lies over the grid's top edge, "in view" is
-below it: `scrollToOffset` goes through `scrollIntoGrid` ('nearest') and `scrollToStart`
-('start') with the header's height as the inset, or the row the arrow keys had just selected,
-or the folder a sidebar click jumped to in the middle of a month, was half under the header. A
-press on the pinned header starts no rubber band, since it would begin on photos nobody can
-see. The folder at the top of the grid is also published as `gridPlace.folderId`
-(`grid-place.svelte.ts`), which the sidebar marks (`.here`, a bar - not `.active`'s fill, which
-is the current *view* and is on screen at the same time) and scrolls to keep in view, except
-while the pointer is over the list or a name is being typed in it. Not "while the focus is in
-the list": a clicked folder row keeps the focus, and the list would then stop following the
-very scroll that click began.
-
-**A context menu is `Menu.svelte`**, which every one of them is drawn by (the tile's, the
-sidebar's three, the viewer's, the People page's merge list): the surface, the placing, the
-keys and the focus. Its items are the caller's plain markup (`<button role="menuitem">`, with
-`.hint`, `.sep`, `.heading`, `.sub`, `.note` and `.danger` styled from the component through
-`:global`), and whoever opens it still holds its state and closes it. It is placed by
-`use:fitMenu` (`lib/menu-place.ts`), never by binding `left`/`top` to the pointer: it opens
-down-right and flips on an axis where that would leave the window, re-placing itself when it
-grows (the tile menu's copies line arrives after it opens) or the window resizes; a menu bound
-straight to the pointer is clipped near the bottom or right edge. The arrows, Home and End move
-through the enabled items (`menuStep`). **Every plain key pressed in a menu stops there**
-(`menuOwnsKey`): the viewer listens on the window, and with its menu open an `h` hid the photo
-behind it. Escape is let through, since the opener's window listener is what closes the menu,
-and so is a chord, since App must still prevent Ctrl+A. On closing, the menu hands the focus
-back to what had it, but only while the focus went with the menu - an item that opened a
-dialog or focused the grid has already said where it goes - and the grid passes `restore` so
-it is the viewport that gets it, never the right-clicked tile: a tile must not be focused from
-script (it draws a ring beside the selection's) and is recycled as the grid scrolls. The
-opener keeps one `{#if}` block and replaces the point, so a menu re-opened elsewhere while open
-is not remounted: the effect that takes the focus reads `at` for that, and without it the
-second right-click left the focus on the tile, where an arrow moved the selection and `h` hid
-photos behind the open menu. The function keys are let through with Escape and the chords
-(F11). A component with a scoped `button`
-rule (the People page) still gets the menu's look, because the menu's item selectors out-rank
-it; a new item class has to be spelled `button[role='menuitem'].x` to do the same, as `.sub` is,
-and a rule for a child must set every property it relies on - the viewer's own scoped `.sep`
-(the toolbar's upright) gave the menu's separator its 1px width until `width: auto` was said.
-
-**A pointer gesture has three endings, not two.** `pointerup` finishes it and Escape abandons
-it, but a browser that claims the gesture for itself - a touchscreen pan, which Windows
-laptops have - sends **`pointercancel`** and nothing else. Every drag needs one teardown that
-all three reach: `App.svelte`'s splitter wires `onpointercancel={endResize}`, and the grid's
-rubber band reaches `abandonBand` the same way. **`inert` does not stop a
-`requestAnimationFrame`**, so an overlay opening over a drag is a fourth ending - the grid's
-key handler honours nothing but Escape while a band is live, for exactly that reason.
-
-The reason this is here rather than in the band's own spec: the missed teardown was a *stale
-rectangle* until autoscroll gave it a loop to drive, and then it scrolled to the end of the
-library rewriting the selection, with a pointer id it never cleared blocking every later drag.
-A new loop or timer is worth asking what already-known-broken path now drives it. Anything
-per-frame is worth the same question about time: multiply by the frame's own duration, or it
-runs twice as fast on a 120Hz screen as on a 60Hz one.
-
-**A shrinking scroll container clamps `scrollTop` for you, synchronously.** When a scroll
-container's content gets shorter, the browser clamps `scrollTop` to the new maximum during the
-very layout that reading `scrollTop` forces - before any script gets to react. A guard that
-asks "has the viewport moved since I pinned it?" by comparing a saved `scrollTop` to the
-current one is therefore always false on a size decrease: the browser already moved it, on the
-guard's own read, so the guard sees no movement to restore. That shipped to a whole-branch
-review before being caught, in the code that restores scroll position after the tile size
-changes. Anything that restores a scroll position after changing content height needs to ask
-what the *content* did, not what `scrollTop` reads now.
-
-The focus-ring suppression is `.focus-container[tabindex='-1']:focus-visible { outline: none }`,
-not the bare `[tabindex='-1']` it once was: a roving-tabindex widget's items carry
-`tabindex="-1"` too, and an unscoped rule strips their ring so the keyboard user cannot see
-where they are. A container focused from script - the viewer, a dialog, an open menu - therefore
-has to be given `.focus-container` itself, or it draws a ring around the whole window;
-`tokens.test.ts` is the tripwire, failing both on the unscoped form coming back and on the
-scoped one going away. A tile and the timeline are deliberately *not* classed: they are never
-script-focused, so they rely on that rather than on a ring hidden after the fact - which is why
-a tile's selection ring comes from `.selected` rather than from focus, as `Tile.svelte` says
-where it draws it. It is drawn inside the tile, not as an outline around it, because the grid
-scrolls a row flush to the top of its container (ArrowUp, Home, Recent's first row), which clips
-anything sitting outside the tile's own box.
-
-The look cannot be tested here, but it can be seen without launching the app: `cargo run -p xtask --
-screenshots` builds the UI, serves `ui/dist` itself with `mock.js` (in
-`crates/xtask/screenshots/`) standing in for Tauri's IPC, and writes forty-four PNGs, in both themes,
-to `target/screenshots/` with headless Chromium. It claims a Windows user agent and maps
-`photon.localhost` to its own port, because `mediaUrl` uses `http://photon.localhost` there
-and no plain browser can load `photon://`. It is Chromium's rendering, not WebKitGTK's or
-WKWebView's, so it replaces no item of the smoke checklist, and it is not run in CI. A new
-IPC command must be given an answer in `mock.js` (`canned`, or `SILENT` when nothing draws its
-result): a test in `screenshots.rs` reads `api.ts` and fails otherwise, because an unanswered
-command resolves to null and the screenshot of what the UI makes of that reads as a styling
-bug. A new surface worth seeing is a new entry in `SHOTS` and, if it needs a click, a new
-action in `mock.js`.
-
-### The native UI (branch `native-ui`)
-
-`crates/photon-ui` is the interface being rebuilt in Rust on egui and wgpu, in place of
-`ui/` and the Tauri shell (spec `2026-10-09-photon-native-ui-design.md`). Its binary is
-`photon-native` until the switch-over. **It is not launched to verify a change either**:
+`crates/photon-ui` is photon's interface, in Rust on egui and wgpu (spec
+`2026-10-09-photon-native-ui-design.md`), which replaced the Svelte UI and the Tauri shell in
+the switch-over. **It is not launched to verify a change**:
 `cargo run -p xtask -- native-shot` writes the window to `target/screenshots/native-*.png`
 off screen, and those are read. Its library's photos are dated by the day their copies
 are given (`FOLDERS` in `tests/screenshots.rs`): they carry no capture date, and copied
@@ -1356,8 +980,18 @@ the rows are drawn at `row.top - position`; egui's `ScrollArea` is not used for 
 its offset is an `f32`. Several rules of the Svelte grid have no successor (`placeIn`,
 `viewTop`, pages, mounting): the spec of the slice lists them so they are not ported.
 
+**A tile is drawn wider than its size says.** The size chosen is a nominal width;
+`tile_for` (`grid/layout.rs`) widens it so the columns fill the row (whole pixels, at most
+`TILE_MAX`), and that drawn width is what the rows, the tiles and every hit test are
+measured by. So every row's height moves with every pixel of a window or sidebar resize, and
+a narrower grid is a *shorter* one: a place kept as a number names another photo afterwards.
+The place is kept as a `Pin` - the row at the top by its first photo, and the share of it
+scrolled past (`pin_at`, `pin_top`) - and found again in the new rows whenever the tile or
+the column count changes, not only on a new size. Across a rebuilt index alone it is kept as
+the number it was (below, the year strip).
+
 **A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one
-thread polls every pending `request_async`, as `protocol.rs` learned to. Three rules a
+thread polls every pending `request_async`. Three rules a
 review added, each with its test. A built thumbnail is handed back only under its own key
 (`thumbs/source.rs`): `request_async` answers with the photo's picture as it is *now*, and
 keys recur, so one stored under the key that was asked for would be drawn for another
@@ -1376,17 +1010,11 @@ hold the cutting, and what a second face does is seen only in `native-shot`'s pi
 by shaping with real faces, as the review that found the hyphen did. Not covered: a text
 *field*, and cutting a right-to-left line short at its start.
 
-**The lockfile ties two crates to one `windows` crate, by hand.** gpu-allocator takes any
-version from 0.53 to 0.62 and wgpu-hal exactly 0.62; Tauri brings 0.61 into the same lock,
-and cargo gave gpu-allocator that one, whose Direct3D types are not wgpu-hal's. It fails on
-Windows only, as type errors that name no version. `the_gpu_crates_are_locked_to_one_windows_crate`
-says so on every platform, and its comment says which line of `Cargo.lock` to change.
-
 **A test that reads a file as text reads CRLF on Windows.** The runner's checkout converts
 line endings and `include_str!` hands them over as they are, so a match on text with a `\n`
 in it finds nothing there, and nowhere else: two of this crate's tripwires failed on Windows
 alone for it. Read by line (`lines()`, `trim()`), and give the reader a test that feeds it
-both endings (`the_lockfile_is_read_with_either_line_ending`).
+both endings.
 
 The stored theme and tile size are read in `App::new`, before the first frame, and not by a
 task: read after it, a theme pinned against the desktop's showed the desktop's for a frame
@@ -1434,7 +1062,7 @@ view: **a new caller of a view setter goes through the queue.**
 
 **How the window is laid out is in `layout.json` beside `library.db`** - the sidebar's
 width, whether it is hidden, which groups are open - and not in the settings table, whose
-accessors are photon-core's and which the Tauri photon reads too. It is read before the
+accessors are photon-core's: it is how this window is laid out on this machine. It is read before the
 first frame and written off the UI thread when the user changes one of the three; the
 width is stored as it was dragged and clamped where it is shown.
 
@@ -1452,9 +1080,8 @@ alone; on X11 the window manager places one whose monitor is gone. egui's own me
 not kept (`persist_egui_memory`): photon keeps what it remembers itself. A run asked to
 be fullscreen - the gate's - keeps nothing and corrects nothing (`without_window_kept`),
 and is fullscreen over what was kept (`window_builder`, which eframe applies last). A
-slideshow quit in the middle reopens fullscreen, as the Tauri photon does. The window's
-icon is the installers' PNG (`icons/photon-256.png`, held to the Tauri bundle's by a test
-until sub-project 8 moves the icons).
+slideshow quit in the middle reopens fullscreen, as the Tauri photon did. The window's
+icon is the installers' PNG (`icons/photon-256.png`).
 
 **The sidebar is one list, drawn a window at a time** (`sidebar/list.rs`, a state module,
 and `sidebar/view.rs`). Every row is an `Entry` with what it is (`What`, its identity from
@@ -1483,9 +1110,8 @@ memory, since the application is its only writer - which is why the way back fro
 excursion reads nothing, where the Svelte UI has to read the setting before the switch can
 overwrite it. The launch goes back to it in the frame its first photos are on screen and
 before they are drawn, so there is no frame with the grid at its top for `at_top` to
-remember; a guard for that frame was removed as doing nothing. A run of the gate keeps no
-folder at all (`LastFolder::off`): its programme starts from the top, over a library the
-Svelte photon leaves a folder in.
+remember; a guard for that frame was removed as doing nothing. A run of the probe keeps no
+folder at all (`LastFolder::off`): its programme starts from the top.
 
 **The mark of the folder at the top of the grid is a frame behind the grid**, the sidebar
 being drawn before the grid has taken its place, and the application asks for the frame
@@ -1529,8 +1155,7 @@ other threads, and a search sent in it has not been answered when it returns.
 
 **The search box is three modules.** `search_box.rs` (state) holds the text and the send
 that typing has made due, on a clock that is a number; `search_help.rs` (state) is the
-grammar's list, string for string `search-help.ts`'s, held to `Query::terms` and to that
-file by its tests; `search_bar.rs` draws egui's own text field, the two buttons and the
+grammar's list, held to `Query::terms` by its tests; `search_bar.rs` draws egui's own text field, the two buttons and the
 panel. A typed search is a `Step::Search` on the views' queue, taking the place of a search
 still waiting there (`Step::is_search`) and of nothing else. **Whatever switches the view
 tells the box first** (`App::go`: `cancel` before anything, `leave` as the switch is
@@ -2163,9 +1788,8 @@ the engine's `RENDERING` lock, which a turned photo's copy waits for.
 the crate Tauri's dialog plugin is built on; on Linux the XDG desktop portal over D-Bus
 through ashpd, the client rfd uses there (pure Rust, no GTK, on `async-std` - with
 tokio, zbus panics with no runtime running), and where the portal does not answer,
-`zenity`. **rfd is not built on Linux**: there it must have GTK or the portal and its
-build script refuses both, and in a build of the whole workspace Tauri's plugin asks for
-GTK. Going to the portal itself also tells a picker that could not be opened from a
+`zenity`. **rfd is not built on Linux**: there it must have GTK or the portal, and its
+build script refuses both. Going to the portal itself also tells a picker that could not be opened from a
 cancel, which rfd answers alike: no portal and no `zenity` is said (`NO_PICKER`), a
 cancel is not. "Choose…" beside the export's destination and beside Settings' folder
 field opens it, and the folder chosen goes into the field and is asked about as a typed
@@ -2311,7 +1935,7 @@ viewer's it was turned in (a view made anew at every opening).
 **The picture is the preview, then the full picture, and photon scales the full picture
 itself.** The preview is the cache's 1600-pixel thumbnail (`Thumbs::previews`, a second
 store over `EngineThumbs::preview`). The full picture is `commands::viewer_picture`, a
-command the Tauri photon does not call: `render_picture` behind `RENDERING`, as pixels.
+command the Tauri photon never called: `render_picture` behind `RENDERING`, as pixels.
 It is asked for on a `Latest` - one at a time, the last one wins, since a decode cannot
 be taken back - and **after a rest of 130 ms on a photo stepped to** (`Viewer::rested`):
 a held arrow key passes photos faster than they decode. **egui's wgpu renderer gives a
@@ -2595,7 +2219,7 @@ two pictures of one photo are of one colour.
 What is *not* converted, each on purpose or for want of a decision: the preview (so a
 wide-gamut photo changes colour a little when its full picture lands, as it does in the
 Tauri viewer), the grid's thumbnails, an export and the copy for the clipboard - whether
-those should be is a decision about photon-core and the Tauri photon, not this viewer's. (It
+those should be is a decision about photon-core, not this viewer's. (It
 is not a small one: a re-encoded export of a Display P3 photo carries Display P3's numbers
 and no profile, so every other program shows it duller. That is older than the native
 viewer.) And "converted" means converted to sRGB's numbers: whether the system takes the
@@ -2752,7 +2376,7 @@ faces of a test's library are written through the library's own calls before the
 (`looked` in `tests/faces.rs`: `write_face_batch` for every photo, so the launch's pass
 finds none to detect); a picture's are written after it, through a second connection
 (`shot_over`), because the pictures' library is one the application has scanned itself -
-rectangles placed for the picture, as `mock.js`'s are, one of them on the skyline. And
+rectangles placed for the picture, as the screenshot mock's were, one of them on the skyline. And
 **a read can be made to fail**, which the plan had said it could not: a second connection
 renames the table out from under it (`tests/faces_edges.rs`, which holds what a review
 found). Not tested: a Mac's Control with the first button on an outline, which asks for
@@ -2926,9 +2550,8 @@ turns it, and turned again in `frame` it held the window five milliseconds a cal
 tests turn it while they wait (`idle`). **`open` waits for nothing**: it is called on the
 window's thread (on a Mac it must be the main one), and Media Foundation's engine takes a
 second or two to know a video's size on a runner - the player says when it is `ready`, and
-what went wrong after it was opened by `failure`. **Known, and left**: the `windows` crate links Media Foundation's DLLs at load time, so a
-Windows "N" edition without the Media Feature Pack cannot start photon-native at all - the
-packaging's to answer (sub-project 7). Every backend lets go of
+what went wrong after it was opened by `failure`. A Windows "N" edition without the Media Feature Pack has no Media Foundation, and starts all
+the same: its DLLs are delay-loaded (below, the installers). Every backend lets go of
 what it holds when it is dropped (GStreamer to `Null`, the Media Engine `Shutdown`), and
 opens the file to read it alone. **`tests/video` is a binary of its own, with no libtest
 harness** (`harness = false`, `libtest-mimic` on one thread): AVFoundation's player item
@@ -3040,8 +2663,7 @@ off the one kept, which a probe showed is no proof it was drawn.
 
 **Settings is a dialog of the dialog layer** (spec `2026-10-15-photon-native-pages-design.md`;
 `settings.rs` for what it holds and says, `settings_view.rs` for what is drawn,
-`app/settings_dialog.rs` for what it reads and writes): `Settings.svelte`, its words held
-to that file by a test that reads it. One dialog at a time, so **a question in it is asked
+`app/settings_dialog.rs` for what it reads and writes): `Settings.svelte`, word for word. One dialog at a time, so **a question in it is asked
 in its row** - Find faces switched off with people named turns its row into
 `switchOffWarning` with Cancel and "Stop finding faces", the keyboard on Cancel - and the
 library is asked how many are named first (`face_data_summary`, off the window's thread):
@@ -3070,8 +2692,7 @@ the press is tested, and `put` itself).
 before, nor again while Settings is open (a failed count is asked again when the section
 is left and come back to); a row closes Settings and is a search, made as a sidebar row's
 is (`App::go`, the search box told). **The keys are listed in one place, `shortcuts.rs`**,
-the Svelte list less what this window does not answer yet (copying and Reveal, sub-project
-7), and a test reads the native handlers' sources - `Key::…` in the files its
+and a test reads the native handlers' sources - `Key::…` in the files its
 `ANSWERED_IN` names, read by line, not their tests - and fails on a key a handler answers
 that the list lacks and on a listed key nothing answers. A handler in a new file is added
 there with its group; the wording no test checks. **`?` opens the list as a dialog of the
@@ -3354,8 +2975,7 @@ colour since sub-project 1. And the splitter is lit under the pointer, while it 
 when the keyboard brought the focus to it, not while it merely still has the focus a
 press gave it (`Shell::pointer_focus`): egui has no `:focus-visible` of its own.
 
-**photon-native's installers are built by `xtask package`, in `native-packages.yml`, as
-artifacts and never a release** (spec `2026-10-16-photon-native-platform-design.md`,
+**The installers are built by `xtask package`, in `native-packages.yml`, as artifacts** (spec `2026-10-16-photon-native-platform-design.md`,
 decision 8): a `.deb` (`dpkg-deb`, its `Depends` read off the binary by `dpkg-shlibdeps`),
 an AppImage (`linuxdeploy`, which carries the libraries the binary links - GStreamer's
 among them, never its plugins; `AppRun` points GStreamer at the host's), a `.dmg` for each
@@ -3366,8 +2986,7 @@ it, the opt-in desktop shortcut kept). The program is installed as `photon` unde
 Tauri photon's identifier. The text of every file an installer carries is a pure function
 of `package.rs` and tested as text; the tools run in the workflow alone, which reads what
 they made: the `.deb`'s links (no GTK, nothing unresolved), the AppImage's desktop entry
-and no plugins in it, the app's signature, the MSI's tables. photon-native is built on its
-own there (`-p photon-ui`), not with the workspace, whose Tauri plugins would bring GTK.
+and no plugins in it, the app's signature, the MSI's tables.
 **Media Foundation is delay-loaded** (`build.rs`, `/DELAYLOAD` for `mfplat.dll` and
 `mfreadwrite.dll`, held by the workflow's `dumpbin /imports`) and loaded by `video::mf`
 before any call into it (`installed`), so a Windows "N" edition without the Media Feature
@@ -3429,51 +3048,31 @@ no-break spaces are written as plain ones (`plain`): the faces photon draws with
 system's, and not each has that glyph. Folder names keep `natural_cmp`, the grid's own order
 (the spec says why). The words photon writes itself stay English.
 
-**`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
-it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
-close by themselves, for about two minutes, on a desktop that has to stay awake and
-untouched; `--dry-run` builds everything and launches nothing. It is run by a person, or on
-their word at the time, because the interval between two frames does not exist without a
-compositor. It measures `photon-native --probe` (the scroll programme, `probe.rs`, a state
-module) against the Svelte grid, which is given the same programme by
-`crates/xtask/gate/svelte-probe.patch` in a throwaway worktree (`target/gate-svelte`) and
-never in `ui/`; `the_svelte_probe_still_applies` fails when `Grid.svelte` or `ipc.rs` has
-moved from under the patch. Both run over `target/gate-fixture` (`fixture-library`: 300,000
-rows on a drive recorded as unplugged, every thumbnail cached, so the engine has nothing to
-do at launch). The gate asks the builder whether the fixture there is finished and its own
-(`fixture --check`, `fixture::BUILDER`) and builds it again when it is not: **move
-`BUILDER` with any change to what a fixture is.**
-
-**The gate is only worth its table if the two columns are of the same thing**, and its
-first version was not, in ways a review found by reading the two programmes side by side.
-Kept so, each with a test: the programme moves the native grid through `GridView::move_to`,
-taken with the next frame's input - set directly, the grid never knew it had moved, while
-the Svelte grid's scroll event always tells it, so the native one skipped the hold after a
-jump that the Svelte one paid; every jump is made from rest (`PAUSE_SECS`), or it is the
-last of a stream and what is timed is each grid's own hold; the sweep ends short of the end
-(`SWEEP_SHARE`), where no jump has been; each application is launched once and thrown away
-before the launch that is measured, since the Svelte photon runs under directories of its
-own that a first launch has to fill; and `judge` fails a table whose runs differ in photos
-or window, whose given refresh rate neither grid keeps, or in which any tile was a mark
-(a library whose thumbnails are not where the application looks "shows its pictures" at
-once). A new step is written into both programmes, `probe.rs` and the patch's `probe.ts`.
+**`photon-native --probe` runs a scroll programme over a library and reports how each frame
+went** (`probe.rs`, a state module), over `xtask fixture-library`'s 300,000 rows on a drive
+recorded as unplugged, every thumbnail cached, so the engine has nothing to do at launch.
+Until the switch-over `xtask grid-gate` ran it against the Svelte grid given the same
+programme, which is how the window's grid was shown to keep up with the web view's; the
+gate went with the Svelte grid. It launches the application, so it is run by a person, or on
+their word at the time. The fixture's builder says whether a fixture is finished and its own
+(`fixture --check`, `fixture::BUILDER`): **move `BUILDER` with any change to what a fixture
+is.**
 
 **A test that counts frames drives the application as an event loop does**
 (`the_programme_runs_over_a_fixture_to_its_report`): a frame only when egui's repaint
 callback asked for one, on a clock that jumps over the time nothing did. Stepping
-`egui_kittest` draws a frame at every step, asked for or not, and hid what the gate's first
+`egui_kittest` draws a frame at every step, asked for or not, and hid what the probe's first
 count of idle frames got wrong: egui draws a second frame after every frame asked for at
 once, a frame asked for after a delay comes one frame early, a scroll leaves two frames of
 its own behind (`SCROLL_SETTLE_MS`, `VISIBLE_DEBOUNCE_MS`), and a nudged mouse is three
-frames, not one (`ECHO_MS`). Each would have failed the gate on a perfectly still grid.
+frames, not one (`ECHO_MS`). Each would have read as a busy grid that was perfectly still.
 Anything that asserts a still interface draws nothing is tested through that loop.
 
 **Two checkouts do not share a `CARGO_TARGET_DIR`.** Cargo names a workspace member's
 build by its place in the workspace, not by where the checkout is, and decides whether it
 is fresh from the sources of whichever checkout built it last: a second checkout then runs
-the first one's binary without a word. It happened twice while the gate was built (a
-reviewer's copy, and the gate's own worktree running this tree's xtask). The gate builds
-its worktree into `target/gate-svelte-target` for that reason.
+the first one's binary without a word. It happened twice while the grid gate was built (a
+reviewer's copy, and the gate's own worktree running this tree's xtask).
 
 ## Conventions
 
@@ -3509,15 +3108,19 @@ its worktree into `target/gate-svelte-target` for that reason.
   with them; a name is never written to an INI or a photo); Picasa's albums are read from its
   INI, as noted above, and live nowhere else. An edit never touches the photo: it is rendered on the way to the
   screen.
-- **No system library dependencies beyond the web view.** photon's C is vendored and compiled in with `cc`:
+- **No system library dependencies beyond the system's own.** The window links what every
+  desktop has - its graphics (Vulkan, Metal or Direct3D, through wgpu), its video framework
+  (GStreamer's core libraries on Linux, its plugins looked for at run time; AVFoundation;
+  Media Foundation, delay-loaded), and on Linux D-Bus spoken in Rust for the portal and the
+  file manager. photon's C is vendored and compiled in with `cc`:
   SQLite, libwebp and libjpeg-turbo (the mozjpeg crate, for the scaled decode of a JPEG's
   preview and the encode of an edited photo's full-size render, `photon_core::turbo`). Nothing
   wrapping a C/C++ SDK: that bar is what made packaging tractable on three platforms, and it is
   why XMP and INI parsing are hand-rolled or pure-Rust. nasm is a build tool on the CI and
   release runners only, for libjpeg-turbo's x86 SIMD code and rav1d's x86-64 assembly; a build
   without it still works, as plain C and plain Rust, because rav1d's assembly is the opt-in
-  `avif-asm` feature (it fails to build without nasm rather than falling back). Release turns
-  it on for every x86-64 installer and never for arm64, where rav1d 1.1.0's published assembly
+  `avif-asm` feature (it fails to build without nasm rather than falling back). The
+  installers' workflow turns it on for every x86-64 installer and never for arm64, where rav1d 1.1.0's published assembly
   does not build; CI tests photon-core through it. A feature cannot be limited to a target, so
   that is the workflows' job, not Cargo's. A new C dependency is a spec-level decision
   (`2026-09-29-photon-turbo-jpeg-thumbnails-design.md` is the worked example). Face detection
@@ -3544,12 +3147,12 @@ its worktree into `target/gate-svelte-target` for that reason.
   thumbnail the way the thumbnail service's `catch_unwind` handles other formats (see
   `crates/photon-core/src/avif/av1.rs`'s module doc and the spec's "Limits" section);
   `thumbs/inflight.rs` keeps that from repeating on every launch.
-- **Never launch the GUI to verify a change.** Verification is the test suites plus
-  `svelte-check`; anything needing eyes goes on `docs/smoke-checklist.md`.
+- **Never launch the GUI to verify a change.** Verification is the test suites and
+  `native-shot`'s pictures; anything needing eyes goes on `docs/smoke-checklist.md`.
 - **A new test must be demonstrated to fail with its change reverted.** A compile error is not
   proof — it shows a symbol was missing, not that an assertion discriminates behaviour. Tests
   that pass with and without the change have shipped here more than once. When a change
-  genuinely cannot have one — a race with no seam, a Svelte effect — say so in the commit
+  genuinely cannot have one - a race with no seam, a picture only a person can judge - say so in the commit
   message and why, rather than adding a test that passes either way. **A probe that passes is
   a finding, not a formality:** it has exposed a missing test (the slideshow's still-loading
   case) and a line whose comment called it load-bearing when it did nothing (an `IS NOT NULL`
@@ -3576,15 +3179,12 @@ its worktree into `target/gate-svelte-target` for that reason.
 
 ## Releasing
 
-The version lives in three files — the workspace's `Cargo.toml` is authoritative (since
-photon-native's installers are built without Tauri's bundler), with
-`crates/photon-app/tauri.conf.json` and `ui/package.json` agreeing — plus the regenerated `Cargo.lock`. Bump all
-three, regenerate both lockfiles in place with `cargo update -p photon-core -p photon-app -p
-xtask --offline` and `npm install --package-lock-only` (a release commit touches exactly five
-files), run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit as `chore(release): X.Y.Z`,
-then push the tag. The tag push triggers `.github/workflows/release.yml`, which builds all
-platforms and creates a **draft** release; verify the six artifacts attached (two `.dmg`,
-`.deb`, AppImage, `.msi`, `SHA256SUMS`) before publishing it.
+The version lives in the workspace's `Cargo.toml` alone, plus the regenerated `Cargo.lock`:
+bump it, regenerate the lock in place with `cargo update --workspace --offline` (a release
+commit touches exactly two files), run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit
+as `chore(release): X.Y.Z`, then push the tag. `release.yml` built the Tauri photon and went
+with it; the window's release workflow is the switch-over's next pull request, and until it
+lands `native-packages.yml` builds the installers as artifacts and no tag makes a release.
 
 Release commits go straight to `main`. A schema bump makes the release a minor. The generated
 notes are a list of PR titles; replace them with hand-written ones in the shape of v0.14.0 and

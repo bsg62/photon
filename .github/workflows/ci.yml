@@ -46,17 +46,13 @@ jobs:
           New-Item -ItemType Directory -Force D:\tmp | Out-Null
           "TEMP=D:\tmp" >> $env:GITHUB_ENV
           "TMP=D:\tmp" >> $env:GITHUB_ENV
-      - name: Install Linux webview dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
-      # The native window plays a video through GStreamer: its development files to link
+      # The window plays a video through GStreamer: its development files to link
       # against, and the plugins that read an MP4 and decode H.264 and HEVC, which
       # `tests/video` needs - without them every test there passes over itself.
       - name: Install GStreamer
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update
           sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       # libjpeg-turbo's x86 SIMD code is nasm assembly. Without nasm, mozjpeg-sys builds plain
@@ -103,15 +99,16 @@ jobs:
       # picture (`metadata` and `scanner` read AVIFs too, but only their containers). All of
       # photon-core's tests a second time was two minutes on Windows for the same answer.
       # The macOS runners are arm64, where it does not build (photon-core's Cargo.toml), so
-      # there it is only built, for the x86-64 dmg release.yml cross-compiles.
+      # there it is only built, for the x86-64 dmg native-packages.yml cross-compiles.
       - if: runner.os != 'macOS'
         run: "cargo test -p photon-core --features avif-asm --lib -- avif:: colour:: decode:: edit::"
       - if: runner.os == 'macOS'
         run: |
           rustup target add x86_64-apple-darwin
           cargo build -p photon-core --features avif-asm --target x86_64-apple-darwin
-      # Reads the three real version files (xtask's unit tests only cover string literals),
-      # so drift fails on the pull request rather than after a release tag already exists.
+      # Reads the real Cargo.toml (xtask's unit tests only cover string literals), so a
+      # broken version or missing metadata fails on the pull request rather than after a
+      # release tag already exists.
       - if: runner.os == 'Linux'
         run: |
           cargo run -p xtask -- versions
@@ -121,40 +118,3 @@ jobs:
       # Windows and a large part of each platform's cache: one platform is enough.
       - if: runner.os == 'Linux'
         run: cargo bench -p photon-core --bench grid --no-run
-
-  # Builds the release path (frontend embedded, `tauri::is_dev()` false), which the debug
-  # builds above never exercise. Ubuntu only and unbundled: installers are built by
-  # release.yml, which runs on tags rather than on every pull request.
-  release-build:
-    name: release build (ubuntu)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Linux webview dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
-      - run: npm ci
-      - run: npm run -w ui build
-      - run: npm run tauri build -- --no-bundle
-
-  ui:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run -w ui build

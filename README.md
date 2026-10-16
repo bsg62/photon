@@ -14,7 +14,7 @@ Download the installer for your system from the [latest release](https://github.
 | System | File | Install |
 |---|---|---|
 | Linux | `.AppImage` | `chmod +x photon_*.AppImage && ./photon_*.AppImage` |
-| Linux (Debian, Ubuntu) | `.deb` | `sudo apt install ./photon_*.deb` — pulls in webkit2gtk-4.1 and libsoup-3 |
+| Linux (Debian, Ubuntu) | `.deb` | `sudo apt install ./photon_*.deb` — pulls in GStreamer and its plugins for video |
 | macOS | `.dmg` | Open it and drag photon to Applications. Take the `aarch64` file for Apple Silicon, `x64` for Intel. |
 | Windows | `.msi` | Run it. A desktop shortcut is made only if you tick the box on the install-folder page (or run `msiexec /i photon_*.msi DESKTOPSHORTCUT=1`); the Start menu entry is always there. |
 
@@ -62,13 +62,11 @@ appear.
 photon indexes JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF. A TIFF holding several pages is shown
 as its first page. AVIF is decoded by photon itself, in pure Rust, including the tiled and
 10-bit photos phones write. An HDR AVIF is shown as standard range without tone mapping, so it
-may look flat, and an animated one shows its still image. The viewer shows full-size AVIFs
-where the system's web view can (Windows, macOS 13 and later, most Linux desktops) and the
-1600-pixel preview elsewhere. Thumbnails of large JPEGs are made with libjpeg-turbo, which
+may look flat, and an animated one shows its still image. Thumbnails of large JPEGs are made with libjpeg-turbo, which
 decodes a photo straight at the size a thumbnail needs. Camera RAW files and HEIC are not read:
 decoding them means shipping a large C library, and photon keeps its C to a few small,
 vendored ones (SQLite, libwebp, libjpeg-turbo), compiled in, so it needs no system libraries
-beyond the system's web view.
+beyond what every desktop has: its graphics, and its video framework for videos.
 
 Adding TIFF, BMP and AVIF does not disturb a library built by an earlier photon. Those files
 simply appear as each folder is walked again, whether that scan is manual or triggered by
@@ -77,7 +75,8 @@ the file watcher; nothing already indexed is re-read and no thumbnail is rebuilt
 **Video:** MP4, M4V, MOV and WebM, played by the system's own video support - photon ships
 no decoder. On macOS everything an iPhone records plays. On Windows, iPhone video (HEVC)
 needs Microsoft's *HEVC Video Extensions* from the Store; without it such a video shows no
-preview and does not play. On Linux the `.deb` pulls in GStreamer's good and libav plugins;
+preview and does not play. On Linux photon plays through GStreamer, and the `.deb` pulls in
+its good and libav plugins;
 everywhere else, the AppImage included, photon uses the ones the system has, so install them
 (`gst-plugins-good` and `gst-libav` on Arch, `gstreamer1.0-plugins-good` and
 `gstreamer1.0-libav` on Debian and Ubuntu) - without them photon shows videos but cannot play
@@ -441,20 +440,10 @@ photon does not look inside a drive's or a network share's recycle bin (`$RECYCL
 bin lies inside a watched folder. Photos an earlier version indexed inside a bin leave the
 library over the next two scans.
 
-### Linux with an NVIDIA GPU
+### Theme
 
-WebKitGTK, the webview photon uses on Linux, crashes on NVIDIA's proprietary driver when its
-DMABUF renderer is on: the window flashes up and photon exits, printing `Error 71 (Protocol
-error) dispatching to Wayland display`. photon detects the driver and sets
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` for itself, so nothing needs to be done. Rendering is a
-little slower with the renderer off. A value you set yourself is always kept, so
-`WEBKIT_DISABLE_DMABUF_RENDERER=0` turns the renderer back on if a later driver fixes this.
-
-### Theme on Linux
-
-photon follows the desktop's light or dark setting, but the system webview (WebKitGTK) does
-not report it on every desktop. If photon stays light on a dark desktop, pin it in Settings →
-Appearance.
+photon follows the desktop's light or dark setting where the desktop says what it is. If
+photon stays light on a dark desktop, pin it in Settings → Appearance.
 
 ### photon is not code-signed
 
@@ -474,31 +463,22 @@ Verify a download against the `SHA256SUMS` file attached to the release:
 
 ## Development
 
-Prerequisites:
-- Rust (stable, 1.93 or newer).
-- Node.js 24 or newer (an LTS release; the UI toolchain — Vite 8, Vitest 5 and
-  `@sveltejs/vite-plugin-svelte` — requires Node 22.12+, 24+ or 26+, so a plain "Node 22" install
-  can be too old depending on its exact patch version. Node 24 is the current LTS line and is
-  used in CI).
-- The [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Linux that means webkit2gtk-4.1, libsoup-3 and librsvg2.
-
-`mise.toml` pins the first two, so `mise install` gets you both at the versions CI builds
-against. The Tauri prerequisites are system packages and still need your own package manager.
+Prerequisites: Rust (stable, 1.98 or newer; `mise.toml` pins it, so `mise install` gets the
+version CI builds with), and on Linux GStreamer's development files
+(`libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` on Debian and Ubuntu,
+`gstreamer gst-plugins-base` on Arch). nasm is optional: with it the x86 builds use
+libjpeg-turbo's SIMD code.
 
 ```bash
-npm install        # installs the UI workspace and the Tauri CLI
-npm run dev        # runs the app with hot reload
-npm test           # UI unit tests
-npm run check      # svelte-check
-cargo test --workspace
-cargo run -p xtask -- versions   # the three version files agree
+cargo run -p photon-ui           # runs photon
+cargo nextest run --workspace    # the tests (cargo test --workspace works too, more slowly)
+cargo run -p xtask -- versions   # the version Cargo.toml states
 cargo run -p xtask -- metadata   # licence and installer metadata are complete
-cargo run -p xtask -- screenshots   # the built UI in headless Chromium, to target/screenshots/
+cargo run -p xtask -- native-shot   # pictures of the window, drawn off screen, to target/screenshots/
 ```
 
-Build a release bundle for this OS with explicit host-appropriate bundles, e.g. on Linux
-`npm run tauri build -- --bundles deb,appimage` (the release workflow selects the right
-targets per platform: `dmg` on macOS, `msi` on Windows).
+The installers are built by `cargo run -p xtask -- package` (`deb`, `appimage`, `dmg`,
+`msi`), as the `native-packages` workflow does on each platform.
 
 Before each release, run the [manual smoke checklist](docs/smoke-checklist.md) on each OS.
 

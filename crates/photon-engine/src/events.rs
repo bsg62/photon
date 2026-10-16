@@ -1,5 +1,4 @@
-//! Events the engine sends to the UI. The Tauri implementation lives in photon-app's
-//! `app.rs`.
+//! Events the engine sends to the window. `photon-ui`'s `events.rs` is the implementation.
 
 use photon_core::scanner::ScanProgress;
 use serde::Serialize;
@@ -94,7 +93,7 @@ pub trait Events: Send + Sync + 'static {
     fn face_progress(&self, event: FaceProgress);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recorded {
     Library(LibraryChanged),
@@ -105,18 +104,18 @@ pub enum Recorded {
 }
 
 /// Test sink that keeps every event.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[derive(Default)]
 pub struct Recorder(pub parking_lot::Mutex<Vec<Recorded>>);
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl Recorder {
     pub fn all(&self) -> Vec<Recorded> {
         self.0.lock().clone()
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl Events for Recorder {
     fn library_changed(&self, e: LibraryChanged) {
         self.0.lock().push(Recorded::Library(e));

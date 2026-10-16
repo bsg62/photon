@@ -226,20 +226,6 @@ pub fn install(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
-    // The path data is a hand copy of `icons.ts`, which stays the source until the
-    // switch-over: a Lucide update there must not leave this file a version behind.
-    #[test]
-    fn every_icon_is_the_svelte_uis() {
-        let source = include_str!("../../../ui/src/lib/icons.ts");
-        for icon in Icon::ALL {
-            assert!(
-                source.contains(&format!("'{}'", icon.inner())),
-                "{} differs from icons.ts",
-                icon.name()
-            );
-        }
-    }
-
     // The dot of a tag and the sun of a picture are filled with `currentColor`, which is
     // black unless the document says otherwise, and the icons are tinted by multiplying.
     #[test]
@@ -254,5 +240,41 @@ mod tests {
         assert!(outline.starts_with("<svg ") && outline.ends_with("</svg>"));
         assert!(outline.contains(r#"fill="none""#));
         assert!(Icon::Star.svg(true).contains(r#"fill="white""#));
+    }
+
+    // The website draws its features' icons from the app's own (`site/index.html`'s sprite,
+    // copied by hand): each symbol is the app's icon of that name, path for path, and every
+    // icon the page uses is a symbol it holds - a `<use>` naming one that is not there draws
+    // nothing and says nothing.
+    #[test]
+    fn the_websites_icons_are_the_apps() {
+        let page = include_str!("../../../site/index.html");
+        let mut symbols = Vec::new();
+        let mut rest = page;
+        while let Some(at) = rest.find("<symbol id=\"i-") {
+            let tail = &rest[at + "<symbol id=\"i-".len()..];
+            let name = &tail[..tail.find('"').unwrap()];
+            let open = tail.find('>').unwrap() + 1;
+            let close = tail.find("</symbol>").unwrap();
+            symbols.push((name, &tail[open..close]));
+            rest = &tail[close..];
+        }
+        assert!(!symbols.is_empty());
+        for (name, body) in &symbols {
+            let icon = (Icon::ALL.iter())
+                .find(|icon| icon.name() == *name)
+                .unwrap_or_else(|| panic!("the app has no icon {name}"));
+            assert_eq!(*body, icon.inner(), "{name}");
+        }
+        let mut used: Vec<&str> = (page.match_indices("<use href=\"#i-"))
+            .map(|(at, _)| {
+                let tail = &page[at + "<use href=\"#i-".len()..];
+                &tail[..tail.find('"').unwrap()]
+            })
+            .collect();
+        let mut held: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
+        used.sort_unstable();
+        held.sort_unstable();
+        assert_eq!(used, held);
     }
 }
