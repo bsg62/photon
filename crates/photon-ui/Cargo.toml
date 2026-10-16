@@ -127,6 +127,8 @@ objc2-quartz-core = "0.3.2"
 block2 = "0.6.2"
 
 [dev-dependencies]
+# eframe's record of the window, read by the test that holds `window::Kept` to its shape.
+egui-winit = { version = "=0.36.2", default-features = false, features = ["serde"] }
 # Whole frames of the application without a window (`eframe`), and off-screen rendering
 # for `tests/screenshots.rs` (`wgpu`).
 egui_kittest = { version = "=0.36.2", features = ["wgpu", "eframe"] }

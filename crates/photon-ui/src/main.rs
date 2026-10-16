@@ -30,6 +30,7 @@ fn main() -> ExitCode {
     };
 
     let probe = args.probe.clone();
+    let fullscreen = args.fullscreen;
     let options = photon_ui::window::native_options(&args, &dirs);
     let run = eframe::run_native(
         "photon",
@@ -38,6 +39,13 @@ fn main() -> ExitCode {
             match App::new(cc, dirs, ::dirs::picture_dir()) {
                 Ok(app) => {
                     tracing::info!(adapter = ?app.adapter(), "started");
+                    // As `window::native_options` keeps nothing of a fullscreen run's
+                    // window, the application puts nothing right in what was kept.
+                    let app = if fullscreen {
+                        app.without_window_kept()
+                    } else {
+                        app
+                    };
                     let app = match probe {
                         // When the harness started this process, for the launch time; a
                         // run by hand has none and the report says so.
