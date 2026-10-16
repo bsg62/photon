@@ -43,6 +43,8 @@ fn manifest() -> &'static Path {
 #[derive(Clone, Copy)]
 struct Setup {
     size: egui::Vec2,
+    /// The folders, as `FOLDERS` holds them.
+    folders: &'static [(&'static str, usize, (i16, i8, i8))],
     /// Two videos at the end of the first folder, played by `Films`.
     videos: bool,
     /// A copy of the first folder's first photo, the last of the second folder's.
@@ -51,20 +53,32 @@ struct Setup {
 
 const WINDOW: Setup = Setup {
     size: vec2(1280.0, 1000.0),
+    folders: &FOLDERS,
     videos: false,
     copy: false,
 };
 
-/// The website's pictures (`site/img`), which stand 1280 by 800 in its page.
+/// The website's pictures (`site/img`), which stand 1280 by 800 in its page: a library
+/// as someone's is, with folders named as people name them - not the other scripts the
+/// rest are named in to test the text - its videos and a copy.
 const SITE: Setup = Setup {
     size: vec2(1280.0, 800.0),
-    ..WINDOW
+    folders: &SITE_FOLDERS,
+    videos: true,
+    copy: true,
 };
+
+const SITE_FOLDERS: [(&str, usize, (i16, i8, i8)); 4] = [
+    ("Dolomites, July 2026", 7, (2026, 7, 14)),
+    ("Spring in the Alps", 5, (2024, 4, 3)),
+    ("Austria in August", 5, (2024, 8, 21)),
+    ("Winter lakes", 6, (2025, 12, 31)),
+];
 
 impl Setup {
     /// How many photos and videos the library holds.
     fn total(&self) -> usize {
-        let photos: usize = FOLDERS.iter().map(|(_, count, _)| count).sum();
+        let photos: usize = self.folders.iter().map(|(_, count, _)| count).sum();
         photos + 2 * usize::from(self.videos) + usize::from(self.copy)
     }
 }
@@ -95,7 +109,7 @@ fn library(pictures: &Path, setup: Setup) {
         .collect();
     photos.sort();
     let mut photos = photos.into_iter();
-    for (folder, count, (year, month, day)) in FOLDERS {
+    for &(folder, count, (year, month, day)) in setup.folders {
         let folder = pictures.join(folder);
         std::fs::create_dir_all(&folder).unwrap();
         for (n, photo) in photos.by_ref().take(count).enumerate() {
@@ -105,7 +119,7 @@ fn library(pictures: &Path, setup: Setup) {
             date(&copy, (year, month, day), 10 * n as u64);
         }
     }
-    let (first, _, first_day) = FOLDERS[0];
+    let (first, _, first_day) = setup.folders[0];
     if setup.videos {
         // The video tests' own files, so that the library reads a size and a length from
         // each; what they show is `Films`'s, a photo, and not their test patterns.
@@ -119,7 +133,7 @@ fn library(pictures: &Path, setup: Setup) {
         }
     }
     if setup.copy {
-        let (second, _, second_day) = FOLDERS[1];
+        let (second, _, second_day) = setup.folders[1];
         let mut firsts: Vec<PathBuf> = std::fs::read_dir(pictures.join(first))
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -134,8 +148,10 @@ fn library(pictures: &Path, setup: Setup) {
 
 /// A stand-in for the system's video: every poster and every frame is a photo of the
 /// library's, so that a video looks like one in a picture on any machine - this one has
-/// no decoder for an MP4, and a CI runner need not have one either.
-struct Films(egui::ColorImage);
+/// no decoder for an MP4, and a CI runner need not have one either. Four by three and four
+/// seconds long, as the video tests' files the library reads are; "Harbour" is another
+/// photo than "Waves".
+struct Films([egui::ColorImage; 2]);
 
 impl Films {
     fn new() -> std::sync::Arc<Self> {
@@ -146,24 +162,28 @@ impl Films {
             .filter(|path| path.extension().is_some_and(|ext| ext == "jpg"))
             .collect();
         photos.sort();
-        let photo = image::open(photos.last().unwrap()).unwrap().to_rgba8();
-        // Sixteen by nine, as a video is.
-        let (width, height) = (photo.width(), photo.width() * 9 / 16);
-        let top = (photo.height().saturating_sub(height)) / 2;
-        let frame =
-            image::imageops::crop_imm(&photo, 0, top, width, height.min(photo.height())).to_image();
-        std::sync::Arc::new(Films(egui::ColorImage::from_rgba_unmultiplied(
-            [frame.width() as usize, frame.height() as usize],
-            frame.as_raw(),
-        )))
+        let frame = |photo: &Path| {
+            let photo = image::open(photo).unwrap().to_rgba8();
+            let height = (photo.width() * 3 / 4).min(photo.height());
+            let top = (photo.height() - height) / 2;
+            let frame = image::imageops::crop_imm(&photo, 0, top, photo.width(), height).to_image();
+            egui::ColorImage::from_rgba_unmultiplied(
+                [frame.width() as usize, frame.height() as usize],
+                frame.as_raw(),
+            )
+        };
+        let n = photos.len();
+        std::sync::Arc::new(Films([frame(&photos[n - 1]), frame(&photos[n - 2])]))
     }
 
-    fn picture(&self, at: f64) -> photon_ui::video::Picture {
+    fn picture(&self, path: &Path, at: f64) -> photon_ui::video::Picture {
+        let harbour = path.to_string_lossy().contains("Harbour");
+        let image = &self.0[usize::from(harbour)];
         photon_ui::video::Picture {
-            width: self.0.size[0] as u32,
-            height: self.0.size[1] as u32,
+            width: image.size[0] as u32,
+            height: image.size[1] as u32,
             at,
-            rgba: self.0.as_raw().to_vec(),
+            rgba: image.as_raw().to_vec(),
         }
     }
 }
@@ -175,24 +195,24 @@ impl photon_ui::video::Videos for Films {
 
     fn poster(
         &self,
-        _: &Path,
+        path: &Path,
         at: f64,
     ) -> Result<photon_ui::video::Picture, photon_ui::video::Failure> {
-        Ok(self.picture(at))
+        Ok(self.picture(path, at))
     }
 
     fn open(
         &self,
-        _: &Path,
+        path: &Path,
     ) -> Result<Box<dyn photon_ui::video::Stream>, photon_ui::video::Failure> {
         Ok(Box::new(Reel {
-            frame: std::sync::Mutex::new(Some(self.picture(13.0))),
+            frame: std::sync::Mutex::new(Some(self.picture(path, 1.5))),
         }))
     }
 }
 
-/// A player that stands thirteen seconds into a video of forty-two, playing, and hands
-/// over its one frame once.
+/// A player that stands a second and a half into a video of four, playing, and hands over
+/// its one frame once.
 struct Reel {
     frame: std::sync::Mutex<Option<photon_ui::video::Picture>>,
 }
@@ -207,10 +227,10 @@ impl photon_ui::video::Stream for Reel {
     fn set_volume(&self, _: f64) {}
     fn set_muted(&self, _: bool) {}
     fn position(&self) -> Option<f64> {
-        Some(13.0)
+        Some(1.5)
     }
     fn duration(&self) -> Option<f64> {
-        Some(42.0)
+        Some(4.0)
     }
     fn ended(&self) -> bool {
         false
@@ -326,7 +346,7 @@ fn shot_of(theme: ThemeChoice, name: &str, setup: Setup, then: impl Fn(&mut Harn
     let total = setup.total();
     until(&mut harness, "the library shown", |app| {
         let shown = app.last_frame().is_some_and(|frame| frame.settled);
-        app.photos() == total && app.folders().len() >= FOLDERS.len() && shown
+        app.photos() == total && app.folders().len() >= setup.folders.len() && shown
     });
     collect(&mut harness, total);
     then(&mut harness, &db);
@@ -990,6 +1010,12 @@ fn native_viewer_info_dark() {
 /// the skyline beside her, where there is no face - it is there to show what an outline
 /// that can be pressed looks like.
 fn with_faces(harness: &mut Harness<'_>, db: &Path) {
+    faces_on(harness, db, true);
+}
+
+/// Anna's face on the third photo, and with `unnamed` the outline on the skyline, then
+/// the viewer on it with its panel open.
+fn faces_on(harness: &mut Harness<'_>, db: &Path, unnamed: bool) {
     use photon_core::face_detect::{DETECTOR_VERSION, Detection, Rect};
     let id = harness.state().shown()[2];
     let lib = Library::open(db).unwrap();
@@ -1018,7 +1044,11 @@ fn with_faces(harness: &mut Harness<'_>, db: &Path) {
     let batch: Vec<_> = (photos.into_iter())
         .map(|photo| {
             let faces = if photo.id == id {
-                vec![face(0.3, 0.25, 0.42, 0.5), face(0.62, 0.36, 0.72, 0.56)]
+                let mut faces = vec![face(0.3, 0.25, 0.42, 0.5)];
+                if unnamed {
+                    faces.push(face(0.62, 0.36, 0.72, 0.56));
+                }
+                faces
             } else {
                 Vec::new()
             };
@@ -1038,8 +1068,9 @@ fn with_faces(harness: &mut Harness<'_>, db: &Path) {
     informed(harness);
     harness.state().engine().refresh_grid().unwrap();
     until(harness, "the faces read", |app| {
-        (app.viewer_item())
-            .is_some_and(|item| item.faces.len() == 1 && item.unnamed_faces.len() == 1)
+        (app.viewer_item()).is_some_and(|item| {
+            item.faces.len() == 1 && item.unnamed_faces.len() == usize::from(unnamed)
+        })
     });
     harness.step();
 }
@@ -1674,8 +1705,10 @@ fn until_named(harness: &mut Harness<'_>, label: &str) {
 /// Steps until the grid has every thumbnail it shows, and has stopped asking for frames.
 fn thumbnails_in(harness: &mut Harness<'_>) {
     until(harness, "the thumbnails", |app| {
+        // A tile marked as having no picture counts as settled: a video's poster not
+        // made yet is asked for again only seconds later.
         app.last_frame()
-            .is_some_and(|frame| frame.settled && !frame.loading)
+            .is_some_and(|frame| frame.settled && !frame.loading && frame.marked == 0)
     });
     for _ in 0..10 {
         harness.step();
@@ -1693,7 +1726,7 @@ fn native_small_light() {
     });
 }
 
-// Scrolled into the second folder: its header pinned over the photos it heads, the
+// Scrolled into a folder further down: its header pinned over the photos it heads, the
 // sidebar marking the folder at the top.
 #[test]
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
@@ -1702,16 +1735,22 @@ fn native_pinned_header_dark() {
         ThemeChoice::Dark,
         "native-pinned-header-dark.png",
         |harness| {
+            // At the largest tiles: at Medium the library is hardly taller than the window,
+            // and its end comes before the second folder can be scrolled into.
+            harness.get_by_label("Large").click();
+            harness.step();
             let over = egui::pos2(800.0, 500.0);
             harness.event(egui::Event::PointerMoved(over));
-            harness.event(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: vec2(0.0, -260.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: Modifiers::NONE,
-            });
-            for _ in 0..20 {
-                harness.step();
+            for _ in 0..4 {
+                harness.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -275.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Modifiers::NONE,
+                });
+                for _ in 0..20 {
+                    harness.step();
+                }
             }
             harness.event(egui::Event::PointerGone);
             thumbnails_in(harness);
@@ -1810,7 +1849,7 @@ fn native_site_main_light() {
         ThemeChoice::Light,
         "native-site-main-light.png",
         SITE,
-        |harness, _| thumbnails_in(harness),
+        |harness, _| lived_in(harness),
     );
 }
 
@@ -1821,7 +1860,7 @@ fn native_site_main_dark() {
         ThemeChoice::Dark,
         "native-site-main-dark.png",
         SITE,
-        |harness, _| thumbnails_in(harness),
+        |harness, _| lived_in(harness),
     );
 }
 
@@ -1832,6 +1871,36 @@ fn native_site_viewer_info_light() {
         ThemeChoice::Light,
         "native-site-viewer-info-light.png",
         SITE,
-        with_faces,
+        |harness, db| {
+            lived_in(harness);
+            // What a camera writes and the scan would have read: these photos carry none.
+            let id = harness.state().shown()[2];
+            let conn = rusqlite::Connection::open(db).unwrap();
+            conn.execute(
+                "UPDATE items SET caption = 'Evening over Lisbon', make = 'Canon', \
+                 model = 'Canon EOS R6', lens = 'RF24-105mm F4 L IS USM', focal_mm = 50, \
+                 aperture = 5.6, exposure_s = 0.004, iso = 200, \
+                 gps_lat = 38.7139, gps_lon = -9.1334 WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+            harness.state().engine().refresh_grid().unwrap();
+            faces_on(harness, db, false);
+        },
     );
+}
+
+/// The site's library as someone's is: a few photos starred, and the thumbnails in.
+fn lived_in(harness: &mut Harness<'_>) {
+    let engine = harness.state().engine().clone();
+    let shown = harness.state().shown();
+    commands::set_stars(&engine, &[shown[0], shown[3], shown[11]], true).unwrap();
+    until(harness, "the stars", |app| {
+        let (_, index) = app.engine().grid();
+        (index.rows(0, index.len()).iter())
+            .filter(|entry| entry.starred)
+            .count()
+            == 3
+    });
+    thumbnails_in(harness);
 }
