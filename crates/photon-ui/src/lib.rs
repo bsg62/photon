@@ -104,6 +104,7 @@ pub mod viewer_view;
 pub mod viewer_zoom;
 pub mod watched_list;
 pub mod wheel;
+pub mod window;
 pub mod window_layout;
 
 #[cfg(test)]

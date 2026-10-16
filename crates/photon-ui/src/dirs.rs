@@ -18,6 +18,8 @@ pub struct Dirs {
     /// Where the window's layout is kept (`window_layout.rs`): beside the library, and
     /// this application's alone.
     pub layout_path: PathBuf,
+    /// Where eframe keeps the window's size and place (`window.rs`).
+    pub window_path: PathBuf,
 }
 
 /// The paths inside an app data directory and an app cache directory. This is what
@@ -27,6 +29,7 @@ pub fn within(app_data: &Path, app_cache: &Path) -> Dirs {
         db_path: app_data.join("library.db"),
         cache_dir: app_cache.join("thumbs"),
         layout_path: app_data.join("layout.json"),
+        window_path: app_data.join("window.ron"),
     }
 }
 
@@ -48,6 +51,7 @@ mod tests {
         assert_eq!(dirs.db_path, Path::new("/data/app/library.db"));
         assert_eq!(dirs.cache_dir, Path::new("/cache/app/thumbs"));
         assert_eq!(dirs.layout_path, Path::new("/data/app/layout.json"));
+        assert_eq!(dirs.window_path, Path::new("/data/app/window.ron"));
     }
 
     #[test]

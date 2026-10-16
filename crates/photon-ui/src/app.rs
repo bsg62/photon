@@ -62,6 +62,7 @@ use crate::{
     viewer_menu::{self, ViewerPick},
     viewer_view::{Cropped, Level, Message, Showing, ViewerAction, ViewerData, ViewerView},
     viewer_zoom::Zoom,
+    window,
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
 };
 use eframe::egui;
@@ -317,6 +318,9 @@ pub struct App {
     /// A photo to open in the viewer, looked up in the grid the next frame draws: a
     /// face's, from the People page, in a grid switched to All photos for it.
     opening: Option<i64>,
+    /// What has been seen of the window, to put right what eframe keeps of it
+    /// (`window.rs`); none in a run that keeps nothing of its window.
+    window_seen: Option<window::Seen>,
     /// The People page, while it is on screen (`app/people.rs`).
     page: Option<PeoplePage>,
     people_view: PeopleView,
@@ -1399,6 +1403,9 @@ impl App {
             showing: None,
             locating: None,
             opening: None,
+            window_seen: Some(window::Seen::launched(
+                (cc.storage).and_then(|storage| eframe::get_value(storage, window::KEY)),
+            )),
             page: None,
             people_view: PeopleView::default(),
             people_read,
@@ -1436,6 +1443,13 @@ impl App {
 
     /// Videos made posters of and played by `videos` in place of the system's framework:
     /// for a test, which has none of its own to count on.
+    /// A run that keeps nothing of its window - one asked to be fullscreen (`window.rs`):
+    /// what eframe kept before is left as it was.
+    pub fn without_window_kept(mut self) -> Self {
+        self.window_seen = None;
+        self
+    }
+
     pub fn with_videos(mut self, videos: Arc<dyn Videos>) -> Self {
         self.videos = videos;
         self
@@ -4542,6 +4556,20 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// eframe keeps the window's size and place (`window.rs`), and with them egui's own
+    /// memory unless told not to: what photon remembers is in the library and in
+    /// `layout.json`, and a second record of it - an area's place, a field's text - would
+    /// be read back at the next launch over what the first one says.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
+    /// What eframe has just written of the window, put right where the window is not in
+    /// its normal state (`window::Seen::correct`): eframe calls this after writing it.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        window::save(self.window_seen.as_ref(), storage);
+    }
+
     /// What the system says is held over the window and has dropped on it is taken out
     /// of the frame's input before egui reads it. egui asks for the next frame at once
     /// for as long as it is told that something is held (`InputState::
@@ -4634,6 +4662,9 @@ impl eframe::App for App {
         let reported = self.more_answers(now) || reported;
         let reported = self.picked(now) || reported;
         let reported = self.copied(now) || reported;
+        if let Some(seen) = &mut self.window_seen {
+            ui.ctx().input(|input| seen.frame(input.viewport()));
+        }
         self.adopt();
         let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before
