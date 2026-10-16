@@ -79,6 +79,7 @@ use photon_engine::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
+mod copy;
 mod people;
 mod pick;
 mod settings_dialog;
@@ -241,6 +242,8 @@ pub struct App {
     /// The system photon asks for a folder chosen and a message shown (`platform.rs`), or
     /// a test's stand-in.
     platform: Arc<dyn Platform>,
+    /// A copy of a photo to the clipboard, while one is on its way (`app/copy.rs`).
+    copying: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// The system's folder picker, while it is open: one at a time, on a thread of its own.
     picking: Option<pick::Picking>,
     /// How many dialogs have been opened: a folder chosen is put only into the dialog that
@@ -1363,8 +1366,9 @@ impl App {
             wheel: system_wheel,
             notch,
             videos: Arc::new(crate::video::System),
-            platform: Arc::new(crate::platform::System),
+            platform: Arc::new(crate::platform::System::default()),
             picking: None,
+            copying: None,
             dialog_openings: 0,
             poster_worker: None,
             checking,
@@ -2210,6 +2214,7 @@ impl App {
             seen: None,
             path_asked: None,
             open_failed: None,
+            name_copied: None,
         });
     }
 
@@ -2696,6 +2701,9 @@ impl App {
         // before the library says so (`took`, for a picture changed under the key it
         // had) - meanwhile the tool would ask for a picture of the new state that only
         // it draws, and that its own closing then throws away.
+        // A copy is of a photo the library has said is one - not a video, which the
+        // clipboard's one picture cannot be, and not one that is gone.
+        let copyable = open.item.is_some() && !open.viewer.is_video() && !open.viewer.gone();
         let editable = open.item.is_some()
             && !open.viewer.is_video()
             && !open.viewer.orphaned()
@@ -2804,6 +2812,16 @@ impl App {
                 )
             })
             .unwrap_or_default();
+        // "Copied" in the file name's place for a moment after the caption's click, as
+        // the Svelte caption says it - and only of the photo whose name was copied.
+        let named = (open.item.as_ref()).map(|item| item.id);
+        let caption = match open.name_copied {
+            Some((id, at)) if Some(id) == named && now - at < COPIED_MS => {
+                ctx.request_repaint_after(Duration::from_secs_f64((at + COPIED_MS - now) / 1000.0));
+                COPIED_NAME.to_owned()
+            }
+            _ => caption,
+        };
         let photo_caption = (open.item.as_ref())
             .and_then(|item| viewer_caption::caption_line(item.caption.as_deref()));
         let said = if open.viewer.gone() {
@@ -2878,6 +2896,7 @@ impl App {
             can_prev: open.viewer.can_step(-1, len) || (open.show.active() && len > 1),
             can_next: open.viewer.can_step(1, len) || (open.show.active() && len > 1),
             editable,
+            copyable,
             edited: (open.item.as_ref()).is_some_and(|item| item.edit.is_some()),
             info_open: open.info,
             info: (open.item.as_ref()).map(|item| InfoData {
@@ -2951,6 +2970,15 @@ impl App {
         if let Some(id) = open.item.as_ref().map(|item| item.id) {
             for action in &actions {
                 match action {
+                    // A copy, of the photo the frame was drawn for: the picture, and the
+                    // caption's file name.
+                    ViewerAction::Copy if copyable => self.copy_photo(id),
+                    ViewerAction::CopyName => {
+                        if let Some(item) = open.item.as_ref() {
+                            ctx.copy_text(item.file_name.clone());
+                            open.name_copied = Some((id, now));
+                        }
+                    }
                     ViewerAction::Panel(InfoAction::AddTag(tag)) => {
                         let tag = tag.clone();
                         self.writes.push(Write::TagAdd { id, tag });
@@ -3120,7 +3148,9 @@ impl App {
                 // (Written above.)
                 ViewerAction::Panel(
                     InfoAction::AddTag(_) | InfoAction::RemoveTag(_) | InfoAction::Album { .. },
-                ) => false,
+                )
+                | ViewerAction::Copy
+                | ViewerAction::CopyName => false,
                 // (Opened below.)
                 ViewerAction::Menu { .. } | ViewerAction::NameFace(_) => false,
                 ViewerAction::Panel(link) => {
@@ -3560,6 +3590,14 @@ impl App {
                 self.show_copies(id);
                 return;
             }
+            // The clipboard holds one picture: the menu offers it for one photo that is
+            // no video.
+            TileAction::CopyPhoto => {
+                if let [id] = ids[..] {
+                    self.copy_photo(id);
+                }
+                return;
+            }
             // And so does the person dialog, whose title says how many photos.
             TileAction::AddToPerson => {
                 self.open_person(person_picker::Target::Items(ids));
@@ -3610,6 +3648,19 @@ impl App {
             self.open_compare(asked.ids);
             return;
         }
+        // The clipboard holds one picture: exactly one photo selected, not the lead of a
+        // wider selection - the Svelte grid's rule, Reveal's too - and no video, of which
+        // the key is simply dead, as the menu offers no copy of one.
+        if asked.ask == Ask::Copy {
+            if let [id] = asked.ids[..]
+                && self
+                    .entry(id)
+                    .is_some_and(|entry| entry.kind == MediaKind::Image)
+            {
+                self.copy_photo(id);
+            }
+            return;
+        }
         let action = match asked.ask {
             // One key for the menu's two items: starred, the deciding photo has the
             // whole selection unstarred; not, all of it is starred.
@@ -3621,6 +3672,7 @@ impl App {
             }
             Ask::Hide => TileAction::Hide(self.nav.settled().view != View::Hidden),
             Ask::Compare => TileAction::Compare,
+            Ask::Copy => return,
         };
         self.write(action, asked.ids);
     }
@@ -4576,6 +4628,7 @@ impl eframe::App for App {
         let reported = self.people_answers(ui.ctx(), now) || reported;
         let reported = self.more_answers(now) || reported;
         let reported = self.picked(now) || reported;
+        let reported = self.copied(now) || reported;
         self.adopt();
         let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before
@@ -4941,6 +4994,9 @@ impl eframe::App for App {
 /// The viewer while it is open.
 struct Viewing {
     viewer: Viewer,
+    /// The photo whose file name the caption's click copied, and when: the caption says
+    /// "Copied" in its place for a moment (`COPIED_MS`), and only of that photo.
+    name_copied: Option<(i64, f64)>,
     /// The player of the video on screen, from when its file is known until the viewer
     /// leaves that picture of it.
     playing: Option<Playing>,
@@ -5002,6 +5058,12 @@ struct Outgoing {
 
 /// How long the photo a show leaves takes to fade, in milliseconds.
 const CROSSFADE_MS: f64 = 600.0;
+/// How long the caption reads "Copied" after a click: long enough to be noticed, short
+/// enough that the file name is back before anyone wonders where it went
+/// (`copied.svelte.ts`'s `COPIED_MS`).
+pub const COPIED_MS: f64 = 1200.0;
+/// What the caption reads in that time.
+pub const COPIED_NAME: &str = "Copied";
 const NO_PHOTOS_TO_SHOW: &str = "There are no photos here to show.";
 
 /// A number from nought up to one, a different one each time: what a shuffled show's

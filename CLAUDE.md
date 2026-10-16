@@ -2169,6 +2169,27 @@ photon's words (`platform::startup_failed`).
 "Choose…" or the empty library's "Add folder…" launches with one (`no_platform`), or the
 press opens a real picker on whatever machine runs the test.
 
+**Copy photo puts the picture as shown on the clipboard** (`app/copy.rs`; spec decision
+4): the grid's Ctrl/Cmd+C with exactly one photo selected and no video (the Svelte grid's
+rule - not the lead of a wider selection), the tile menu's "Copy photo", and the viewer's
+Ctrl/Cmd+C over a photo the library has said is one. **Ctrl/Cmd+C reaches egui as
+`Event::Copy` and not as a key** (egui-winit turns it into that and nothing else), so
+that is what the grid and the viewer read - not while a keyword is typed, whose field
+copies its own text; the shortcut list's tripwire counts it by the `C` the same groups
+name. The engine makes the picture (`commands::copy_picture`, the edit applied, at most
+2,560 pixels a side, under `RENDERING`) and the platform puts it on the clipboard, on a
+thread of its own; **one copy at a time**, a second press while one is on its way dropped
+as the Svelte store drops it; "Photo copied" when it is done, the clipboard's own words
+when it is not. **The clipboard is one arboard `Clipboard`, kept for the session by a
+thread of its own** (`platform::System`): on Linux a copy lives only as long as the
+clipboard that made it, and not the window's own (`Context::copy_image`), since arboard's
+X11 side makes a PNG of the picture as it is put there. arboard's `wayland-data-control`
+is on - Rust, the Wayland library loaded at run time as winit loads it. A click on the
+viewer's caption copies the file name through egui's own clipboard (`copy_text`), and the
+caption reads "Copied" for `COPIED_MS`, of that photo alone. A test's clipboard is the
+stand-in (`common::Picker`'s `copied`, `refused`), and a copy is held behind a render by
+holding `RENDERING`.
+
 **The viewer takes the whole window** (spec `2026-10-12-photon-native-viewer-design.md`;
 `viewer.rs` for which photo is open, `viewer_view.rs` for what is drawn, `App::viewer`
 while it is open). The shell is not drawn under it, so the grid's keys cannot be answered

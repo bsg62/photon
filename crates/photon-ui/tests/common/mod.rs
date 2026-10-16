@@ -391,13 +391,16 @@ pub fn no_platform() -> std::sync::Arc<Picker> {
     std::sync::Arc::new(Picker::default())
 }
 
-/// A stand-in for the system's folder picker: it answers `answer` (a cancel until told
-/// otherwise), says what it was asked under `asked`, and - while `held` holds a receiver -
-/// waits until it is sent to.
+/// A stand-in for the system's folder picker and clipboard. The picker answers `answer`
+/// (a cancel until told otherwise), says what it was asked under `asked`, and - while
+/// `held` holds a receiver - waits until it is sent to. The clipboard keeps the size of
+/// every picture put on it in `copied`, or refuses with `refused`.
 pub struct Picker {
     pub answer: std::sync::Mutex<photon_ui::platform::Picked>,
     pub asked: std::sync::Mutex<Vec<String>>,
     pub held: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    pub copied: std::sync::Mutex<Vec<(usize, usize)>>,
+    pub refused: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for Picker {
@@ -406,11 +409,22 @@ impl Default for Picker {
             answer: std::sync::Mutex::new(photon_ui::platform::Picked::Cancelled),
             asked: Default::default(),
             held: Default::default(),
+            copied: Default::default(),
+            refused: Default::default(),
         }
     }
 }
 
 impl photon_ui::platform::Platform for Picker {
+    fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String> {
+        assert_eq!(rgba.len(), width * height * 4, "a picture of its own size");
+        if let Some(refused) = self.refused.lock().unwrap().clone() {
+            return Err(refused);
+        }
+        self.copied.lock().unwrap().push((width, height));
+        Ok(())
+    }
+
     fn pick_folder(&self, title: &str) -> photon_ui::platform::Picked {
         self.asked.lock().unwrap().push(title.to_owned());
         let held = self.held.lock().unwrap().take();

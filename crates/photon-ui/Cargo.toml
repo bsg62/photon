@@ -56,6 +56,11 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# The clipboard (`platform.rs`): the crate egui's own text clipboard and Tauri's plugin
+# use, at their version. On Wayland through its data-control protocol, in Rust - the
+# Wayland library is loaded at run time, as winit loads it - where without it a copy
+# goes through XWayland.
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 # A video's poster encoded for the engine (`posters.rs`), and the tests' pictures read
 # back. photon-core's version.
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }

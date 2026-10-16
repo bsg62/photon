@@ -166,6 +166,8 @@ pub enum Ask {
     Hide,
     /// `C`: compare it, two to four photos side by side.
     Compare,
+    /// Ctrl/Cmd+C: copy the one photo selected to the clipboard.
+    Copy,
 }
 
 /// The keys of this frame that are the grid's, in the order they were pressed, each with
@@ -178,6 +180,12 @@ pub enum Ask {
 fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
     let mut keys = Vec::new();
     for event in &input.events {
+        // Ctrl/Cmd+C reaches egui as a copy and not as a key (`Key::C` with the command
+        // modifier, which egui-winit turns into `Event::Copy` and nothing else).
+        if *event == Event::Copy {
+            keys.push((GridKey::Ask(Ask::Copy), false));
+            continue;
+        }
         let Event::Key {
             key,
             physical_key,
