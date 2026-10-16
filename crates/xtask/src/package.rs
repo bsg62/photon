@@ -209,6 +209,12 @@ pub fn run(root: &Path, args: &[String]) -> ExitCode {
         let binary = PathBuf::from(arg(args, "--binary").ok_or("--binary <path> is needed")?);
         let out = PathBuf::from(arg(args, "--out").ok_or("--out <dir> is needed")?);
         std::fs::create_dir_all(&out).map_err(|err| format!("{}: {err}", out.display()))?;
+        // Whole paths: dpkg-shlibdeps, linuxdeploy and WiX's light are each started in a
+        // folder of their own, and a path given as `dist/...` was read from there.
+        let absolute = |path: &Path| {
+            std::path::absolute(path).map_err(|err| format!("{}: {err}", path.display()))
+        };
+        let (binary, out) = (absolute(&binary)?, absolute(&out)?);
         let meta = meta(root)?;
         let icons = root.join("crates/photon-ui/icons");
         match kind.as_str() {
@@ -258,16 +264,16 @@ fn deb(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<PathBuf, 
     )?;
     hicolor(&tree, icons)?;
     // What the binary links, as Debian names the packages that hold it. dpkg-shlibdeps
-    // wants a debian/control beside it, which it reads nothing from here.
+    // wants a debian/control beside it, which it reads nothing from here but refuses
+    // without a binary stanza's Architecture.
     let shlibs = fresh(out, "shlibs")?;
     write(
         &shlibs.join("debian/control"),
-        "Source: photon\n\nPackage: photon\n",
+        "Source: photon\n\nPackage: photon\nArchitecture: amd64\n",
     )?;
     let found = Command::new("dpkg-shlibdeps")
         .arg("-O")
-        .arg("-e")
-        .arg(tree.join("usr/bin/photon"))
+        .arg(format!("-e{}", tree.join("usr/bin/photon").display()))
         .current_dir(&shlibs)
         .output()
         .map_err(|err| format!("dpkg-shlibdeps could not start: {err}"))?;
@@ -375,20 +381,34 @@ fn dmg(
     std::os::unix::fs::symlink("/Applications", stage.join("Applications"))
         .map_err(|err| format!("the Applications link: {err}"))?;
     let dmg = out.join(format!("photon_{}_{name}.dmg", meta.version));
-    run_tool(
-        Command::new("hdiutil")
-            .args([
-                "create",
-                "-volname",
-                "photon",
-                "-ov",
-                "-format",
-                "UDZO",
-                "-srcfolder",
-            ])
-            .arg(&stage)
-            .arg(&dmg),
-    )?;
+    // `hdiutil create` fails now and then on a runner with "Resource busy", and succeeds
+    // when asked again (Tauri's own dmg script asks again too).
+    let mut tries = 0;
+    loop {
+        let made = run_tool(
+            Command::new("hdiutil")
+                .args([
+                    "create",
+                    "-volname",
+                    "photon",
+                    "-ov",
+                    "-format",
+                    "UDZO",
+                    "-srcfolder",
+                ])
+                .arg(&stage)
+                .arg(&dmg),
+        );
+        tries += 1;
+        match made {
+            Ok(()) => break,
+            Err(err) if tries >= 3 => return Err(err),
+            Err(err) => {
+                eprintln!("{err}; trying again");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        }
+    }
     Ok(dmg)
 }
 

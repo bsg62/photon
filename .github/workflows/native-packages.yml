@@ -28,9 +28,15 @@ jobs:
       - name: Build dependencies
         run: |
           sudo apt-get update
+          # The 22.04 image holds libunwind-14-dev, which keeps out the libunwind-dev that
+          # GStreamer's headers depend on ("held broken packages").
+          sudo apt-get remove -y libunwind-14-dev || true
           sudo apt-get install -y nasm dpkg-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
+      # Caches are saved from native-ui alone, as ci.yml's are (the 10 GB cap).
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
       - run: cargo run -p xtask -- versions
       # photon-native alone: in a build of the whole workspace Tauri's dialog plugin turns
       # on GTK in a crate photon-native shares with it.
@@ -103,6 +109,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --target ${{ matrix.target }} ${{ matrix.features }}
       - run: >
           cargo run -p xtask -- package dmg --arch ${{ matrix.arch }}
@@ -111,6 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           dmg=$(ls dist/*.dmg)
+          mkdir -p "$RUNNER_TEMP/mnt"
           hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/mnt" "$dmg"
           test -x "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
           codesign --verify --verbose "$RUNNER_TEMP/mnt/photon.app"
@@ -129,6 +137,8 @@ jobs:
       - run: choco install nasm -y --no-progress; echo 'C:\Program Files\NASM' >> $env:GITHUB_PATH
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
       # Media Foundation's DLLs are delay-loaded (`crates/photon-ui/build.rs`), or a Windows
       # "N" edition without them could not start photon at all.
@@ -137,10 +147,10 @@ jobs:
         shell: pwsh
         run: |
           $imports = dumpbin /imports target\release\photon-native.exe | Out-String
-          $at = $imports.IndexOf('delay load imports')
+          $at = $imports.IndexOf('delay load imports', [StringComparison]::OrdinalIgnoreCase)
           if ($at -lt 0) { Write-Output '::error::no delay-loaded imports'; exit 1 }
           foreach ($dll in 'mfplat.dll', 'mfreadwrite.dll') {
-            $first = $imports.IndexOf($dll)
+            $first = $imports.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase)
             if ($first -lt $at) { Write-Output "::error::$dll is not delay-loaded"; exit 1 }
             Write-Output "ok: $dll is delay-loaded"
           }
@@ -211,7 +221,8 @@ jobs:
           {
             echo "photon-native's installers, built from this commit as artifacts - not a release."
             echo
-            echo "The MSI replaces photon's Tauri MSI (the same upgrade code), but refuses to put"
-            echo "a lower version over a higher one: native-ui's version is behind main's releases,"
-            echo "so install it where the Tauri photon is not installed, or once it is removed."
+            echo "The MSI has the Tauri MSI's upgrade code: installed over the Tauri photon of the"
+            echo "same version or a lower one it REMOVES the Tauri program (photon's library is left"
+            echo "alone), and over a higher one it is refused. To keep the Tauri photon, try the MSI"
+            echo "on a machine where it is not installed."
           } >> "$GITHUB_STEP_SUMMARY"

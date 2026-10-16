@@ -174,10 +174,10 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
      that the shortcut is opt-in, read from the MSI's own tables. **The upgrade code is
      the Tauri MSI's**, so that the native one replaces it: the template holds only
      tauri-bundler's placeholder, so it is read from a released MSI's `Property` table and
-     written into `main.wxs` as a literal. The template's `MajorUpgrade` refuses to put a
-     lower version over a higher one, and `native-ui`'s version is behind main's releases
-     until the switch-over: a native MSI from the workflow installs where the Tauri
-     photon is not installed, or once it is removed - said in the workflow's summary.
+     written into `main.wxs` as a literal. The template's `MajorUpgrade` allows the same
+     version: a native MSI from the workflow installed over the Tauri photon of its version
+     or a lower one *removes the Tauri program* (the library is left alone), and over a
+     higher one is refused - said in the workflow's summary.
    - **The version's authority is the workspace's `Cargo.toml`** (`[workspace.package]
      version`), and `xtask versions` checks the others against it - `tauri.conf.json` and
      `ui/package.json` until sub-project 8 deletes them. The native packages' metadata -

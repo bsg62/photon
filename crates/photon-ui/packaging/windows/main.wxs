@@ -42,9 +42,9 @@
              drops it on the way from the dialog to the elevated part that creates it. -->
         <Property Id="DESKTOPSHORTCUT" Secure="yes" />
 
-        <!-- A lower version over a higher one is refused: the native MSI from a workflow
-             of the branch, whose version is behind main's releases, installs where the
-             Tauri photon is not installed, or once it is removed. -->
+        <!-- The Tauri MSI's upgrade code: installed over the Tauri photon of the same
+             version or a lower one, this removes it (photon's library is left alone); over
+             a higher one it is refused. -->
         <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="!(loc.DowngradeErrorMessage)" AllowSameVersionUpgrades="yes" />
 
         <InstallExecuteSequence>

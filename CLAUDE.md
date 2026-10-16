@@ -3345,8 +3345,11 @@ own there (`-p photon-ui`), not with the workspace, whose Tauri plugins would br
 `mfreadwrite.dll`, held by the workflow's `dumpbin /imports`) and loaded by `video::mf`
 before any call into it (`installed`), so a Windows "N" edition without the Media Feature
 Pack starts and says it cannot play videos - a delay-load that fails is an exception Rust
-cannot catch. The MSI refuses a lower version over a higher one, and `native-ui`'s version
-is behind main's releases: install it where the Tauri photon is not installed.
+cannot catch. The MSI has the Tauri MSI's upgrade code and allows the same version: over the
+Tauri photon of its version or a lower one it removes the Tauri program (the library is left
+alone), and over a higher one it is refused - the workflow's summary says so. The installers
+are built from paths made whole first (`std::path::absolute`): dpkg-shlibdeps, linuxdeploy
+and light each run in a folder of their own, and `--out dist` was read from there.
 
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
