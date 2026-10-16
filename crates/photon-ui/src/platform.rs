@@ -342,6 +342,10 @@ pub fn startup_failed(err: &eframe::Error) -> String {
         eframe::Error::AppCreation(err) => {
             format!("photon could not open its library:\n\n{err}\n\nNothing was changed.")
         }
+        eframe::Error::Wgpu(err) => format!(
+            "photon could not find a way to draw its window: no graphics adapter, not even a \
+             software one, could be used.\n\n{err}"
+        ),
         err => format!("photon could not start:\n\n{err}"),
     }
 }
@@ -391,6 +395,15 @@ pub fn show_error(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A window no adapter can draw says so, in words that name what is missing.
+    #[test]
+    fn a_window_no_adapter_can_draw_is_said_so() {
+        let err = eframe::Error::Wgpu(
+            eframe::egui_wgpu::WgpuError::CustomNativeAdapterSelectionError("none".to_owned()),
+        );
+        assert!(startup_failed(&err).starts_with("photon could not find a way to draw its window"));
+    }
 
     // A library that could not be opened is said in the Tauri photon's words, with what
     // was wrong, and that nothing was changed; anything else as what it is.

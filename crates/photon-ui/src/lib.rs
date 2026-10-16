@@ -27,6 +27,7 @@ pub mod export_view;
 pub mod face_crops;
 pub mod fixture;
 pub mod folder_drop;
+pub mod gpu;
 pub mod grid {
     pub mod header;
     pub mod labels;

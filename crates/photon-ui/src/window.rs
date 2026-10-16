@@ -49,6 +49,14 @@ pub fn native_options(args: &Args, dirs: &Dirs) -> eframe::NativeOptions {
         window_builder: fullscreen
             .then(|| Box::new(|builder: egui::ViewportBuilder| builder.with_fullscreen(true)) as _),
         persistence_path: Some(dirs.window_path.clone()),
+        // The adapter that draws it, and the fallback where none of the machine's own can.
+        // The rest is eframe's own: `WgpuConfiguration::default()` is not what eframe uses,
+        // and with it the window queued two frames where eframe queues one - a frame more
+        // between a hand and what it moved, and another thing than the gate measures.
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: crate::gpu::setup(),
+            ..eframe::NativeOptions::default().wgpu_options
+        },
         ..Default::default()
     }
 }
@@ -396,6 +404,33 @@ mod tests {
         assert_eq!(
             options.persistence_path.as_deref(),
             Some(Path::new("/data/app/window.ron"))
+        );
+    }
+
+    // The adapter is photon's choice, which goes on to the next where one cannot make a
+    // device (`gpu.rs`), and not wgpu's, which does not.
+    #[test]
+    fn the_adapter_is_photons_choice() {
+        let options = native_options(&Args::default(), &dirs());
+        let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = options.wgpu_options.wgpu_setup else {
+            panic!("an existing wgpu setup");
+        };
+        assert!(setup.native_adapter_selector.is_some());
+    }
+
+    // Only the adapter is photon's: the surface is configured as eframe configures it, one
+    // frame queued at most.
+    #[test]
+    fn the_surface_is_eframes_own() {
+        let options = native_options(&Args::default(), &dirs());
+        let theirs = eframe::NativeOptions::default().wgpu_options;
+        assert_eq!(
+            options.wgpu_options.surface.desired_maximum_frame_latency,
+            theirs.surface.desired_maximum_frame_latency
+        );
+        assert_eq!(
+            options.wgpu_options.surface.present_mode,
+            theirs.surface.present_mode
         );
     }
 

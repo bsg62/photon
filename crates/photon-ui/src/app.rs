@@ -358,6 +358,9 @@ pub struct App {
     probe: Option<ProbeRun>,
     /// The GPU the window is drawn with, for the log and the gate's report.
     adapter: Option<String>,
+    /// What is said once the window is drawn: that a software adapter draws it, where one
+    /// does (`gpu::SOFTWARE`).
+    launch_notice: Option<&'static str>,
     closed: bool,
 }
 
@@ -1437,6 +1440,13 @@ impl App {
                 .wgpu_render_state
                 .as_ref()
                 .map(|state| format!("{:?}", state.adapter.get_info())),
+            // Every frame then costs what a GPU's would not, and the user should know
+            // why photon is slow on this machine.
+            launch_notice: (cc.wgpu_render_state.as_ref())
+                .filter(|state| {
+                    state.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu
+                })
+                .map(|_| crate::gpu::SOFTWARE),
             closed: false,
         })
     }
@@ -4696,6 +4706,9 @@ impl eframe::App for App {
         let reported = self.take_answers(now) || reported;
         let reported = self.people_answers(ui.ctx(), now) || reported;
         let reported = self.more_answers(now) || reported;
+        if let Some(notice) = self.launch_notice.take() {
+            self.toasts.error(notice, now);
+        }
         let reported = self.picked(now) || reported;
         let reported = self.copied(now) || reported;
         let reported = self.open_answers(now) || reported;

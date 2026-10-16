@@ -51,28 +51,27 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
    (`WINDOW_STATE_FLAGS` keeps `FULLSCREEN`), and F11 is the way out. The window gets
    photon's icon (`ViewportBuilder::with_icon`, from the PNG the installers carry).
 
-2. **Folders are chosen through rfd**, the crate Tauri's dialog plugin is built on and
-   already in the lockfile, with `default-features = false, features = ["xdg-portal",
-   "async-std"]`: on Linux the XDG desktop portal (ashpd over zbus, pure Rust, no GTK -
-   "No system library dependencies beyond the web view" holds), which needs an executor
-   of its own outside a runtime (`async-std`; with tokio, ashpd's default, zbus panics
-   with no runtime running); on Windows and macOS the system's own. Two things to say
-   plainly: **where the portal does not answer, rfd tries `zenity`, and where that is
-   missing too it answers as a cancel does** - photon cannot tell the two apart through
-   rfd, so the typed path stands beside every "Choose…" and nothing is said; and rfd's
-   `wayland` feature is left out, so on Wayland the portal's picker has no parent
-   window. **In a build of the whole workspace Tauri's dialog plugin turns on rfd's
-   `gtk3`, which rfd prefers**, until sub-project 8 takes the Tauri photon away:
-   photon-native built on its own (`-p photon-ui`), as the installers build it, has no
-   GTK, and the packaging checks that it links none. "Choose…" beside the export's
-   destination and beside Settings' "Add folder…" field opens it; the folder chosen is
-   put in the field and asked about as a typed one is, so the two ways are one rule. The
-   empty library's "Add folder…" opens the picker straight away, as the Svelte one does,
-   over Settings' folders with the field open - a picker that could not be opened leaves
-   the field. **The picker runs on a thread of its own**: a portal answers when the user
-   does, and a window that stopped drawing meanwhile would be taken by the system for one
-   that does not answer. One at a time, and **the folder goes only into the dialog that
-   asked**, by the number of its opening.
+2. **Folders are chosen in the system's own picker** (`platform.rs`, `app/pick.rs`): on
+   Windows and macOS rfd's, the crate Tauri's dialog plugin is built on; **on Linux the XDG
+   desktop portal through ashpd**, the client rfd uses there (pure Rust over zbus, no GTK -
+   "No system library dependencies beyond the web view" holds; on `async-std`, since with
+   tokio, ashpd's default, zbus panics with no runtime running), and where the portal does
+   not answer, `zenity`. rfd is not built on Linux at all: its build script refuses GTK and
+   the portal together, and Tauri's dialog plugin turns on GTK in a build of the whole
+   workspace. Going to the portal itself also tells a picker that could not be opened from
+   a cancel, which rfd answers alike: where none opens, that is said, and the typed path
+   stands beside every "Choose…" as the way left. rfd's `wayland` feature is not wanted,
+   so on Wayland the portal's picker has no parent window. "Choose…" beside the export's
+   destination and beside Settings' "Add folder…" field opens it; the folder chosen is put
+   in the field and asked about as a typed one is, so the two ways are one rule. The empty
+   library's "Add folder…" opens the picker straight away, as the Svelte one does, over
+   Settings' folders with the field open. **The picker runs on a thread of its own**, the
+   portal given ten seconds to open it: a portal answers when the user does, and a window
+   that stopped drawing meanwhile would be taken by the system for one that does not
+   answer. **One at a time, its answer for the field that last asked**: a press while one
+   is open - one tied to no window can be behind photon's - takes it for that field, and a
+   folder chosen for a dialog that has closed goes nowhere. "Choose…" is never dimmed for
+   it, which would take the keyboard off it.
 
 3. **The questions photon asks stay photon's own dialogs.** The Svelte UI asks through the
    system's `ask`; the native window has a question dialog of its own that is tested,
@@ -100,22 +99,21 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
    program), which is how every X11 program's copy works and is said nowhere.
 
 5. **Reveal and Open are photon's own, small, per system** (`platform::reveal`,
-   `platform::open_path`, `platform::open_url`), the same calls Tauri's opener plugin makes:
-   Windows `SHOpenFolderAndSelectItems` on an `ILCreateFromPathW` of the path, which the
-   `windows` crate already in the build has, on a thread that has called
-   `CoInitializeEx`; macOS `NSWorkspace
-   activateFileViewerSelectingURLs` through `objc2`, which the AVFoundation backend
-   already uses; Linux the file manager's D-Bus interface
-   (`org.freedesktop.FileManager1.ShowItems`, through zbus, already in the lockfile), and
-   where no file manager answers, the portal's `OpenDirectory`. Open in default app and a
-   URL are `ShellExecuteW`, `NSWorkspace openURL:` and the portal's `OpenFile` (a file,
-   handed over as an open descriptor) and `OpenURI` (a URL), with `xdg-open` where no
-   portal answers. **Every stored path is `paths::canonicalize`'s already**, so a share on
+   `platform::open`, `app/open.rs`), as Tauri's opener plugin makes them: Windows
+   `SHOpenFolderAndSelectItems` on an `ILCreateFromPathW` of the path, on a thread that has
+   made COM ready, its folder opened where the shell cannot select it; macOS `open -R`;
+   Linux the file manager's D-Bus interface (`org.freedesktop.FileManager1.ShowItems`,
+   through zbus), its folder opened where no file manager answers. Open in default app and
+   a URL are the `open` crate - `ShellExecuteExW`, `open`, `xdg-open`. **The path is asked
+   about first**: the file manager on Linux answers for any path and `xdg-open` is let go of
+   before it finds out, so a photo on an unplugged drive would be revealed to nobody with
+   nothing said. **Every stored path is `paths::canonicalize`'s already**, so a share on
    Windows reaches the shell as `\\server\share\...`, the form it takes. Each call runs off
    the window's thread - a file manager on a sleeping share can take seconds - and a
    failure is a message with the system's words. Ctrl/Cmd+Shift+R reveals the selected
-   photo, as the Svelte grid does. Over a video that cannot be played the viewer offers
-   "Open in default app", the way out the video spec left for here.
+   photo, as the Svelte grid does. A video that cannot be played has its way out in the
+   viewer's menu ("Open in default app"), as in the Svelte viewer, not a button of its own
+   under the message the video spec had in mind.
 
 6. **The GPU's fallback is wgpu's software adapter, chosen by photon from what wgpu lists**
    (`WgpuSetupCreateNew::native_adapter_selector`; egui-wgpu does not expose
@@ -133,13 +131,17 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
 
 7. **AccessKit is switched on** (eframe's `accesskit` feature). Every row, button, face and
    link has told it what it is since sub-project 1, which is how the tests read the window;
-   what switching it on adds is the system's side - a screen reader can now reach them.
-   Two things it brings that the tests could not see: **a screen reader's press goes
-   through egui's `Modal`** (a dialog's ground keeps the pointer from what lies under it,
-   not an AccessKit action), so the dialog layer drops the AccessKit actions aimed under
-   it, as it drops a button going down; and the custom-drawn tiles name their photo by its
-   file name and its place. Not attempted: a full audit with a screen reader, which is the
-   smoke checklist's.
+   what switching it on adds is the system's side - a screen reader can now reach them. **A
+   screen reader's press goes through egui's `Modal`** (a dialog's ground keeps the pointer
+   from what lies under it, not an AccessKit action); what keeps it from acting is the
+   application's dropping of what the window answers under a dialog, which a test now holds
+   with an AccessKit press. A widget that changes itself as it is drawn still takes such a
+   press - a fold of the People page opens, the splitter takes the keyboard - which changes
+   nothing stored and nothing the dialog is about. **The photos are not reached**: the grid is one area with no
+   widget for a tile, so a screen reader hears the grid's controls, the sidebar and the
+   status bar ("N selected") and no photo by its name. Giving each tile in view a node of
+   its own is left for a later piece of work, with a full audit with a screen reader, which
+   is the smoke checklist's.
 
 8. **The installers are built by `xtask package`**, one subcommand for each, run by a
    workflow on `native-ui` (`native-packages.yml`: on a push to `native-ui` that touches
