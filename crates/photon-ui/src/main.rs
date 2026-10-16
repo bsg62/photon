@@ -1,11 +1,9 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use eframe::egui;
 use photon_ui::{
     app::App,
     args::{Args, USAGE},
-    dirs::IDENTIFIER,
 };
 use std::process::ExitCode;
 
@@ -32,16 +30,7 @@ fn main() -> ExitCode {
     };
 
     let probe = args.probe.clone();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("photon")
-            // What a Wayland compositor and a taskbar know the window by.
-            .with_app_id(IDENTIFIER)
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([800.0, 500.0])
-            .with_fullscreen(args.fullscreen),
-        ..Default::default()
-    };
+    let options = photon_ui::window::native_options(&args, &dirs);
     let run = eframe::run_native(
         "photon",
         options,

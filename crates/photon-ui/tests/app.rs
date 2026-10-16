@@ -111,3 +111,14 @@ fn the_stored_theme_and_tile_size_are_in_force_before_the_first_frame() {
     );
     assert_eq!(app.as_ref().unwrap().tile_size(), GridTile::Large);
 }
+
+// eframe keeps the window's size and place for photon, and with them egui's own memory
+// unless the application says not to: photon keeps what it remembers itself, and egui's
+// copy of an area's place or a field's text would be read back at the next launch.
+#[test]
+fn the_window_keeps_no_memory_of_egui() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = crate::common::library(dir.path(), 1, 0, 0);
+    let (harness, _driver) = crate::common::opened(&library, 1);
+    assert!(!eframe::App::persist_egui_memory(harness.state()));
+}
