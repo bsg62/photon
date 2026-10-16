@@ -1,8 +1,8 @@
 name: native-packages
 
-# photon-native's installers, built without Tauri's bundler (`xtask package`; spec
-# 2026-10-16-photon-native-platform-design.md, decision 8) and uploaded as artifacts - never
-# a release: main's Tauri release is untouched until the switch-over.
+# photon's installers (`xtask package`; spec 2026-10-16-photon-native-platform-design.md,
+# decision 8), uploaded as artifacts - never a release: the release workflow is the
+# switch-over's next pull request.
 on:
   push:
     branches: [native-ui]
@@ -38,8 +38,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/native-ui' }}
       - run: cargo run -p xtask -- versions
-      # photon-native alone: in a build of the whole workspace Tauri's dialog plugin turns
-      # on GTK in a crate photon-native shares with it.
       - run: cargo build --release --locked -p photon-ui --features avif-asm
       - run: cargo run -p xtask -- package deb --binary target/release/photon-native --out dist
       - name: The .deb installs what it says and links nothing it does not declare

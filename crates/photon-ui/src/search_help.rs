@@ -1,5 +1,5 @@
-//! Everything the search box understands, as the help beside it lists it:
-//! `ui/src/lib/search-help.ts`, string for string, until the switch-over deletes that file.
+//! Everything the search box understands, as the help beside it lists it - the Svelte UI's
+//! `search-help.ts`, string for string, as it stood at the switch-over.
 //!
 //! Written by hand from `Query::terms` in `photon-core`'s `search.rs` and held to it by the
 //! tests below, which read that file: a prefix, an `is:` or a `has:` the parser knows that
@@ -419,28 +419,6 @@ mod tests {
                 assert!(!entry.does.is_empty(), "{}", entry.text);
             }
         }
-    }
-
-    // The list is the Svelte UI's until the switch-over: a term added there is added here.
-    #[test]
-    fn the_list_is_the_svelte_uis() {
-        let svelte = include_str!("../../../ui/src/lib/search-help.ts");
-        for entry in SEARCH_HELP.iter().flat_map(|group| group.entries) {
-            let quoted = format!("text: '{}'", entry.text);
-            assert!(
-                svelte.contains(&quoted),
-                "{} is not in search-help.ts",
-                entry.text
-            );
-            assert!(
-                svelte.contains(&format!("does: '{}'", entry.does)),
-                "{} is worded otherwise in search-help.ts",
-                entry.text
-            );
-        }
-        let entries = svelte.matches("{ text: '").count();
-        let here: usize = SEARCH_HELP.iter().map(|group| group.entries.len()).sum();
-        assert_eq!(here, entries, "an entry of search-help.ts is not here");
     }
 
     #[test]

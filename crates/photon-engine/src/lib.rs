@@ -1,6 +1,6 @@
 //! photon-engine: `Engine`, the commands over it and the folder watcher. It depends on no
-//! UI runtime (`the_engine_depends_on_no_ui_runtime`), so more than one shell can stand on
-//! it. The shell it has today is photon-app, which its comments name where they say why.
+//! UI runtime (`the_engine_depends_on_no_ui_runtime`): the Tauri shell stood on it, and the
+//! window (`photon-ui`) took its place with no change to it.
 
 pub mod commands;
 pub mod engine;
@@ -9,7 +9,7 @@ pub mod events;
 mod memory;
 pub mod watch;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub mod testutil;
 
 #[cfg(test)]

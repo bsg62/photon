@@ -215,44 +215,6 @@ impl Adding {
 mod tests {
     use super::*;
 
-    // The words are the Svelte dialog's and `settings.ts`'s: read out of them.
-    #[test]
-    fn the_words_are_the_svelte_ones() {
-        let joined = |source: &str| {
-            (source.lines())
-                .map(str::trim)
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let settings = joined(include_str!("../../../ui/src/components/Settings.svelte"));
-        for words in [
-            NO_FOLDERS,
-            "`Remove “${watched.path}” from photon? Your files stay where they are.`",
-            "'This folder is being scanned'",
-            ">Rescan</button",
-            ">Reveal</button>",
-            ">Remove…</button>",
-            ">Add folder…</button>",
-        ] {
-            assert!(
-                settings.contains(words),
-                "Settings.svelte no longer says {words:?}"
-            );
-        }
-        let module = joined(include_str!("../../../ui/src/lib/settings.ts"));
-        for words in [
-            "`Scanning… ${scan.filesSeen.toLocaleString()} files`",
-            "label: 'Offline'",
-            "label: 'Live updates limited'",
-            "label: 'Online'",
-        ] {
-            assert!(
-                module.contains(words),
-                "settings.ts no longer says {words:?}"
-            );
-        }
-    }
-
     // `settings.test.ts`'s cases: a scan first, then offline, then the watcher.
     #[test]
     fn a_scan_is_said_first_and_offline_before_live_updates() {

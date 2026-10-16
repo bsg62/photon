@@ -256,27 +256,4 @@ mod tests {
         assert_eq!(lines(&menu)[0], "Rescan (off)");
         assert_eq!(lines(&menu)[2], "Rename in photon…");
     }
-
-    // The words are the Svelte menus': read out of the components that draw them.
-    #[test]
-    fn the_words_are_the_svelte_menus() {
-        let folder = include_str!("../../../ui/src/components/FolderMenu.svelte");
-        for words in [
-            ">Rescan</button",
-            ">Reveal in file manager</button>",
-            ">Rename in photon…</button>",
-            ">Use folder name</button",
-            "'Unhide folder' : 'Hide folder'",
-        ] {
-            assert!(
-                folder.lines().any(|line| line.contains(words)),
-                "FolderMenu.svelte no longer says {words:?}"
-            );
-        }
-        let tree = include_str!("../../../ui/src/components/FolderTree.svelte");
-        for words in [">Rename…</button>", ">Delete…</button>"] {
-            let said = tree.lines().filter(|line| line.contains(words)).count();
-            assert_eq!(said, 2, "FolderTree.svelte's two menus say {words:?}");
-        }
-    }
 }

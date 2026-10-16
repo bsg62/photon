@@ -93,8 +93,8 @@ impl ThemeChoice {
     }
 }
 
-/// How large the grid draws its tiles. The widths themselves live in the UI
-/// (`ui/src/lib/layout.ts`), because they are a layout fact, not a stored one.
+/// How large the grid draws its tiles. The widths themselves live in the window
+/// (`photon-ui`'s `grid/layout.rs`), because they are a layout fact, not a stored one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GridTile {

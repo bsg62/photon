@@ -710,36 +710,6 @@ mod tests {
         assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
     }
 
-    // The words are the Svelte menu's: read out of the component that draws it.
-    #[test]
-    fn the_words_are_the_svelte_menus() {
-        let svelte = include_str!("../../../ui/src/components/Grid.svelte");
-        for words in [
-            "Reveal in file manager",
-            "Open in default app",
-            "Copy photo",
-            "'Unstar photo' : 'Star photo'",
-            "Star {subject}",
-            "Unstar {subject}",
-            "Compare {subject}",
-            "Unhide {subject}",
-            "Hide {subject}",
-            "Add keyword to {subject}…",
-            "Remove keyword from {subject}…",
-            "Add {subject} to a person…",
-            "Remove {subject} from “{library.personName(library.info.person)}”",
-            "Remove {subject} from “{library.albumName(albumId)}”",
-            "Export {subject}…",
-            ">Add to album<",
-            NO_ALBUMS,
-        ] {
-            assert!(
-                svelte.lines().any(|line| line.contains(words)),
-                "Grid.svelte no longer says {words:?}"
-            );
-        }
-    }
-
     #[test]
     fn stars_that_could_not_be_written_are_counted_of_those_asked() {
         assert_eq!(stars_missed(12, 12, true), None);

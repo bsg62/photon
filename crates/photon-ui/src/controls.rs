@@ -143,23 +143,4 @@ mod tests {
             }));
         }
     }
-
-    // The words are the Svelte controls', until the switch-over.
-    #[test]
-    fn the_options_are_worded_as_the_svelte_controls_word_them() {
-        let sort = include_str!("../../../ui/src/components/SortControl.svelte");
-        for (_, label) in SORT_KEYS {
-            assert!(sort.contains(&format!("label: '{label}'")), "{label}");
-        }
-        let grouping = include_str!("../../../ui/src/lib/grouping.ts");
-        for (_, label) in GROUPINGS {
-            assert!(grouping.contains(&format!("label: '{label}'")), "{label}");
-        }
-        let size = include_str!("../../../ui/src/components/SizeControl.svelte");
-        for (_, label) in SIZES {
-            assert!(size.contains(&format!("label: '{label}'")), "{label}");
-        }
-        let group = include_str!("../../../ui/src/components/GroupControl.svelte");
-        assert!(group.contains(GROUPING_IDLE));
-    }
 }

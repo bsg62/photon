@@ -288,48 +288,6 @@ mod tests {
         vec![tag("Lisbon", 3), tag("lake", 2), tag("Porto", 1)]
     }
 
-    // The words are the Svelte ones: read out of the component and the module that say
-    // them, their lines joined.
-    #[test]
-    fn the_words_are_the_svelte_ones() {
-        let joined = |source: &str| {
-            (source.lines())
-                .map(str::trim)
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let settings = joined(include_str!("../../../ui/src/components/Settings.svelte"));
-        for words in [
-            NO_TAGS,
-            "placeholder=\"Filter tags\"",
-            ">Rename</button>",
-            ">Remove…</button>",
-            "<h2>Changes</h2>",
-            ">Restore</button>",
-            "No tag matches “{tagFilter}”.",
-            "aria-label=\"New name for {tag.tag}\"",
-            "`Remove “${tag.tag}” from photon? The keyword stays in your photo files, and you can restore it under Changes.`",
-        ] {
-            assert!(
-                settings.contains(words),
-                "Settings.svelte no longer says {words:?}"
-            );
-        }
-        let renamer = joined(include_str!("../../../ui/src/lib/tag-renamer.svelte.ts"));
-        for words in [
-            "'A tag needs a name.'",
-            "`Merge “${from}” into “${to}”? Photos tagged with either will show under “${to}”.`",
-            "`“${to}” is listed under Changes. Renaming onto it undoes that change and shows its photos and those tagged “${from}” under “${to}”.`",
-        ] {
-            assert!(
-                renamer.contains(words),
-                "tag-renamer.svelte.ts no longer says {words:?}"
-            );
-        }
-        let module = joined(include_str!("../../../ui/src/lib/tags.ts"));
-        assert!(module.contains("`${rule.tag} — removed` : `${rule.tag} → ${rule.target}`"));
-    }
-
     // `tags.test.ts`'s cases.
     #[test]
     fn the_filter_is_a_substring_without_case() {

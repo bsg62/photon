@@ -226,20 +226,6 @@ pub fn install(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
-    // The path data is a hand copy of `icons.ts`, which stays the source until the
-    // switch-over: a Lucide update there must not leave this file a version behind.
-    #[test]
-    fn every_icon_is_the_svelte_uis() {
-        let source = include_str!("../../../ui/src/lib/icons.ts");
-        for icon in Icon::ALL {
-            assert!(
-                source.contains(&format!("'{}'", icon.inner())),
-                "{} differs from icons.ts",
-                icon.name()
-            );
-        }
-    }
-
     // The dot of a tag and the sun of a picture are filled with `currentColor`, which is
     // black unless the document says otherwise, and the icons are tinted by multiplying.
     #[test]

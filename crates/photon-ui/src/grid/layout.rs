@@ -1,6 +1,6 @@
 //! Grid geometry: square tiles in rows of one height, with a header row for every section
-//! that names a folder or a period. `ui/src/lib/layout.ts` in Rust, constant for constant,
-//! until the switch-over deletes that file.
+//! that names a folder or a period. The Svelte UI's `layout.ts` in Rust, constant for
+//! constant.
 //!
 //! Everything is pure, and in `f64`: a large library is taller than an `f32` can count
 //! pixels in (it is exact only to 16,777,216), and every `top` here is such a count.

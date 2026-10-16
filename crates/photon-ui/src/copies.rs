@@ -173,19 +173,4 @@ mod tests {
         assert!(!marked(GridView::Duplicates));
         assert!(!marked(GridView::Copies));
     }
-
-    // The words are the Svelte view's.
-    #[test]
-    fn the_words_are_the_svelte_views() {
-        let svelte = include_str!("../../../ui/src/lib/copies.ts");
-        for words in [
-            "is no longer in the library; its copies are under Duplicates.",
-            "is hidden; these are its copies. Unhide it from Hidden.",
-            "No other copies of ${",
-            "|| 'This photo'",
-            "|| 'this photo'",
-        ] {
-            assert!(svelte.contains(words), "{words}");
-        }
-    }
 }

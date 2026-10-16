@@ -351,37 +351,6 @@ mod tests {
         }
     }
 
-    // The words are `shortcuts.ts`'s: every row's, and the groups' titles.
-    #[test]
-    fn the_words_are_the_svelte_lists() {
-        let svelte = include_str!("../../../ui/src/lib/shortcuts.ts");
-        let joined = (svelte.lines())
-            .map(str::trim)
-            .collect::<Vec<_>>()
-            .join(" ");
-        for group in SHORTCUTS {
-            assert!(
-                joined.contains(&format!("title: '{}'", group.title)),
-                "{}",
-                group.title
-            );
-            for row in group.rows {
-                // Quoted either way: the Svelte list writes a row with an apostrophe in
-                // double quotes.
-                assert!(
-                    joined.contains(&format!("does: '{}'", row.does))
-                        || joined.contains(&format!("does: \"{}\"", row.does)),
-                    "{}",
-                    row.does
-                );
-            }
-        }
-        let list = include_str!("../../../ui/src/components/Settings.svelte");
-        assert!(list.lines().any(|line| line.contains(SECTION_HINT)));
-        let sheet = include_str!("../../../ui/src/components/ShortcutSheet.svelte");
-        assert!(sheet.lines().any(|line| line.contains(SHEET_TITLE)));
-    }
-
     #[test]
     fn mod_is_spelt_as_the_platform_spells_it() {
         assert_eq!(chord_label(&["Mod", "A"], false), ["Ctrl", "A"]);

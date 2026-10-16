@@ -201,7 +201,7 @@ impl Library {
     /// set. Served by `items_similar_group`, so it reads the grouped rows and not the rest.
     ///
     /// `pub` because it is also the only way to see what a pass *left behind*, which is
-    /// what `photon-app`'s tests about requesting a pass assert on: the Duplicates view is
+    /// what the engine's tests about requesting a pass assert on: the Duplicates view is
     /// kept honest by `DUPLICATE_FILTER` whether or not a pass ran, so the view cannot tell
     /// the two apart and the column can.
     pub fn similar_groups(&self) -> Result<Vec<(i64, i64)>> {

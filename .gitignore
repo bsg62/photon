@@ -1,8 +1,5 @@
 /target
 **/*.rs.bk
 .DS_Store
-node_modules/
-ui/dist/
-crates/photon-app/gen/
 .claude/worktrees/
 .superpowers/

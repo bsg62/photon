@@ -100,23 +100,31 @@ under the pointer** in the info panel, where a long one is cut short (its `title
 1. **Parity: the grid, the viewer and the keyboard** - items 1-8 above, and this spec.
 2. **Dates and numbers in the system's locale** - item 9: `locale.rs`, and the formatters
    it replaces (`grid/labels.rs`, `viewer_caption.rs`, "On this day", the counts).
-3. **photon-native becomes photon, and the release is the native one** - the binary is
+3. **The Svelte photon goes** - `ui/`, `crates/photon-app`, `package.json`,
+   `package-lock.json`, the npm gate, the Chromium screenshot harness and `mock.js`,
+   `scroll-probe`, the grid gate and its Svelte column (`svelte-probe.patch`, its
+   worktree), and the Tauri `release.yml`. `--probe` and `fixture-library` stay: the
+   measurement is kept on its own, run by a person. CI installs neither webkit2gtk nor
+   Node. `xtask versions` and `metadata` read `Cargo.toml` alone. The engine's commands no
+   one calls go (the web view's paging, `neighbours` - the window's viewer has no preload
+   of its neighbours' pictures, the cache's previews being read as they are wanted - and the
+   commands the window reaches through `Engine` itself), and so does the engine's list of
+   scans a late listener asks for (`scanning_folders`), the window's channel being made
+   before the engine opens; `every_command_of_the_engine_is_called_by_the_window` fails on
+   a public function of `commands.rs` that `photon-ui` never calls. The tests that held the
+   window to the Svelte files (the tokens to `tokens.css`, the shortcut and search-help
+   lists to theirs, the lockfile's one `windows` crate that Tauri split) go or stand on
+   their own. CLAUDE.md and the smoke checklist are written again for one interface: what
+   was the Svelte photon's alone goes, what the window answers stays under its own name.
+   Done before the rename, so that the rename and the release have no Tauri bundle to step
+   round.
+4. **photon-native becomes photon, and the release is the native one** - the binary is
    `photon`; `release.yml` builds the six installers by `xtask package` on a tag, as a
    draft release with `SHA256SUMS`, and `native-packages.yml` is folded into it (artifacts
-   on `native-ui` until the merge); the icons move into `photon-ui`; `xtask versions` and
-   `metadata` read no `tauri.conf.json`.
-4. **The pictures** - `native-shot` draws the surfaces the Svelte harness drew and it
+   on `native-ui` until the merge).
+5. **The pictures** - `native-shot` draws the surfaces the Svelte harness drew and it
    lacks, and with `--photos` draws them over the CC0 photos for the website; `site/img`
    is made from it.
-5. **The Svelte photon goes** - `ui/`, `crates/photon-app`, `package.json`,
-   `package-lock.json`, the npm gate, the Chromium screenshot harness and `mock.js`,
-   `scroll-probe`, and the grid gate's Svelte column (`svelte-probe.patch`, its worktree):
-   with nothing to measure against, the gate goes, and `--probe` with it unless the
-   measurement is kept on its own. CI installs neither webkit2gtk nor Node. The engine's
-   functions no one calls go, and a test fails on a public function of `commands.rs` that
-   `photon-ui` never calls. CLAUDE.md and the smoke checklist are written again for one
-   interface: what was the Svelte photon's alone goes, what the native window answers
-   stays under its own name.
 6. **The whole-branch review** - one reader of `main..native-ui` entire, pointed at what
    the native window arms in the engine and at the release; one fix pass.
 

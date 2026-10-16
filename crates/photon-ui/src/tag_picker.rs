@@ -374,42 +374,4 @@ mod tests {
             "Remove a keyword from 3,000 photos"
         );
     }
-
-    // The words are the Svelte dialog's: read out of the two files that hold them.
-    #[test]
-    fn the_words_are_the_svelte_dialogs() {
-        let dialog = include_str!("../../../ui/src/components/TagPicker.svelte");
-        for words in [
-            "'Add a keyword to' : 'Remove a keyword from'",
-            "'New or existing keyword' : 'Keyword to remove'",
-            "'Keyword to add' : 'Keyword to remove'",
-            "'Add' : 'Remove'",
-            NO_KEYWORDS,
-            NO_MATCH,
-            LIST,
-            "aria-label=\"Cancel\"",
-        ] {
-            assert!(
-                dialog.lines().any(|line| line.contains(words)),
-                "TagPicker.svelte no longer says {words:?}"
-            );
-        }
-        for mode in [Mode::Add, Mode::Remove] {
-            for words in [mode.placeholder(), mode.field(), mode.button()] {
-                assert!(dialog.contains(&format!("'{words}'")), "{words:?}");
-            }
-        }
-        let state = include_str!("../../../ui/src/lib/tag-picker.svelte.ts");
-        for words in [
-            "mode === 'add' ? 'Added' : 'Removed'",
-            "mode === 'add' ? 'to' : 'from'",
-            "`${verb} “${done.tag}” ${preposition} ${reached}`",
-            "of ${counted(asked)}",
-        ] {
-            assert!(
-                state.lines().any(|line| line.contains(words)),
-                "tag-picker.svelte.ts no longer says {words:?}"
-            );
-        }
-    }
 }

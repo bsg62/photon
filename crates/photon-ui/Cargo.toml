@@ -13,8 +13,8 @@ authors.workspace = true
 # where twenty-five ran one after another, each ending on its slowest few.
 autotests = false
 
-# `photon` is photon-app's binary until the switch-over; this one is named apart so both
-# can be built side by side.
+# `photon` was the Tauri shell's binary; this one keeps the name it was built under, beside
+# that one, until the switch-over's rename.
 [[bin]]
 name = "photon-native"
 path = "src/main.rs"

@@ -1991,26 +1991,4 @@ mod tests {
             "the last selection's name came back by Ctrl+Z"
         );
     }
-
-    // The words are the Svelte page's.
-    #[test]
-    fn the_words_are_the_svelte_pages() {
-        let page = include_str!("../../../ui/src/components/PeoplePage.svelte");
-        for words in [
-            "photon finds and groups faces only while Find faces is on.",
-            "No faces grouped yet.",
-            "photon groups faces once it has found them; this page fills in as it goes.",
-            "Yes, this is {offer.name}",
-            "Offered because {g.offer.faces} of these faces are ones Picasa named {g.offer.name}.",
-            "Name or ignore some to see the rest.",
-            "faces photon thinks are someone you named",
-            "Rename",
-            "Merge into…",
-            "Stop ignoring",
-            "No faces shown",
-            "Open Settings",
-        ] {
-            assert!(page.contains(words), "{words}");
-        }
-    }
 }

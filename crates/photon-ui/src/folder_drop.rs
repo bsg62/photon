@@ -272,28 +272,4 @@ mod tests {
         assert!(can_arrive(Err(HandleError::NotSupported)));
         assert!(can_arrive(Err(HandleError::Unavailable)));
     }
-
-    // The words are the Svelte window's: read out of the files that hold them.
-    #[test]
-    fn the_words_are_the_svelte_windows() {
-        // Each with what stands on either side of it there: a sentence cut short is
-        // still found inside the whole one.
-        let app = include_str!("../../../ui/src/App.svelte");
-        let card = format!("/> {CARD}</div>");
-        assert!(app.lines().any(|line| line.contains(&card)), "{CARD:?}");
-        let grid = include_str!("../../../ui/src/components/Grid.svelte");
-        let aside = format!(">{ASIDE}</p>");
-        assert!(grid.lines().any(|line| line.contains(&aside)), "{ASIDE:?}");
-        let state = include_str!("../../../ui/src/lib/folder-drop.svelte.ts");
-        for words in [
-            "`Watching “${leaf(added[0].path)}”`",
-            "`Watching ${added.length} folders`",
-            "(and ${refused.length - 1} more)",
-        ] {
-            assert!(
-                state.lines().any(|line| line.contains(words)),
-                "folder-drop.svelte.ts no longer says {words:?}"
-            );
-        }
-    }
 }

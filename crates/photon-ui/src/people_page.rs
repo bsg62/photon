@@ -1441,46 +1441,4 @@ mod tests {
         );
         assert_eq!(name_hint(&NameChoice::Empty, false), None);
     }
-
-    // The words are the Svelte page's.
-    #[test]
-    fn the_words_are_the_svelte_pages() {
-        let model = include_str!("../../../ui/src/lib/people-page.svelte.ts");
-        assert!(model.contains(STALE_GROUP));
-        assert!(model.contains("export const STRIP = 12;"));
-        assert!(model.contains("export const MORE = 200;"));
-        assert!(model.contains("export const CHANGE_GAP_MS = 1000;"));
-        assert!(model.contains("`Confirm these ${n}`"));
-        assert!(model.contains(
-            "`Merge “${nameOf(from)}” into “${nameOf(into)}”? Their faces become ${nameOf(into)}'s. This cannot be undone.`"
-        ));
-        assert!(model.contains(
-            "`Delete “${nameOf(person)}”? Their faces stay together as a group with no name.`"
-        ));
-        assert_eq!(
-            merge_question("Anna", "Ben"),
-            "Merge “Anna” into “Ben”? Their faces become Ben's. This cannot be undone."
-        );
-        let strip = include_str!("../../../ui/src/components/FaceStrip.svelte");
-        for action in [
-            FaceAction::Confirm,
-            FaceAction::Reject,
-            FaceAction::Ignore,
-            FaceAction::Unignore,
-        ] {
-            assert!(
-                strip.contains(&format!("'{}'", action.label())),
-                "{action:?}"
-            );
-        }
-        let name_box = include_str!("../../../ui/src/components/NameBox.svelte");
-        for words in [
-            "`Add to ${choice.name}`",
-            "`New person “${choice.name}”`",
-            "`Rename to “${choice.name}”`",
-            "· Enter",
-        ] {
-            assert!(name_box.contains(words), "{words}");
-        }
-    }
 }
