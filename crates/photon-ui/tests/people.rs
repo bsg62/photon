@@ -1024,3 +1024,166 @@ fn a_question_about_a_person_renamed_meanwhile_closes() {
     driver.settle(&mut harness);
     assert_eq!(named(harness.state()), ["Anne"], "and Anne is still there");
 }
+
+// The page scrolls as far a notch as the grid does - the system's notch, a hundred points
+// at Windows' three lines a notch, where it moved forty whatever the system said and was
+// "slow" to the first person to run it on Windows - and its scrollbar is the grid's, which
+// a press takes hold of: it was a mark nothing could drag.
+#[test]
+fn the_page_scrolls_by_the_systems_notch_and_its_bar_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 24, 0, 0);
+    let ids = photo_ids(&library);
+    let groups: Vec<&[i64]> = ids.chunks(2).collect();
+    grouped(&library, &groups);
+    let dirs = library.dirs();
+    let mut harness: Harness<'_> = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 500.0))
+        .with_step_dt(crate::common::REFRESH as f32)
+        .build_eframe(move |cc| {
+            (App::new(cc, dirs, None).unwrap())
+                .with_videos(crate::common::no_videos())
+                .with_platform(crate::common::no_platform())
+                .with_wheel(|| photon_ui::grid::scroll::Notch::Points(100.0))
+        });
+    let mut driver = Driver::new(&harness);
+    driver.until(&mut harness, "the library shown", |app| {
+        app.photos() == 24 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    open_page(&mut driver, &mut harness);
+    driver.settle(&mut harness);
+    driver.act(&mut harness);
+    let over = egui::pos2(600.0, 250.0);
+    harness.event(egui::Event::PointerMoved(over));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    assert_eq!(harness.state().people_scrolled(), (100.0, false));
+    // A press at the foot of the bar's track, at the window's right edge: the page at
+    // its end, the thumb held.
+    let foot = egui::pos2(995.0, 440.0);
+    harness.event(egui::Event::PointerMoved(foot));
+    driver.act(&mut harness);
+    harness.event(button(foot, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    let (scrolled, held) = harness.state().people_scrolled();
+    assert!(held, "the bar takes the press");
+    assert!(scrolled > 100.0, "the page went to {scrolled}");
+    harness.event(button(foot, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(!harness.state().people_scrolled().1, "let go of");
+}
+
+/// A library of two groups, the first named Anna on the page and the caret in the other's
+/// box, with `typed` typed in it.
+fn typing_after_anna<'a>(
+    dir: &std::path::Path,
+    typed_in: &str,
+) -> (
+    crate::common::Harness<'a>,
+    Driver,
+    photon_ui::fixture::Fixture,
+) {
+    let library = library(dir, 12, 0, 0);
+    let ids = photo_ids(&library);
+    grouped(&library, &[&ids[0..3], &ids[3..5]]);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    name_first_group(&mut driver, &mut harness, "Anna");
+    driver.until(&mut harness, "Anna listed", |app| {
+        let page = app.people_page().unwrap();
+        (page.people().iter()).any(|person| person.name.as_deref() == Some("Anna"))
+            && page.unnamed().len() == 1
+    });
+    driver.frames_in(&mut harness, 0.5);
+    let at = (harness.query_all_by_label("Name this group"))
+        .next()
+        .unwrap()
+        .rect()
+        .center();
+    click_at(&mut driver, &mut harness, at);
+    typed(&mut driver, &mut harness, typed_in);
+    // The list is an area of its own, drawn first unseen to be measured.
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    (harness, driver, library)
+}
+
+/// Whether the other group has gone into Anna: no unnamed group left, Anna with its faces.
+fn merged_into_anna(app: &App) -> bool {
+    let page = app.people_page().unwrap();
+    page.unnamed().is_empty()
+        && (page.people().iter())
+            .any(|person| person.name.as_deref() == Some("Anna") && person.face_count == 5)
+}
+
+// A name half typed for a group offers the people whose name it begins: the arrow takes
+// the first, its line says what Enter does, and Enter puts the group's faces with her - a
+// name the user did not have to type whole (asked for by the first person to run the
+// page).
+#[test]
+fn a_person_offered_under_a_name_is_picked_by_the_arrow_and_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _library) = typing_after_anna(dir.path(), "an");
+    driver.seen(&mut harness, "New person “an” · Enter");
+    key(&mut driver, &mut harness, Key::ArrowDown);
+    driver.seen(&mut harness, "Add to Anna · Enter");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the group in Anna", merged_into_anna);
+}
+
+// And by a click on her row in the list.
+#[test]
+fn a_person_offered_under_a_name_is_picked_by_a_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _library) = typing_after_anna(dir.path(), "AN");
+    // Her row in the list, under the box - not her name in the People section above, nor
+    // her row in the sidebar.
+    let field = (harness.query_all_by_label("Name this group"))
+        .next()
+        .unwrap()
+        .rect();
+    let row = (harness.query_all_by_label("Anna"))
+        .filter(|node| node.accesskit_node().role() == egui::accesskit::Role::Button)
+        .map(|node| node.rect())
+        .find(|rect| (rect.left() - field.left()).abs() < 12.0)
+        .expect("Anna offered under the box");
+    click_at(&mut driver, &mut harness, row.center());
+    driver.until(&mut harness, "the group in Anna", merged_into_anna);
+}
+
+// What is typed and names nobody offers nobody, and Enter makes a new person of it.
+#[test]
+fn a_name_nobody_has_offers_nobody() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _library) = typing_after_anna(dir.path(), "Ben");
+    key(&mut driver, &mut harness, Key::ArrowDown);
+    driver.seen(&mut harness, "New person “Ben” · Enter");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "Ben listed", |app| {
+        (app.people_page().unwrap().people().iter())
+            .any(|person| person.name.as_deref() == Some("Ben"))
+    });
+}
+
+// A letter typed after the arrow has taken a person lets go of her, even where she is
+// still offered: Enter is then the name as typed, as its line says.
+#[test]
+fn a_letter_typed_after_the_arrow_lets_go_of_the_person() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _library) = typing_after_anna(dir.path(), "An");
+    key(&mut driver, &mut harness, Key::ArrowDown);
+    driver.seen(&mut harness, "Add to Anna · Enter");
+    typed(&mut driver, &mut harness, "n");
+    driver.seen(&mut harness, "New person “Ann” · Enter");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "Ann listed", |app| {
+        (app.people_page().unwrap().people().iter())
+            .any(|person| person.name.as_deref() == Some("Ann"))
+    });
+}

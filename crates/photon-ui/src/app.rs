@@ -4010,16 +4010,10 @@ impl App {
             Action::Panel(PanelButton::ShowHidden) => self.go(Step::View(View::Hidden)),
             Action::Panel(PanelButton::WatchedFolders) => self.open_settings(Section::Folders),
             Action::Settings => self.open_settings(Section::Folders),
-            // The system's picker straight away, as the Svelte panel opens it, over
-            // Settings' list of folders with the field a folder is typed in open: where
-            // no picker can be opened, that is said, and the field is what is left.
-            Action::Panel(PanelButton::AddFolder) => {
-                self.open_settings(Section::Folders);
-                if let Some(Dialog::Settings(settings)) = &mut self.dialog {
-                    settings.adding = Some(Default::default());
-                }
-                self.pick_folder(pick::PickFor::AddFolder);
-            }
+            // The system's picker straight away, and the folder chosen watched, as the
+            // Svelte panel does: where no picker can be opened, that is said, and
+            // Settings' field a folder is typed in is what is left (`pick.rs`).
+            Action::Panel(PanelButton::AddFolder) => self.pick_folder(pick::PickFor::Watch),
             // Applied first and stored second, so the press is answered at once. A size
             // the library would not store is kept for this session all the same: going
             // back would answer a disk error with the whole grid laid out again.
@@ -4657,6 +4651,7 @@ impl eframe::App for App {
         self.keep_title_bar(ui.ctx());
         let in_view = ui.ctx().content_rect().height() - TOP_BAR - STATUS_BAR;
         crate::grid::view::set_wheel_notch(ui.ctx(), self.notch.points(f64::from(in_view)));
+        crate::scroll_bar::keep_notch(ui.ctx(), self.notch);
         // What the window has asked for and the window has now done is no longer on
         // its way.
         let reported = ui.ctx().input(|input| input.viewport().fullscreen);

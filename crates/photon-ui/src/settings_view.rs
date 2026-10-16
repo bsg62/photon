@@ -33,8 +33,8 @@ use crate::{
     watched_list::{self, ADD, ADD_FOLDER, CHOOSE, FolderRow, Kind, NO_FOLDERS, RESCAN},
 };
 use eframe::egui::{
-    self, Color32, CornerRadius, Event, FontId, Id, Key, Modifiers, Rect, Sense, Stroke,
-    StrokeKind, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
+    self, Color32, CornerRadius, FontId, Id, Key, Modifiers, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
 use photon_core::library::TagCount;
 use std::sync::Arc;
@@ -62,8 +62,6 @@ const FIELD: f32 = 64.0;
 const STAT_ROW: f32 = 26.0;
 const STAT_LABEL: f32 = 176.0;
 const STAT_COUNT: f32 = 72.0;
-/// A notch of the wheel over the section, whatever the system's: the info panel's.
-const NOTCH: f32 = 40.0;
 
 /// The interval's field, to egui.
 pub(crate) fn interval_id() -> Id {
@@ -140,38 +138,31 @@ pub struct SettingsView {
 }
 
 /// A column painted by hand and scrolled by a number of its own: how far it is scrolled,
-/// how tall it came to when last drawn, and how far it is to be scrolled in the next frame
-/// to bring something into sight. Settings' section and the shortcut sheet's body.
+/// how tall it came to when last drawn, how far it is to be scrolled in the next frame to
+/// bring something into sight, and its scrollbar (`scroll_bar`). Settings' section, the
+/// shortcut sheet's body and the People page.
 #[derive(Default)]
 pub(crate) struct Column {
     pub(crate) scroll: f32,
     content: f32,
     pub(crate) reveal: f32,
+    bar: crate::scroll_bar::Bar,
 }
 
 impl Column {
-    /// The column in `inner`, within `place`, the room the wheel turns it in: the page to
-    /// fill, which `end` is given back once it has been.
-    pub(crate) fn begin(&mut self, ui: &egui::Ui, place: Rect, inner: Rect) -> Page {
+    /// The column in `inner`, within `place`, the room the wheel turns it in and whose
+    /// right edge its bar stands at: the page to fill, which `end` is given back once it
+    /// has been. `id` names the bar, which is a widget.
+    pub(crate) fn begin(&mut self, ui: &egui::Ui, id: egui::Id, place: Rect, inner: Rect) -> Page {
         if ui.rect_contains_pointer(place) {
-            let turned: f32 = ui.input(|input| {
-                (input.events.iter())
-                    .map(|event| match event {
-                        Event::MouseWheel { unit, delta, .. } => match unit {
-                            egui::MouseWheelUnit::Line => delta.y * NOTCH,
-                            egui::MouseWheelUnit::Point => delta.y,
-                            egui::MouseWheelUnit::Page => delta.y * inner.height(),
-                        },
-                        _ => 0.0,
-                    })
-                    .sum()
-            });
-            self.scroll -= turned;
+            self.scroll -= crate::scroll_bar::turned(ui, inner.height());
         }
         self.scroll += std::mem::take(&mut self.reveal);
         // Held to what there is to scroll, as it was when last drawn.
         let most = (self.content - inner.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, most);
+        let track = crate::scroll_bar::track(place);
+        self.scroll = (self.bar).hold(ui, id, track, self.scroll, self.content, inner.height());
         Page {
             painter: ui.painter().clone(),
             clip: inner,
@@ -183,7 +174,7 @@ impl Column {
         }
     }
 
-    /// The column filled: how tall it came to, and its mark at `place`'s right edge.
+    /// The column filled: how tall it came to, and its bar at `place`'s right edge.
     pub(crate) fn end(
         &mut self,
         ui: &egui::Ui,
@@ -198,14 +189,20 @@ impl Column {
         if self.scroll > (self.content - inner.height()).max(0.0) {
             ui.ctx().request_repaint();
         }
-        if self.content > inner.height() {
-            let share = inner.height() / self.content;
-            let mark = Rect::from_min_size(
-                pos2(place.right() - 6.0, inner.top() + self.scroll * share),
-                vec2(3.0, inner.height() * share),
-            );
-            (ui.painter()).rect_filled(mark, 1.5, color(palette.line).gamma_multiply(2.0));
-        }
+        (self.bar).paint(
+            ui,
+            crate::scroll_bar::track(place),
+            self.scroll,
+            self.content,
+            inner.height(),
+            color(palette.field_hover),
+            color(palette.text_dim),
+        );
+    }
+
+    /// How far it is scrolled, and whether its bar is held: for a test.
+    pub fn scrolled(&self) -> (f32, bool) {
+        (self.scroll, self.bar.held())
     }
 }
 
@@ -695,7 +692,7 @@ impl SettingsView {
             self.of = Some(settings.section);
             self.column.scroll = 0.0;
         }
-        let mut page = self.column.begin(ui, place, inner);
+        let mut page = (self.column).begin(ui, Id::new("settings-column"), place, inner);
         let page = ui
             .scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.set_clip_rect(inner.intersect(ui.clip_rect()));

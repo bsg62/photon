@@ -2593,9 +2593,9 @@ fn a_letter_typed_after_a_wheels_step_from_the_field_hides_no_photo() {
     assert_eq!(field.accesskit_node().value().as_deref(), Some("hills"));
 }
 
-/// How far one notch of the wheel over the panel moves it, in a window low enough for
-/// the panel to scroll, where the system's notch is `notch`.
-fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
+/// The viewer with its panel open, in a window low enough for the panel to scroll, where
+/// the system's notch is `notch`: and where "Dates" stood, beside the library's folder.
+fn a_low_panel<'a>(notch: fn() -> Notch) -> (tempfile::TempDir, Harness<'a>, Driver, f32) {
     let dir = tempfile::tempdir().unwrap();
     let library = library(dir.path(), 12, 0, 0);
     let ids = photo_ids(&library);
@@ -2622,6 +2622,22 @@ fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
     driver.act(&mut harness);
     driver.act(&mut harness);
     let before = harness.get_by_label("Dates").rect().top();
+    (dir, harness, driver, before)
+}
+
+/// How far "Dates" has gone up since it stood at `before`: everything, when it is out
+/// of sight.
+fn gone_up(harness: &Harness<'_>, before: f32) -> f32 {
+    match harness.query_by_label("Dates") {
+        Some(dates) => before - dates.rect().top(),
+        None => f32::INFINITY,
+    }
+}
+
+/// How far one notch of the wheel over the panel moves it, where the system's notch is
+/// `notch`.
+fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
+    let (_dir, mut harness, mut driver, before) = a_low_panel(notch);
     let over = harness.get_by_label("Dates").rect().center();
     harness.event(egui::Event::PointerMoved(over));
     harness.event(egui::Event::MouseWheel {
@@ -2632,36 +2648,56 @@ fn a_notch_over_the_panel(notch: fn() -> Notch) -> f32 {
     });
     driver.act(&mut harness);
     driver.act(&mut harness);
-    match harness.query_by_label("Dates") {
-        Some(dates) => before - dates.rect().top(),
-        None => f32::INFINITY,
-    }
+    gone_up(&harness, before)
 }
 
-// The plan: "The wheel over the panel goes by egui's own distance a notch
-// (`line_scroll_speed`), not by the system's lines as the grid's does". But
-// `line_scroll_speed` is not egui's own here: `App::ui` writes the system's notch into
-// it in every frame (`set_wheel_notch`), so the panel goes by the system's lines exactly
-// as the grid does - a hundred points at Windows' three lines, not forty.
+// A notch moves the panel as far as it moves the grid: the system's own, a hundred points
+// at Windows' three lines. It moved forty whatever the system said, and the People page,
+// which went by the same rule, was "slow" beside the grid to the first person to run it on
+// Windows.
 #[test]
-fn the_panels_notch_is_eguis_own_forty_points_whatever_the_systems() {
+fn the_panels_notch_is_the_grids() {
     let moved = a_notch_over_the_panel(|| Notch::Points(100.0));
     assert!(
-        (moved - 40.0).abs() < 0.5,
+        (moved - 100.0).abs() < 0.5,
         "a notch moved the panel {moved} points where the system's notch is a hundred"
     );
 }
 
-// And where Windows is set to scroll no lines a notch, the panel cannot be scrolled by
-// the wheel at all - and it has no other way: its mark takes no press and it answers
-// no key. What is below its foot cannot be reached.
+// Where Windows is set to scroll no lines a notch, the wheel moves the panel no more than
+// it moves the grid, and the panel's scrollbar - the grid's own - takes it down: a press
+// at the foot of its track brings its end into sight.
 #[test]
-fn a_panel_taller_than_the_window_can_be_scrolled_where_the_system_scrolls_no_lines() {
-    let moved = a_notch_over_the_panel(|| Notch::Points(0.0));
-    assert!(
-        moved > 0.0,
-        "a notch moved the panel {moved} points: nothing below its foot can be reached"
+fn a_panel_the_wheel_does_not_move_is_taken_down_by_its_scrollbar() {
+    assert_eq!(a_notch_over_the_panel(|| Notch::Points(0.0)), 0.0);
+    let (_dir, mut harness, mut driver, before) = a_low_panel(|| Notch::Points(0.0));
+    let size = harness.ctx.content_rect();
+    let panel = photon_ui::viewer_layout::info_place(photon_ui::viewer_layout::Frame {
+        left: size.left(),
+        top: size.top(),
+        width: size.width(),
+        height: size.height(),
+    });
+    let foot = Pos2::new(
+        panel.left + panel.width - 4.0,
+        panel.top + panel.height - 2.0,
     );
+    harness.event(egui::Event::PointerMoved(foot));
+    driver.act(&mut harness);
+    harness.event(egui::Event::PointerButton {
+        pos: foot,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(
+        gone_up(&harness, before) > 0.0,
+        "a press on the panel's scrollbar moved nothing"
+    );
+    // And the photo under the panel is not what was pressed: the viewer is still open.
+    assert!(harness.state().viewer_info());
 }
 
 // "The photo is not handed back to the grid first: the grid that was under the viewer

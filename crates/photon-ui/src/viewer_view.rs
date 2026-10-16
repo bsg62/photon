@@ -43,8 +43,6 @@ use eframe::egui::{
 
 /// A tool in the bar, and the room between two.
 const TOOL: f32 = 30.0;
-/// How far a notch of the wheel moves the info panel, in points.
-const PANEL_NOTCH: f32 = 40.0;
 const TOOL_GAP: f32 = 2.0;
 /// The room between two groups of tools: a line a point wide, with air on both sides.
 const GROUP_GAP: f32 = TOOL_GAP + S[0] + 1.0 + S[0] + TOOL_GAP;
@@ -885,6 +883,10 @@ impl ViewerView {
         let held = ui.input(|input| input.modifiers);
         let over_panel =
             pointer.is_some_and(|at| controls.panel.is_some_and(|panel| panel.contains(at)));
+        // The panel is about as tall as the photo's area, which pages it.
+        let line = controls.panel.map_or(0.0, |panel| {
+            crate::scroll_bar::notch_points(ui.ctx(), panel.height())
+        });
         for event in &events {
             match event {
                 // Ctrl/Cmd+C reaches egui as a copy and not as a key (egui-winit turns
@@ -977,14 +979,14 @@ impl ViewerView {
                     });
                 }
                 // Over the info panel the wheel is the panel's, which is as tall as
-                // what it has to say, and steps to no other photo. A notch is forty
-                // points, whatever the system's: nothing in the panel is far away, and
-                // by the system's lines - which the grid goes by - a Windows set to
-                // scroll none a notch could not reach the panel's foot at all, the
-                // panel having no other way to be scrolled.
+                // what it has to say, and steps to no other photo. A notch moves it as
+                // far as it moves the grid (`scroll_bar::turned`): forty points
+                // whatever the system said went at two fifths of the grid's pace on a
+                // Windows at its own three lines. Set to none a notch, the panel's bar
+                // is the way down it.
                 Event::MouseWheel { unit, delta, .. } if over_panel => {
                     self.info.turned(match unit {
-                        egui::MouseWheelUnit::Line => delta.y * PANEL_NOTCH,
+                        egui::MouseWheelUnit::Line => delta.y * line,
                         egui::MouseWheelUnit::Point => delta.y,
                         egui::MouseWheelUnit::Page => delta.y * area.height,
                     });

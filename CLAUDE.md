@@ -1684,8 +1684,8 @@ before the engine is opened, so no report is sent before someone listens.
 
 **The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
 All photos and Recent alone; every other view has its one line. "Add folder…" opens
-the system's folder picker over Settings' folders with the field a path is typed in open
-(`App::pick_folder`, below), "Watched folders…" Settings at its folders; and "Or
+the system's folder picker and watches the folder chosen (`App::pick_folder`, below),
+"Watched folders…" Settings at its folders; and "Or
 drop a folder onto this window." stands under them only where a drop can arrive
 (`LibraryFacts::drops`, below): a line that offered one where none arrives would be
 false, not inactive. The block is centred, so a longer sentence
@@ -2168,9 +2168,16 @@ build script refuses both, and in a build of the whole workspace Tauri's plugin 
 GTK. Going to the portal itself also tells a picker that could not be opened from a
 cancel, which rfd answers alike: no portal and no `zenity` is said (`NO_PICKER`), a
 cancel is not. "Choose…" beside the export's destination and beside Settings' folder
-field, and the empty library's "Add folder…", open it; the folder chosen goes into the
-field and is asked about as a typed path is - the field, which stays, is the way where no
-picker opens. **It runs on a thread of its own, one at a time, and its answer is for the
+field opens it, and the folder chosen goes into the field and is asked about as a typed
+path is; **"Add folder…" - Settings' and the empty library's - opens it and watches the
+folder chosen** (`PickFor::Watch`, the drop's `Write::Watch`), as the Tauri photon's
+`addFolderFromPicker` does, whatever has opened over the window by the time it answers -
+but a picker open for the export is not taken for it ("Export copies to…" would have
+watched the destination chosen), and where none can open Settings' field is opened only
+over nothing or over Settings, never in place of another dialog.
+It opened Settings' field first and the picker over it, steps the Tauri photon does not
+have, which the first person to run the window found. Where no picker opens, that is said
+and Settings' field is opened - the way left. **It runs on a thread of its own, one at a time, and its answer is for the
 field that last asked for it** (`App::picking`, by the number of the dialog's opening,
 `App::dialog_openings`): a press while one is open - a picker tied to no window, as a
 portal's on Wayland and Windows' with no owner are, can be behind photon's - opens no
@@ -2473,11 +2480,20 @@ nothing egui hands it to a widget within five points, so a press in the panel's 
 just above a link the edge cuts off, pressed the link. In the viewer the photo's surface
 lies under the panel and would do as much, which is why a probe that took the ground away
 passed until a test pressed there in the panel alone. The wheel over the panel is the
-panel's and steps to no photo: **forty points a notch, whatever the system's**
-(`PANEL_NOTCH`), and a trackpad's points as they come. Not egui's `line_scroll_speed`, which
-the application sets to the system's notch in every frame for the grid: at a Windows set to
-scroll no lines a notch the panel, which has no other way to be scrolled, could not be
-brought to its foot. A press on the panel is not the photo's (`Controls::panel`). A panel
+panel's and steps to no photo: **a notch moves it as far as it moves the grid**
+(`scroll_bar::turned`: egui's `line_scroll_speed`, which the application sets to the
+system's notch in every frame), and a trackpad's points as they come. It was forty points
+whatever the system said, which the first person to run the People page on Windows found
+"slow" beside the grid, the page going by the same rule; at a Windows set to scroll no
+lines a notch the panel's scrollbar is the way down it, and where it pages ("one screen at
+a time") a column pages by its own height (`scroll_bar::notch_points`, from the `Notch` the
+application keeps in egui's memory every frame): a page of the grid skipped half a
+Settings section a notch. **Every column painted by hand
+has the grid's scrollbar** (`scroll_bar.rs`: the info panel, the People page, Settings'
+section, the `?` sheet) - as wide, held where its thumb is taken, a press on its track
+taking the column there - asked before the column is filled, so that what it draws is
+where the bar put it; it had been a mark three points wide that nothing could take hold
+of. A press on the panel is not the photo's (`Controls::panel`). A panel
 that has got shorter than it is scrolled - a keyword taken off - is held to its new end in
 the next frame, which it asks for: what it holds is measured as it is drawn. Another photo
 begins at the top, with nothing typed. **Its words break at a word's end**, and inside a
@@ -3149,7 +3165,17 @@ route, each asked for when its face is first in sight and once an opening; a fac
 preview is not cached is an empty square with a figure. They are let go of when the page
 closes. A name box is a field of its own for each group, Enter read and taken before it is
 drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"
-coloured, being a merge. A test holds the page's read back by renaming `detected_faces` from a second
+coloured, being a merge. **Under a group's box and the single faces' the named people are
+offered as a name is typed** (`people_page::name_suggestions`: whose name begins with it,
+then whose later word does, at most six; not under a person's new name, where another's
+would be a merge nobody asked for by typing a rename - that rule has no test), in an area
+over the page, above the box where there is no room below: the arrows move through them,
+taken out of the frame before the field is drawn, Enter or a click names the faces as the
+one picked, and a letter typed lets go of the one the arrows were on. The arrows are on a
+person by who they are (`PeopleView::offered` keeps the id), not by their place in the
+list: a read of the page landing between the arrow and Enter can put someone new above
+them (a review found it; the race has no seam, and no test). Something the
+Svelte page does not have, asked for by the first person to run the native one. A test holds the page's read back by renaming `detected_faces` from a second
 connection, the faces' seam (`tests/people.rs`); `native-shot` draws the page
 (`native-people-*`), its faces written through the library's own calls after the launch's
 scan.
@@ -3227,8 +3253,9 @@ a use for it** (`settings_view::claims_escape`, asked by the dialog before it ta
 key): a question's Cancel, the keyword's field and the folder's field giving up, a filter
 that holds something emptied. The three fields claim Escape in their `EventFilter` - left
 to egui it takes the keyboard away at the start of the frame, before anyone can see whose
-it was - with all four of its fields said. **"Add folder…" is a path in a field**, typed or chosen in the
-system's picker: the field opens with the keyboard, is asked about as it is typed off the window's
+it was - with all four of its fields said. **The field a folder is typed in** opens where no picker could
+be opened ("Add folder…" is the picker, above), with "Choose…" beside it to try again: it
+opens with the keyboard, is asked about as it is typed off the window's
 thread (`check_folder`, the export field's rules, the text as it stands first), and is
 added by Enter or "Add" through `commands::add_folder`; the library's refusal - inside a
 folder already watched - stands under the field, which keeps the path. A folder added is

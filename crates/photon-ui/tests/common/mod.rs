@@ -318,6 +318,15 @@ pub fn over<'a>(
     dir: &Path,
     pictures: Option<&Path>,
 ) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    over_with(dir, pictures, no_platform())
+}
+
+/// `over`, with `platform` for the system.
+pub fn over_with<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+    platform: std::sync::Arc<Picker>,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
     let made = photon_ui::dirs::within(&dir.join("data"), &dir.join("cache"));
     let (dirs, pictures) = (made.clone(), pictures.map(Path::to_owned));
     let harness = egui_kittest::Harness::builder()
@@ -327,7 +336,7 @@ pub fn over<'a>(
             App::new(cc, dirs, pictures)
                 .unwrap()
                 .with_videos(no_videos())
-                .with_platform(no_platform())
+                .with_platform(platform)
         });
     let driver = Driver::new(&harness);
     (harness, driver, made)

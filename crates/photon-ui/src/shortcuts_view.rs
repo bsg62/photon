@@ -291,7 +291,7 @@ impl SheetView {
             pos2(place.left() + S[3], place.top() + S[3]),
             pos2(place.right() - S[3], place.bottom()),
         );
-        let mut page = self.column.begin(ui, place, inner);
+        let mut page = (self.column).begin(ui, egui::Id::new("shortcuts-column"), place, inner);
         let page = ui
             .scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.set_clip_rect(inner.intersect(ui.clip_rect()));
