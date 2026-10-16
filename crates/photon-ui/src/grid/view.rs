@@ -4388,4 +4388,43 @@ mod tests {
         let offline = offline_folders(&folders, &[watched(7, false), watched(8, true)]);
         assert_eq!(offline, HashSet::from([1, 2]));
     }
+
+    // A fast scroll lands on cached thumbnails without a fade: they are counted from when
+    // the loader was asked for them, after the scroll's deferral, and not from when the
+    // grid first passed over them - from then, every tile of the screen landed on was
+    // late, and faded in.
+    #[test]
+    fn a_fast_scroll_lands_on_its_thumbnails_without_a_fade() {
+        let mut f = fixture(&[4000]);
+        f.thumbs_settled();
+        // A stream of jumps, as a scrollbar dragged makes: the asking deferred until it
+        // stops, and the tiles it lands on wanted all the while.
+        for step in 1..=10 {
+            f.view.move_to(f64::from(step) * 8000.0);
+            f.frame(Vec::new());
+        }
+        let mut faintest = 255;
+        for _ in 0..120 {
+            f.frame(Vec::new());
+            // Time for the loader's thread to hand over what was asked for by the next
+            // frame, as a cached thumbnail is.
+            std::thread::sleep(Duration::from_millis(5));
+            let tile = f64::from(f.view.rect_of(0).map_or(0.0, |rect| rect.width()));
+            for (rect, fill) in &f.fills {
+                // A thumbnail: an image the tile's size, tinted white at what is seen of it
+                // - not the tile's ground under it, which is a translucent white in the
+                // dark theme.
+                let white = fill.r() == fill.a() && fill.g() == fill.a() && fill.b() == fill.a();
+                let ground = *fill == color(palette(&f.ctx).field);
+                if (f64::from(rect.width()) - tile).abs() < 1.0 && white && !ground && fill.a() > 0
+                {
+                    faintest = faintest.min(fill.a());
+                }
+            }
+        }
+        assert_eq!(
+            faintest, 255,
+            "a thumbnail faded in where the scroll landed"
+        );
+    }
 }

@@ -326,6 +326,7 @@ impl SidebarView {
         let mut keyed = None;
         for index in reach {
             let entry = &list.entries[index];
+            let seen = in_view.contains(&index);
             let band = Rect::from_min_max(
                 pos2(
                     rect.left(),
@@ -337,6 +338,10 @@ impl SidebarView {
                 ),
             );
             match naming {
+                // A field one row out of sight is not drawn: drawn, it was a field in
+                // sight to the rules below, which sent its name again in every frame and
+                // left it the keyboard, unseen.
+                Some((at, _)) if at == index && !seen => {}
                 Some((at, naming)) if at == index => {
                     let opened = self.field.as_ref() != Some(naming.of);
                     // Asked before the field, which takes the two keys out of the frame.
@@ -349,6 +354,23 @@ impl SidebarView {
                         .any(|named| matches!(named, Named::Commit | Named::Cancel));
                     if by_key && closes {
                         self.back_to = (!self.from_grid).then(|| entry.what.clone());
+                    }
+                    // The flag is of this rename alone: an album's, begun later from
+                    // its row, would otherwise inherit a folder's begun from the grid.
+                    if closes {
+                        self.from_grid = false;
+                    }
+                }
+                // A row out of sight is only a stop of the Tab key: no press is its, or
+                // a press just past the list's edge - egui hands a near miss to the
+                // widget made last - opened a row nobody could see.
+                _ if !seen => {
+                    if tab_stop(&entry.what) {
+                        let id = ui.id().with(("sidebar", &entry.what));
+                        ui.interact(band, id, Sense::FOCUSABLE);
+                    }
+                    if has_keys(ui, entry) {
+                        keyed = Some((index, entry.what.clone()));
                     }
                 }
                 _ => {
@@ -806,6 +828,22 @@ fn field(
     named
 }
 
+/// Whether an entry of this kind is a button, and so a stop of the Tab key.
+fn tab_stop(what: &What) -> bool {
+    match what {
+        What::Fixed(fixed) => *fixed != Fixed::CopiesOf,
+        What::Group(_)
+        | What::Album(_)
+        | What::NewAlbum
+        | What::Search { .. }
+        | What::Person(_)
+        | What::Tag(_)
+        | What::Folder(_)
+        | What::AddFolder => true,
+        What::Year(_) | What::Note(_) | What::NoFolders | What::PeoplePage => false,
+    }
+}
+
 /// Whether one of `entry`'s buttons has the keyboard.
 fn has_keys(ui: &egui::Ui, entry: &Entry) -> bool {
     let ids = [
@@ -1224,6 +1262,8 @@ mod tests {
         /// Room left above the sidebar and to its right, as the bars and the grid take.
         above: f32,
         beside: f32,
+        /// Room under the sidebar, as the status bar takes it.
+        below: f32,
         /// Every text the last frame drew, with where and in which colour.
         texts: Vec<(String, Rect, Color32)>,
         /// Every filled rectangle the last frame drew, and every picture - an icon is
@@ -1261,6 +1301,7 @@ mod tests {
                 time: 0.0,
                 above: 0.0,
                 beside: 0.0,
+                below: 0.0,
                 texts: Vec::new(),
                 fills: Vec::new(),
                 icons: Vec::new(),
@@ -1298,6 +1339,7 @@ mod tests {
                 }),
             };
             let (view, above, beside) = (&mut self.view, self.above, self.beside);
+            let below = self.below;
             let over = self.over;
             let mut shown = Shown::default();
             let mut left_over = Vec::new();
@@ -1318,7 +1360,7 @@ mod tests {
                         let window = ui.max_rect();
                         let rect = Rect::from_min_max(
                             pos2(window.left(), window.top() + above),
-                            pos2(window.right() - beside, window.bottom()),
+                            pos2(window.right() - beside, window.bottom() - below),
                         );
                         shown = view.show(ui, rect, &data);
                         ui.input(|input| {
@@ -2451,6 +2493,18 @@ mod tests {
             f.frame(Vec::new());
             let back = (!grid).then_some(What::Album(4));
             assert_eq!(f.view.keyed, back, "{key:?}, begun from the grid: {grid}");
+            // The next rename, begun from the row with nothing said of the grid, is the
+            // row's: the flag was of the rename before.
+            f.name(Of::Album(4), "Best of");
+            f.key(key);
+            f.naming = None;
+            f.frame(Vec::new());
+            f.frame(Vec::new());
+            assert_eq!(
+                f.view.keyed,
+                Some(What::Album(4)),
+                "{key:?}, the rename after"
+            );
         }
     }
 
@@ -2728,6 +2782,45 @@ mod tests {
     // is still out of sight: sent again in every frame, it was refused again in every
     // frame, a write and a message each. Back in sight it is a field again, with the
     // keyboard - without it, what was typed "into" it was the grid's.
+    // The row just past the list's edge is drawn only as a stop of the Tab key: a name
+    // being typed in it is out of sight, sent once and without the keyboard, as one far
+    // out of sight is - drawn there, it was sent in every frame and kept the keyboard.
+    #[test]
+    fn a_name_one_row_out_of_sight_is_sent_once() {
+        let mut f = Fixture::new(200);
+        f.frame(Vec::new());
+        f.name(Of::Album(4), "Best of");
+        let index = f.index(&What::Album(4));
+        f.view.scroll.set(f.view.stack.bottom(index) + 1.0);
+        for _ in 0..7 {
+            f.frame(Vec::new());
+        }
+        assert_eq!(f.stores, 1);
+        assert!(!f.in_field());
+    }
+
+    // A press just past the list's bottom edge, where the row beyond it lies out of
+    // sight, opens no row: that row is no button, only a stop of the Tab key.
+    #[test]
+    fn a_press_under_the_list_opens_no_row_out_of_sight() {
+        let mut f = Fixture::new(60);
+        f.below = 30.0;
+        f.frame(Vec::new());
+        let viewport = f64::from(f.size.y - f.below);
+        for folder in [20, 25, 30] {
+            let index = f.index(&What::Folder(folder));
+            f.view.scroll.set(f.view.stack.bottom(index) - viewport);
+            f.frame(Vec::new());
+            let below = pos2(100.0, f.size.y - f.below + 2.0);
+            let clicked = f.click(below);
+            assert_ne!(
+                clicked,
+                Some(What::Folder(folder + 1)),
+                "the row out of sight under {folder}"
+            );
+        }
+    }
+
     #[test]
     fn a_name_out_of_sight_is_sent_once_and_its_field_is_opened_again_in_sight() {
         let mut f = Fixture::new(200);

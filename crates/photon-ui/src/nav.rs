@@ -178,6 +178,9 @@ pub struct Nav {
     /// number.
     landed: VecDeque<(u64, Landed)>,
     jump: Option<Jump>,
+    /// Keywords renamed while steps were on their way, to be put on the answers that
+    /// come back with the name that is gone.
+    renames: Vec<(String, String)>,
 }
 
 impl Nav {
@@ -188,6 +191,7 @@ impl Nav {
             asked: VecDeque::new(),
             landed: VecDeque::new(),
             jump: None,
+            renames: Vec::new(),
         }
     }
 
@@ -203,6 +207,10 @@ impl Nav {
         of(&mut self.settled);
         for (_, landed) in &mut self.landed {
             of(&mut landed.place);
+        }
+        // And on an answer still to come, which its worker read before the rename.
+        if !self.asked.is_empty() {
+            self.renames.push((from.to_owned(), to.to_owned()));
         }
     }
 
@@ -310,8 +318,17 @@ impl Nav {
         while let Some((asked, held)) = self.asked.pop_front_if(|(asked, _)| *asked <= number) {
             step = (asked == number).then_some(held);
         }
+        let renames = std::mem::take(&mut self.renames);
+        if !self.asked.is_empty() {
+            self.renames.clone_from(&renames);
+        }
         match outcome {
-            Ok(landed) => {
+            Ok(mut landed) => {
+                for (from, to) in &renames {
+                    if landed.place.view == GridView::Tag && landed.place.arg == *from {
+                        landed.place.arg.clone_from(to);
+                    }
+                }
                 self.landed.push_back((number, landed));
                 None
             }
@@ -576,6 +593,26 @@ mod tests {
         assert!(nav.busy());
         assert_eq!(adopt(&mut nav, 2), Some(true));
         assert!(!nav.busy());
+    }
+
+    // A keyword renamed while the step to its view is on its way: the answer, read before
+    // the rename, lands under the new name (a review found it).
+    #[test]
+    fn a_keywords_view_answered_after_its_rename_lands_under_the_new_name() {
+        let mut nav = nav();
+        nav.asked(1, Step::Tag("hiking".to_owned()));
+        nav.renamed_tag("hiking", "walks");
+        let landed = Landed {
+            place: Place {
+                view: GridView::Tag,
+                arg: "hiking".to_owned(),
+            },
+            sort: Sort::default(),
+            shown_at: Some(1),
+        };
+        assert_eq!(nav.answered(1, Ok(landed)), None);
+        adopt(&mut nav, 1);
+        assert_eq!(nav.settled().arg, "walks");
     }
 
     #[test]

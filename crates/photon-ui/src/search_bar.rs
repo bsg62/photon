@@ -72,8 +72,10 @@ pub struct SearchBar {
     slash_held: bool,
     /// Where the panel was last drawn, for a press outside it.
     panel: Option<Rect>,
-    /// Whether the keyboard was the box's, or one of its buttons', in the last frame.
+    /// Whether the keyboard was the box's, or one of its buttons', in the last frame; and
+    /// the panel's term that had it when the panel was last drawn.
     had_keys: bool,
+    term_keys: Option<Id>,
 }
 
 /// The field's own name to egui: where the keyboard is, and the caret.
@@ -107,12 +109,17 @@ impl SearchBar {
         // The panel closes when the keyboard leaves the box and its buttons for something
         // else - Tab walking on to the gear, the photos - as the Svelte box's `focusout`
         // has it: left open it lay over the grid with nothing to close it but the mouse.
+        // The panel's terms are the box's too: Tab walks from its button into them. Asked
+        // of the panel as it was last drawn (`term_keys`), not of egui's `read_response`,
+        // which takes the keyboard off a focused field whose click is elsewhere - the
+        // People page's name box lost it at the click on a person offered under it.
         let ours = [id, ui.id().with("search-help"), ui.id().with("search-save")];
         let focused = ui.memory(|memory| memory.focused());
-        if self.help && self.had_keys && focused.is_some_and(|now| !ours.contains(&now)) {
+        let is_ours = |now: Id| ours.contains(&now) || self.term_keys == Some(now);
+        if self.help && self.had_keys && focused.is_some_and(|now| !is_ours(now)) {
             self.help = false;
         }
-        self.had_keys = focused.is_some_and(|now| ours.contains(&now));
+        self.had_keys = focused.is_some_and(is_ours);
         let select = self.take_keys(ui);
 
         // The buttons stand inside the field's right end, and the text stops short of them.
@@ -340,6 +347,7 @@ impl SearchBar {
             }
         } else {
             self.panel = None;
+            self.term_keys = None;
         }
         actions
     }
@@ -410,6 +418,7 @@ impl SearchBar {
         // Never taller than the window under the top bar: it scrolls instead.
         let tallest = (window.height() - 64.0).max(0.0);
         let mut picked = None;
+        let mut keyed = None;
         let shown = egui::Area::new(Id::new("search-help-panel"))
             .order(Order::Foreground)
             .fixed_pos(pos2(field.left(), field.bottom() + S[1]))
@@ -447,7 +456,8 @@ impl SearchBar {
                                         SEARCH_HELP.split_at(LEFT_GROUPS.min(SEARCH_HELP.len()));
                                     for (column, groups) in columns.iter_mut().zip([left, right]) {
                                         for group in groups {
-                                            if let Some(term) = self::group(column, group, palette)
+                                            if let Some(term) =
+                                                self::group(column, group, palette, &mut keyed)
                                             {
                                                 picked = Some(term);
                                             }
@@ -458,13 +468,20 @@ impl SearchBar {
                     });
             });
         self.panel = Some(shown.response.rect);
+        self.term_keys = keyed;
         picked
     }
 }
 
 /// One group of the panel: its title, and a row to each entry - what is typed, set apart
 /// as a key cap is, and what it finds. Answers the term that was clicked.
-fn group(ui: &mut egui::Ui, group: &HelpGroup, palette: &Palette) -> Option<&'static str> {
+/// `keyed` is told the term that has the keyboard.
+fn group(
+    ui: &mut egui::Ui,
+    group: &HelpGroup,
+    palette: &Palette,
+    keyed: &mut Option<Id>,
+) -> Option<&'static str> {
     let mut picked = None;
     ui.label(
         egui::RichText::new(group.title)
@@ -488,7 +505,11 @@ fn group(ui: &mut egui::Ui, group: &HelpGroup, palette: &Palette) -> Option<&'st
                         .fill(color(palette.field))
                         .stroke(Stroke::new(1.0, color(palette.line)))
                         .corner_radius(R[1]);
-                    if ui.add(button).clicked() {
+                    let response = ui.add(button);
+                    if response.has_focus() {
+                        *keyed = Some(response.id);
+                    }
+                    if response.clicked() {
                         picked = Some(entry.text);
                     }
                 } else {
@@ -974,12 +995,22 @@ mod tests {
         f.open_help();
         f.find();
         assert!(f.bar.help_open());
-        f.key(Key::Tab);
-        f.frame(Vec::new());
-        assert!(f.bar.help_open(), "on the panel's own button");
-        f.key(Key::Tab);
-        f.frame(Vec::new());
-        assert!(!f.bar.help_open(), "on the button after the box");
+        // Through the panel's own button and its terms it stays; at the button after
+        // the box it closes.
+        let mut walked = 0;
+        while f.bar.help_open() {
+            f.key(Key::Tab);
+            f.frame(Vec::new());
+            walked += 1;
+            assert!(walked < 200, "the Tab key never left the panel");
+        }
+        assert!(walked > 3, "closed after {walked}, among its own terms");
+        let focused = f
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the keyboard is somewhere");
+        let at = f.ctx.read_response(focused).expect("drawn").rect;
+        assert_eq!(at.min, pos2(600.0, 300.0), "on the button after the box");
     }
 
     // Escape closes the nearest thing: the panel, and the search stays.

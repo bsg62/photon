@@ -64,6 +64,7 @@ impl Thumbs {
             let key = TexKey::grid(loaded.key);
             match loaded.result {
                 Ok(pixels) => {
+                    self.textures.arrived(key, now);
                     self.textures.offer(key, pixels, &wanted_keys);
                 }
                 Err(LoadError::Failed(_)) => self.textures.fail(key),
@@ -84,12 +85,11 @@ impl Thumbs {
             ctx.request_repaint_after(Duration::from_secs_f64((at - now).max(0.0)));
         }
 
-        let missing: HashSet<u64> = self
-            .textures
-            .missing(&keys, now)
-            .into_iter()
-            .map(|key| key.key)
-            .collect();
+        let missing_keys = self.textures.missing(&keys, now);
+        if !defer {
+            self.textures.asking(&missing_keys, &wanted_keys, now);
+        }
+        let missing: HashSet<u64> = missing_keys.into_iter().map(|key| key.key).collect();
         self.loader.want(if defer {
             Vec::new()
         } else {

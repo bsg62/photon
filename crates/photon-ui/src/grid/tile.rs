@@ -107,9 +107,7 @@ fn paint_tile(
     if video {
         let corner = rect.min + Vec2::splat(INSET);
         let play = Rect::from_min_size(corner, Vec2::splat(PLAY));
-        halo(on_photo, |shift, tint| {
-            Icon::Play.paint(ui, play.translate(shift), PLAY, true, tint);
-        });
+        icon_halo(ui, Icon::Play, play, PLAY, true, on_photo);
         if let Some(ms) = entry.duration_ms {
             let words = format_duration(ms);
             halo(on_photo, |shift, tint| {
@@ -153,27 +151,26 @@ fn paint_tile(
 
 fn mark(ui: &egui::Ui, icon: Icon, corner: Pos2, filled: bool, tint: Color32) {
     let place = Rect::from_min_size(corner, vec2(MARK, MARK));
-    halo(tint, |shift, tint| {
-        icon.paint(ui, place.translate(shift), MARK, filled, tint);
-    });
+    icon_halo(ui, icon, place, MARK, filled, tint);
 }
 
-/// Something drawn on the photo, with a dark halo round it: drawn in the shadow's ink a
-/// point out each way, then itself. The Svelte tile's `drop-shadow(0 0 2px
+/// An icon on the photo over its halo: the icon drawn two points larger in the shadow's
+/// ink, then itself. One paint for the halo, not one a direction as for words: an icon's
+/// paint is a lookup through egui's loaders, and eight of them a mark cost a grid of
+/// marked tiles three times its painting (measured, a review).
+fn icon_halo(ui: &egui::Ui, icon: Icon, place: Rect, size: f32, filled: bool, tint: Color32) {
+    let shadow = color(SHADOW_INK).gamma_multiply(0.5);
+    icon.paint(ui, place.expand(1.0), size + 2.0, filled, shadow);
+    icon.paint(ui, place, size, filled, tint);
+}
+
+/// Words drawn on the photo, with a dark halo round them: drawn in the shadow's ink a
+/// point out each diagonal, then themselves. The Svelte tile's `drop-shadow(0 0 2px
 /// var(--shadow-ink))` - without it a white mark, the copies mark or a video's length,
 /// was lost on a bright photo, and the star on an amber one.
 fn halo(tint: Color32, mut paint: impl FnMut(Vec2, Color32)) {
     let shadow = color(SHADOW_INK).gamma_multiply(0.5);
-    for (x, y) in [
-        (-1.0, -1.0),
-        (0.0, -1.0),
-        (1.0, -1.0),
-        (-1.0, 0.0),
-        (1.0, 0.0),
-        (-1.0, 1.0),
-        (0.0, 1.0),
-        (1.0, 1.0),
-    ] {
+    for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
         paint(vec2(x, y), shadow);
     }
     paint(Vec2::ZERO, tint);
@@ -207,8 +204,8 @@ mod tests {
         assert_eq!(uv(100.0, 0.0), (0.0, 0.0, 1.0, 1.0));
     }
 
-    // A video's length is drawn over a halo of the shadow's ink, a point out each way, as
-    // every mark on the photo is: alone, white on a bright photo, it was not there.
+    // A video's length is drawn over a halo of the shadow's ink, as every mark on the
+    // photo is: alone, white on a bright photo, it was not there.
     #[test]
     fn a_mark_on_the_photo_has_a_halo() {
         let ctx = egui::Context::default();
@@ -248,8 +245,8 @@ mod tests {
             })
             .collect();
         let shadow = color(SHADOW_INK).gamma_multiply(0.5);
-        assert_eq!(lengths.len(), 9, "the length and its halo");
-        assert_eq!(lengths.iter().filter(|tint| **tint == shadow).count(), 8);
+        assert_eq!(lengths.len(), 5, "the length and its halo");
+        assert_eq!(lengths.iter().filter(|tint| **tint == shadow).count(), 4);
         assert_eq!(
             lengths.last(),
             Some(&color(PHOTO_LINE)),
