@@ -152,7 +152,7 @@ fn opened(file: &str) -> Result<Option<Player>, Failed> {
 
 /// Until `player` is ready, or says why it will not be: `open` waits for nothing.
 fn readied(player: &Player) -> Result<(), Failure> {
-    let until = Instant::now() + BEGUN;
+    let until = Instant::now() + READY;
     while !player.ready() {
         if let Some(failure) = player.failure() {
             return Err(failure);
@@ -164,6 +164,12 @@ fn readied(player: &Player) -> Result<(), Failure> {
     }
     Ok(())
 }
+
+/// How long a player is given to be ready. A wait for a state, so it costs only a player
+/// that never is: the first player of a run on Windows' runner, which starts Media
+/// Foundation's engine, was more than once not ready after five seconds (each time the
+/// run's first test), and was ready at once when the run was made again.
+const READY: Duration = Duration::from_secs(30);
 
 /// How long a player is given to hand over its first frame: the system's own time to begin,
 /// which on macOS' runner was more than half a second once.
