@@ -159,6 +159,44 @@ pub fn name_choice(typed: &str, people: &[PageGroup], own: Option<i64>) -> NameC
     }
 }
 
+/// The most people offered under a name being typed.
+pub const SUGGESTED: usize = 6;
+
+/// The named people offered under a name being typed for a group or for single faces: those
+/// whose name begins with what is typed, then those with a later word that does ("ann"
+/// offers "Anna" before "Mary Ann"), each alphabetically - compared without case, as
+/// `name_choice` compares. Not one whose name is what is typed already: its line says
+/// "Add to Anna" by itself. At most `SUGGESTED`.
+pub fn name_suggestions(typed: &str, people: &[PageGroup]) -> Vec<(i64, String)> {
+    let key = typed.trim().to_lowercase();
+    if key.is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<(u8, String, i64, String)> = (people.iter())
+        .filter_map(|person| {
+            let name = person.name.as_deref()?;
+            let lower = name.to_lowercase();
+            let rank = if lower == key {
+                return None;
+            } else if lower.starts_with(&key) {
+                0
+            } else if (lower.split(|c: char| !c.is_alphanumeric()).skip(1))
+                .any(|word| word.starts_with(&key))
+            {
+                1
+            } else {
+                return None;
+            };
+            Some((rank, lower, person.id, name.to_owned()))
+        })
+        .collect();
+    found.sort();
+    (found.into_iter())
+        .take(SUGGESTED)
+        .map(|(_, _, id, name)| (id, name))
+        .collect()
+}
+
 /// The line under a name being typed: said before it is committed, because a name someone
 /// has merges, and the user must see "Add to Anna" before pressing Enter. A rename says it
 /// is one.
@@ -517,6 +555,11 @@ impl PeoplePage {
     /// What a name typed for a group, or as `own`'s new name, will do.
     pub fn choice(&self, typed: &str, own: Option<i64>) -> NameChoice {
         name_choice(typed, self.people(), own)
+    }
+
+    /// The named people offered under `typed` (`name_suggestions`).
+    pub fn people_offered(&self, typed: &str) -> Vec<(i64, String)> {
+        name_suggestions(typed, self.people())
     }
 
     /// Whether "Show more" is offered: a group's strip with faces left to show. Never for
@@ -1317,6 +1360,37 @@ mod tests {
         assert_eq!(model.rename(3, " Anne ").as_deref(), Some("Anne"));
         assert_eq!(model.rename(3, "  "), None);
         assert_eq!(model.name_of(3), Some("Anna"));
+    }
+
+    // The people offered under a name being typed for a group: whose name begins with it,
+    // then whose later word does, each alphabetically, without case - and not the one
+    // whose name it is already, nor anyone where nothing is typed.
+    #[test]
+    fn the_people_offered_are_those_whose_name_begins_with_what_is_typed() {
+        let people = vec![
+            group(1, Some("Mary Ann"), Vec::new(), 0),
+            group(2, Some("anneliese"), Vec::new(), 0),
+            group(3, Some("Anna"), Vec::new(), 0),
+            group(4, Some("Ben"), Vec::new(), 0),
+            group(5, Some("Hannah"), Vec::new(), 0),
+            group(6, None, Vec::new(), 0),
+            group(7, Some("Ann-Kathrin"), Vec::new(), 0),
+        ];
+        let ids = |typed: &str| -> Vec<i64> {
+            (name_suggestions(typed, &people).into_iter())
+                .map(|(id, _)| id)
+                .collect()
+        };
+        assert_eq!(ids("ANN"), [7, 3, 2, 1], "Hannah has it inside a word");
+        assert_eq!(ids(" b "), [4]);
+        assert_eq!(ids(""), Vec::<i64>::new());
+        assert_eq!(ids("anna"), Vec::<i64>::new(), "Anna is what is typed");
+        assert_eq!(ids("kath"), [7], "a word after a hyphen");
+        assert_eq!(name_suggestions("be", &people), [(4, "Ben".to_owned())]);
+        let many: Vec<PageGroup> = (0..10)
+            .map(|n| group(n, Some(&format!("Anna {n}")), Vec::new(), 0))
+            .collect();
+        assert_eq!(name_suggestions("an", &many).len(), SUGGESTED);
     }
 
     #[test]

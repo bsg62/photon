@@ -13,7 +13,7 @@ use crate::{
     people_page::{FaceAction, NameChoice, PeoplePage, Strip, counted, name_hint},
     settings_view::{Column, Field, Page, line_height, opened_field, text_field},
     theme::{
-        apply::{color, palette},
+        apply::{color, menu_shadow, palette},
         fonts,
         tokens::{Palette, R, S, T},
     },
@@ -127,6 +127,8 @@ pub struct PeopleView {
     missing: HashSet<CropOf>,
     /// The names being typed.
     names: HashMap<Naming, String>,
+    /// The name box whose people are offered under it, and the one the arrows are on.
+    offered: Option<(Naming, Option<usize>)>,
     /// The person whose name is being typed in their row, and whether the field has been
     /// drawn since it opened.
     renaming: Option<(i64, bool)>,
@@ -266,6 +268,7 @@ impl PeopleView {
                 actions: &mut actions,
                 clicked: &mut self.clicked,
                 names: &mut self.names,
+                offered: &mut self.offered,
                 renaming: &mut self.renaming,
                 double,
             };
@@ -391,6 +394,7 @@ struct Draw<'a, 'u> {
     actions: &'a mut Vec<PeopleAction>,
     clicked: &'a mut Option<(i64, f64)>,
     names: &'a mut HashMap<Naming, String>,
+    offered: &'a mut Option<(Naming, Option<usize>)>,
     renaming: &'a mut Option<(i64, bool)>,
     /// egui's double-click time.
     double: f64,
@@ -822,6 +826,36 @@ impl Draw<'_, '_> {
         // Read before the field is drawn and taken out of the frame: egui's field gives the
         // keyboard up at an Enter it sees, and an Escape left in the frame is another's.
         let held = self.ui.memory(|memory| memory.has_focus(id));
+        let typed = self.names.get(&naming).cloned().unwrap_or_default();
+        // The named people offered under a group's or the single faces' name, while it is
+        // typed (`name_suggestions`): the arrows move through them, taken out of the frame
+        // before the field is drawn, and Enter or a click names the faces as the one
+        // picked. Not under a person's new name, where another's is a merge nobody asked
+        // for by typing a rename.
+        let offers = held && !matches!(naming, Naming::Rename(_));
+        let before = if offers {
+            model.people_offered(&typed)
+        } else {
+            Vec::new()
+        };
+        let mut pick = (*self.offered)
+            .filter(|(of, _)| *of == naming)
+            .and_then(|(_, at)| at)
+            .filter(|at| *at < before.len());
+        if !before.is_empty() {
+            let (down, up) = self.ui.input_mut(|input| {
+                (
+                    input.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    input.consume_key(Modifiers::NONE, Key::ArrowUp),
+                )
+            });
+            if down {
+                pick = Some(pick.map_or(0, |at| (at + 1).min(before.len() - 1)));
+            }
+            if up {
+                pick = pick.and_then(|at| at.checked_sub(1));
+            }
+        }
         let enter = held
             && self
                 .ui
@@ -830,7 +864,6 @@ impl Draw<'_, '_> {
             && self
                 .ui
                 .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-        let typed = self.names.get(&naming).cloned().unwrap_or_default();
         let (output, text) = text_field(
             self.ui,
             self.page,
@@ -847,15 +880,29 @@ impl Draw<'_, '_> {
         let mut text = if output.response.changed() {
             text
         } else {
-            typed
+            typed.clone()
         };
         let mut done = None;
         if escape {
             text.clear();
             done = Some(Typed::Cancel);
         }
-        let choice = model.choice(&text, own);
-        if enter {
+        // A letter typed moves the list under the arrows: what they were on is gone.
+        if text != typed {
+            pick = None;
+        }
+        let picked = pick.map(|at| before[at].clone());
+        let choice = match &picked {
+            Some((id, name)) => NameChoice::Merge {
+                id: *id,
+                name: name.clone(),
+            },
+            None => model.choice(&text, own),
+        };
+        if enter && let Some((_, name)) = &picked {
+            done = Some(Typed::Commit(name.clone()));
+            text.clear();
+        } else if enter {
             match choice {
                 NameChoice::New(_) | NameChoice::Merge { .. } => {
                     done = Some(Typed::Commit(text.clone()));
@@ -866,7 +913,10 @@ impl Draw<'_, '_> {
                 NameChoice::Empty => {}
             }
         }
-        let hint = name_hint(&model.choice(&text, own), own.is_some());
+        let hint = match (&done, &picked) {
+            (None, Some(_)) => name_hint(&choice, own.is_some()),
+            _ => name_hint(&model.choice(&text, own), own.is_some()),
+        };
         if text.is_empty() {
             self.names.remove(&naming);
         } else {
@@ -897,7 +947,93 @@ impl Draw<'_, '_> {
             }
             bottom += 2.0 + line_height(self.ui, &font);
         }
+        let after = match self.names.get(&naming) {
+            Some(text) if offers && done.is_none() && self.page.sees(rect) => {
+                model.people_offered(text)
+            }
+            _ => Vec::new(),
+        };
+        if after.is_empty() {
+            if (*self.offered).is_some_and(|(of, _)| of == naming) {
+                *self.offered = None;
+            }
+        } else {
+            *self.offered = Some((naming, pick));
+            if let Some(name) = self.offered_list(id, rect, bottom, &after, pick) {
+                done = Some(Typed::Commit(name));
+                self.names.remove(&naming);
+                *self.offered = None;
+            }
+        }
         (bottom, done)
+    }
+
+    /// The people offered under a name box at `field`, whose words end at `bottom`, over
+    /// everything on the page: under the box, or above it where the page has no room
+    /// below. Answers the name of one clicked.
+    fn offered_list(
+        &mut self,
+        id: Id,
+        field: Rect,
+        bottom: f32,
+        offered: &[(i64, String)],
+        pick: Option<usize>,
+    ) -> Option<String> {
+        const ROW: f32 = 26.0;
+        let size = vec2(field.width(), offered.len() as f32 * ROW + 2.0 * S[0]);
+        let below = pos2(field.left(), bottom + S[0]);
+        let at = if below.y + size.y > self.page.clip.bottom() {
+            pos2(field.left(), field.top() - S[0] - size.y)
+        } else {
+            below
+        };
+        let palette = self.palette;
+        let font = fonts::regular(T[2]);
+        let mut clicked = None;
+        egui::Area::new(id.with("offered"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            // There at once, as a menu is: egui fades a new area in over a few frames.
+            .fade_in(false)
+            .show(self.ui.ctx(), |ui| {
+                let (ground, _) = ui.allocate_exact_size(size, Sense::hover());
+                let painter = ui.painter().clone();
+                painter.add(menu_shadow().as_shape(ground, R[2]));
+                painter.rect_filled(ground, R[2], color(palette.raised));
+                painter.rect_stroke(
+                    ground,
+                    R[2],
+                    Stroke::new(1.0, color(palette.line)),
+                    StrokeKind::Outside,
+                );
+                for (n, (person, name)) in offered.iter().enumerate() {
+                    let row = Rect::from_min_size(
+                        pos2(ground.left() + S[0], ground.top() + S[0] + n as f32 * ROW),
+                        vec2(ground.width() - 2.0 * S[0], ROW),
+                    );
+                    let response = ui.interact(row, id.with(("offered", *person)), Sense::CLICK);
+                    let on = pick == Some(n);
+                    response.widget_info(|| {
+                        WidgetInfo::selected(WidgetType::SelectableLabel, true, on, name)
+                    });
+                    if on {
+                        painter.rect_filled(row, R[1], color(palette.accent_soft));
+                    } else if response.hovered() {
+                        painter.rect_filled(row, R[1], color(palette.hover));
+                    }
+                    painter.with_clip_rect(row).text(
+                        pos2(row.left() + S[1], row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        name,
+                        font.clone(),
+                        color(palette.text),
+                    );
+                    if response.clicked() {
+                        clicked = Some(name.clone());
+                    }
+                }
+            });
+        clicked
     }
 
     fn unnamed(&mut self, model: &PeoplePage, singles: &mut bool) {

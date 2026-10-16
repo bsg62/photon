@@ -3159,7 +3159,14 @@ route, each asked for when its face is first in sight and once an opening; a fac
 preview is not cached is an empty square with a figure. They are let go of when the page
 closes. A name box is a field of its own for each group, Enter read and taken before it is
 drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"
-coloured, being a merge. A test holds the page's read back by renaming `detected_faces` from a second
+coloured, being a merge. **Under a group's box and the single faces' the named people are
+offered as a name is typed** (`people_page::name_suggestions`: whose name begins with it,
+then whose later word does, at most six; not under a person's new name, where another's
+would be a merge nobody asked for by typing a rename - that rule has no test), in an area
+over the page, above the box where there is no room below: the arrows move through them,
+taken out of the frame before the field is drawn, Enter or a click names the faces as the
+one picked, and a letter typed lets go of the one the arrows were on. Something the
+Svelte page does not have, asked for by the first person to run the native one. A test holds the page's read back by renaming `detected_faces` from a second
 connection, the faces' seam (`tests/people.rs`); `native-shot` draws the page
 (`native-people-*`), its faces written through the library's own calls after the launch's
 scan.
