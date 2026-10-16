@@ -80,6 +80,12 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 # (`ThumbCache::face_crop`), decoded by the library that encoded them: photon-core's,
 # vendored and compiled in already.
 webp = "0.3.1"
+icu_datetime = "2.3.0"
+icu_decimal = "2.3.0"
+icu_collator = "2.3.0"
+icu_locale_core = "2.3.0"
+sys-locale = "0.3.2"
+icu_provider = { version = "2.3.1", features = ["sync"] }
 
 # The system's folder picker (`platform.rs`) on Windows and macOS, and its message box on
 # macOS: the

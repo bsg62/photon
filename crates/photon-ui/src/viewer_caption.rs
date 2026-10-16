@@ -6,9 +6,6 @@
 use jiff::{Timestamp, tz::TimeZone};
 
 const SEPARATOR: &str = " · ";
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
 
 /// What the caption is made of.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,7 +31,8 @@ pub fn format_size(bytes: i64) -> String {
     }
 }
 
-/// A capture time as photon shows it: "Jul 14, 2026, 12:30 PM".
+/// A capture time as photon shows it: "Jul 14, 2026, 12:30 PM" in English, as the locale
+/// writes a date and a time.
 ///
 /// Read in UTC on purpose. `taken_at` is the camera's own clock stored as UTC seconds, so
 /// read in the machine's zone the hour would move by that zone's offset: a photo taken at
@@ -55,20 +53,17 @@ pub fn format_instant(ms: i64, zone: &TimeZone) -> String {
     spelled(&instant.to_zoned(zone.clone()))
 }
 
+/// A day and its time to the minute, in the locale's words and order (`locale.rs`).
 fn spelled(at: &jiff::Zoned) -> String {
-    let (hour, half) = match at.hour() {
-        0 => (12, "AM"),
-        hour @ 1..=11 => (hour, "AM"),
-        12 => (12, "PM"),
-        hour => (hour - 12, "PM"),
-    };
-    format!(
-        "{} {}, {}, {hour}:{:02} {half}",
-        MONTHS[(at.month().clamp(1, 12) - 1) as usize],
-        at.day(),
-        at.year(),
-        at.minute()
-    )
+    let day = (
+        i32::from(at.year()),
+        at.month().unsigned_abs(),
+        at.day().unsigned_abs(),
+    );
+    let time = (at.hour().unsigned_abs(), at.minute().unsigned_abs());
+    crate::locale::current()
+        .date_time(day, time)
+        .unwrap_or_default()
 }
 
 /// A photo's size in pixels as it is seen. An unedited photo's are stored as the file has

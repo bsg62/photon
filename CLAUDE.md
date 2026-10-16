@@ -3409,6 +3409,20 @@ just reached into sight (`keyed`); a name left from the keyboard gives the keybo
 its row (`back_to`), unless the rename was begun on a header in the grid
 (`rename_from_grid`, `menu_on_header`). What was left, and why, is the spec's list.
 
+**Dates and counts are written in the system's locale** (`locale.rs`, the user's answer,
+over English only): a period's header, a folder's month, the viewer's caption and the info
+panel's dates, "On this day" and every count with thousands (`grid::labels::grouped`), as
+the Svelte photon's `Intl` wrote them. ICU4X's formatters over its compiled data
+(`icu_datetime`, `icu_decimal`, pure Rust, at the version the lock already had; its
+`icu_provider` `sync` feature, so the formatters can be one process-wide value); the
+locale read once at launch (`sys-locale`, `Locale::system`, a Linux `de_DE.UTF-8` read as
+`de-DE`) and held for the process (`locale::set`, `current`), English until set - which
+is what unit tests read, and what `tests/common`'s `Driver` sets, so that no test depends
+on the machine it runs on. ICU4X's narrow no-break spaces are written as plain ones
+(`plain`): the faces photon draws with are the system's, and not each has that glyph.
+Folder names keep `natural_cmp`, the grid's own order (the spec says why). The words photon
+writes itself stay English.
+
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
 close by themselves, for about two minutes, on a desktop that has to stay awake and

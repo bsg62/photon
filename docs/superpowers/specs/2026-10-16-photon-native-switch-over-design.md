@@ -62,8 +62,7 @@ under the pointer** in the info panel, where a long one is cut short (its `title
 9. **Dates and numbers in the system's language and order** (the user's answer, over
    English-only): a period's header, a folder's month, the viewer's caption, the info
    panel's dates, "On this day" and every count with thousands, as the Svelte photon's
-   `Intl` writes them, and folder names compared as `Intl.Collator` compares them
-   (`numeric`, base sensitivity). Through ICU4X (`icu`, pure Rust, its compiled data -
+   `Intl` writes them. Through ICU4X (`icu`, pure Rust, its compiled data -
    within the rule against C dependencies, at the cost of some megabytes in the binary),
    the locale read from the system (`sys-locale`). The words photon writes itself stay
    English, as in the Svelte photon.
@@ -90,15 +89,17 @@ under the pointer** in the info panel, where a long one is cut short (its `title
 - Ctrl+B under an open menu does nothing (the menu takes every key); closing Settings
   gives the keys to the grid, not to the gear; the zoom's slider takes no keyboard; the
   export's size is five buttons; a keyword appears in the panel when the library has it.
+- Folder names in the sidebar are ordered by `natural_cmp`, the grid's own name sort,
+  where the Svelte list used the browser's collation: the list and the grid agree, which
+  the Svelte two did not beyond ASCII.
 - Compare makes every pane's full picture once zoomed, the pane with the keys first, where
   the Svelte compare made one.
 
 ## The pull requests
 
 1. **Parity: the grid, the viewer and the keyboard** - items 1-8 above, and this spec.
-2. **Dates and numbers in the system's locale** - item 9: `locale.rs`, the formatters it
-   replaces (`grid/labels.rs`, `viewer_caption.rs`, `viewer_info.rs`, the counts), and the
-   folder names' collation.
+2. **Dates and numbers in the system's locale** - item 9: `locale.rs`, and the formatters
+   it replaces (`grid/labels.rs`, `viewer_caption.rs`, "On this day", the counts).
 3. **photon-native becomes photon, and the release is the native one** - the binary is
    `photon`; `release.yml` builds the six installers by `xtask package` on a tag, as a
    draft release with `SHA256SUMS`, and `native-packages.yml` is folded into it (artifacts

@@ -40,6 +40,7 @@ pub mod grid {
     pub mod visible;
 }
 pub mod icons;
+pub mod locale;
 pub mod menu;
 pub mod menu_view;
 pub mod nav;

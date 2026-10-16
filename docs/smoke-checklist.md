@@ -829,4 +829,4 @@ Not released: these are for whoever tries the branch `native-ui`. The Svelte int
 - [ ] Info panel in a narrow window, a long path: the whole path under the pointer.
 - [ ] Tab through the sidebar: a ring shows the row the keyboard is on, the list scrolls to keep it in sight, and Tab goes on below the edge. The empty library's buttons and the top bar's size buttons show the ring too.
 - [ ] Rename an album in the sidebar and press Enter or Escape: the keyboard is back on its row (Tab goes on from it). Rename a folder from its header in the grid: the arrows move the photos after.
-
+- [ ] With the system set to German (or any language not English), start photon-native: month and day headers ("Oktober 2026", "Sonntag, 4. Oktober 2026"), a folder's month, the viewer's caption and the info panel's dates, the "On this day" hint and every count ("1.234 photos") are in German order and words, as the Tauri photon writes them. Set it back to English: as before.

@@ -720,6 +720,8 @@ impl App {
         let notch = system_wheel();
         icons::install(&ctx);
         theme::fonts::install(&ctx);
+        // Dates and counts in the system's language and order, from the first frame.
+        crate::locale::set(crate::locale::Locale::system());
 
         let (events, receiver) = UiEvents::new(ctx.clone());
         // How the window was left, here and not by a task, for the reason the theme is
