@@ -2473,11 +2473,17 @@ nothing egui hands it to a widget within five points, so a press in the panel's 
 just above a link the edge cuts off, pressed the link. In the viewer the photo's surface
 lies under the panel and would do as much, which is why a probe that took the ground away
 passed until a test pressed there in the panel alone. The wheel over the panel is the
-panel's and steps to no photo: **forty points a notch, whatever the system's**
-(`PANEL_NOTCH`), and a trackpad's points as they come. Not egui's `line_scroll_speed`, which
-the application sets to the system's notch in every frame for the grid: at a Windows set to
-scroll no lines a notch the panel, which has no other way to be scrolled, could not be
-brought to its foot. A press on the panel is not the photo's (`Controls::panel`). A panel
+panel's and steps to no photo: **a notch moves it as far as it moves the grid**
+(`scroll_bar::turned`: egui's `line_scroll_speed`, which the application sets to the
+system's notch in every frame), and a trackpad's points as they come. It was forty points
+whatever the system said, which the first person to run the People page on Windows found
+"slow" beside the grid, the page going by the same rule; at a Windows set to scroll no
+lines a notch the panel's scrollbar is the way down it. **Every column painted by hand
+has the grid's scrollbar** (`scroll_bar.rs`: the info panel, the People page, Settings'
+section, the `?` sheet) - as wide, held where its thumb is taken, a press on its track
+taking the column there - asked before the column is filled, so that what it draws is
+where the bar put it; it had been a mark three points wide that nothing could take hold
+of. A press on the panel is not the photo's (`Controls::panel`). A panel
 that has got shorter than it is scrolled - a keyword taken off - is held to its new end in
 the next frame, which it asks for: what it holds is measured as it is drawn. Another photo
 begins at the top, with nothing typed. **Its words break at a word's end**, and inside a

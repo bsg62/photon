@@ -38,8 +38,6 @@ const PAD_X: f32 = 16.0;
 const PAD_Y: f32 = 14.0;
 /// The histogram's height.
 const HISTOGRAM: f32 = 56.0;
-/// The mark at the panel's edge that says where a panel taller than the window stands.
-const MARK: f32 = 3.0;
 /// The field a keyword is typed into: its height.
 const FIELD: f32 = 26.0;
 /// A tick box, and the cross that takes a keyword off.
@@ -86,6 +84,8 @@ pub enum InfoAction {
 pub struct InfoView {
     /// How far the panel is scrolled, in points.
     scroll: f32,
+    /// Its scrollbar, the grid's own.
+    bar: crate::scroll_bar::Bar,
     /// How tall everything in it came to when it was last drawn.
     content: f32,
     /// What is typed into the keyword's field, and the photo it was typed for: another
@@ -203,6 +203,15 @@ impl InfoView {
         // Held to what there is to scroll, as it was when last drawn.
         let most = (self.content - inner.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, most);
+        let track = crate::scroll_bar::track(place);
+        self.scroll = (self.bar).hold(
+            ui,
+            Id::new("viewer-info-bar"),
+            track,
+            self.scroll,
+            self.content,
+            inner.height(),
+        );
         // Through a child cut off at the panel's own edge: what is scrolled out of it
         // is neither drawn nor pressed, an icon among it (`Icon::paint` paints through
         // the `Ui` it is given).
@@ -229,17 +238,15 @@ impl InfoView {
         if self.scroll > (self.content - inner.height()).max(0.0) {
             ui.ctx().request_repaint();
         }
-        if self.content > inner.height() {
-            let share = inner.height() / self.content;
-            let mark = Rect::from_min_size(
-                pos2(
-                    place.right() - MARK - 3.0,
-                    inner.top() + self.scroll * share,
-                ),
-                vec2(MARK, inner.height() * share),
-            );
-            (ui.painter()).rect_filled(mark, MARK / 2.0, color(GLASS_LINE).gamma_multiply(2.0));
-        }
+        (self.bar).paint(
+            ui,
+            track,
+            self.scroll,
+            self.content,
+            inner.height(),
+            color(GLASS_LINE).gamma_multiply(2.0),
+            color(GLASS_LINE).gamma_multiply(4.0),
+        );
         if typing {
             // A press of any button anywhere but on the field leaves it: egui gives the
             // keyboard up at a click elsewhere, which a press that becomes a drag of

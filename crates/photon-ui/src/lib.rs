@@ -52,6 +52,7 @@ pub mod posters;
 pub mod probe;
 pub mod rename;
 pub mod scans;
+pub mod scroll_bar;
 pub mod search_bar;
 pub mod search_box;
 pub mod search_help;

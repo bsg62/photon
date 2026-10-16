@@ -176,6 +176,11 @@ impl PeopleView {
         *self = Self::default();
     }
 
+    /// How far the page is scrolled, and whether its scrollbar is held: for a test.
+    pub fn scrolled(&self) -> (f32, bool) {
+        self.column.scrolled()
+    }
+
     /// The person whose name is typed in their row, if one is: for a test.
     pub fn renaming(&self) -> Option<i64> {
         self.renaming.map(|(person, _)| person)
@@ -216,7 +221,7 @@ impl PeopleView {
                 }
             }
         }
-        let mut page = self.column.begin(ui, rect, inner);
+        let mut page = (self.column).begin(ui, Id::new("people-column"), rect, inner);
         let mut actions = Vec::new();
         let double = (ui.ctx()).options(|options| options.input_options.max_double_click_delay);
         // The second press of a double click lands on what the first put under the

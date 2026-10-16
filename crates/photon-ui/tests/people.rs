@@ -1024,3 +1024,56 @@ fn a_question_about_a_person_renamed_meanwhile_closes() {
     driver.settle(&mut harness);
     assert_eq!(named(harness.state()), ["Anne"], "and Anne is still there");
 }
+
+// The page scrolls as far a notch as the grid does - the system's notch, a hundred points
+// at Windows' three lines a notch, where it moved forty whatever the system said and was
+// "slow" to the first person to run it on Windows - and its scrollbar is the grid's, which
+// a press takes hold of: it was a mark nothing could drag.
+#[test]
+fn the_page_scrolls_by_the_systems_notch_and_its_bar_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 24, 0, 0);
+    let ids = photo_ids(&library);
+    let groups: Vec<&[i64]> = ids.chunks(2).collect();
+    grouped(&library, &groups);
+    let dirs = library.dirs();
+    let mut harness: Harness<'_> = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 500.0))
+        .with_step_dt(crate::common::REFRESH as f32)
+        .build_eframe(move |cc| {
+            (App::new(cc, dirs, None).unwrap())
+                .with_videos(crate::common::no_videos())
+                .with_platform(crate::common::no_platform())
+                .with_wheel(|| photon_ui::grid::scroll::Notch::Points(100.0))
+        });
+    let mut driver = Driver::new(&harness);
+    driver.until(&mut harness, "the library shown", |app| {
+        app.photos() == 24 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    open_page(&mut driver, &mut harness);
+    driver.settle(&mut harness);
+    driver.act(&mut harness);
+    let over = egui::pos2(600.0, 250.0);
+    harness.event(egui::Event::PointerMoved(over));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    assert_eq!(harness.state().people_scrolled(), (100.0, false));
+    // A press at the foot of the bar's track, at the window's right edge: the page at
+    // its end, the thumb held.
+    let foot = egui::pos2(995.0, 440.0);
+    harness.event(egui::Event::PointerMoved(foot));
+    driver.act(&mut harness);
+    harness.event(button(foot, PointerButton::Primary, true));
+    driver.act(&mut harness);
+    let (scrolled, held) = harness.state().people_scrolled();
+    assert!(held, "the bar takes the press");
+    assert!(scrolled > 100.0, "the page went to {scrolled}");
+    harness.event(button(foot, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(!harness.state().people_scrolled().1, "let go of");
+}

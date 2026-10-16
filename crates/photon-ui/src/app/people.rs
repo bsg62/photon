@@ -129,6 +129,11 @@ impl App {
         self.page.as_ref()
     }
 
+    /// How far the page is scrolled, and whether its scrollbar is held: for a test.
+    pub fn people_scrolled(&self) -> (f32, bool) {
+        self.people_view.scrolled()
+    }
+
     /// Whether the page holds the crop of the face `face`, under its photo's key `key`.
     pub fn people_crop(&self, face: i64, key: &str) -> bool {
         self.people_view.holds_crop(&(face, key.to_owned()))
