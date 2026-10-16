@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The words main.wxs takes from its localisation: Tauri's en-US strings for its template,
+     under names of photon's own. -->
+<WixLocalization Culture="en-US" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="Language">1033</String>
+    <String Id="Codepage">1252</String>
+    <String Id="LaunchApp">Launch photon</String>
+    <String Id="DowngradeErrorMessage">A newer version of photon is already installed.</String>
+    <String Id="InstallAppFeature">Installs photon.</String>
+</WixLocalization>

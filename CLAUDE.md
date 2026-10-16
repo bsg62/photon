@@ -84,7 +84,7 @@ its test needs; a Windows machine with an antivirus scanning TEMP pays more stil
 **Repository chores** (also run in CI, so run them before tagging):
 
 ```bash
-cargo run -p xtask -- versions            # Cargo.toml, tauri.conf.json, ui/package.json agree
+cargo run -p xtask -- versions            # tauri.conf.json, ui/package.json agree with Cargo.toml
 cargo run -p xtask -- versions --tag v0.5.0   # ...and match the tag
 cargo run -p xtask -- metadata            # licence and installer metadata are complete
 ```
@@ -3327,6 +3327,30 @@ colour since sub-project 1. And the splitter is lit under the pointer, while it 
 when the keyboard brought the focus to it, not while it merely still has the focus a
 press gave it (`Shell::pointer_focus`): egui has no `:focus-visible` of its own.
 
+**photon-native's installers are built by `xtask package`, in `native-packages.yml`, as
+artifacts and never a release** (spec `2026-10-16-photon-native-platform-design.md`,
+decision 8): a `.deb` (`dpkg-deb`, its `Depends` read off the binary by `dpkg-shlibdeps`),
+an AppImage (`linuxdeploy`, which carries the libraries the binary links - GStreamer's
+among them, never its plugins; `AppRun` points GStreamer at the host's), a `.dmg` for each
+Mac (an ad hoc signed `photon.app`, `hdiutil`), and an MSI (WiX 3 over
+`crates/photon-ui/packaging/windows/`, photon's own `main.wxs`: Tauri's template with its
+placeholders out, the Tauri MSI's upgrade code as a literal so that the native one replaces
+it, the opt-in desktop shortcut kept). The program is installed as `photon` under the
+Tauri photon's identifier. The text of every file an installer carries is a pure function
+of `package.rs` and tested as text; the tools run in the workflow alone, which reads what
+they made: the `.deb`'s links (no GTK, nothing unresolved), the AppImage's desktop entry
+and no plugins in it, the app's signature, the MSI's tables. photon-native is built on its
+own there (`-p photon-ui`), not with the workspace, whose Tauri plugins would bring GTK.
+**Media Foundation is delay-loaded** (`build.rs`, `/DELAYLOAD` for `mfplat.dll` and
+`mfreadwrite.dll`, held by the workflow's `dumpbin /imports`) and loaded by `video::mf`
+before any call into it (`installed`), so a Windows "N" edition without the Media Feature
+Pack starts and says it cannot play videos - a delay-load that fails is an exception Rust
+cannot catch. The MSI has the Tauri MSI's upgrade code and allows the same version: over the
+Tauri photon of its version or a lower one it removes the Tauri program (the library is left
+alone), and over a higher one it is refused - the workflow's summary says so. The installers
+are built from paths made whole first (`std::path::absolute`): dpkg-shlibdeps, linuxdeploy
+and light each run in a folder of their own, and `--out dist` was read from there.
+
 **`cargo run -p xtask -- grid-gate` is the one command that launches the application**, and
 it does nothing unless told which: `--go --refresh-hz <hz>` opens fullscreen windows that
 close by themselves, for about two minutes, on a desktop that has to stay awake and
@@ -3474,8 +3498,9 @@ its worktree into `target/gate-svelte-target` for that reason.
 
 ## Releasing
 
-The version lives in three files — `crates/photon-app/tauri.conf.json` is authoritative, with
-`Cargo.toml` and `ui/package.json` agreeing — plus the regenerated `Cargo.lock`. Bump all
+The version lives in three files — the workspace's `Cargo.toml` is authoritative (since
+photon-native's installers are built without Tauri's bundler), with
+`crates/photon-app/tauri.conf.json` and `ui/package.json` agreeing — plus the regenerated `Cargo.lock`. Bump all
 three, regenerate both lockfiles in place with `cargo update -p photon-core -p photon-app -p
 xtask --offline` and `npm install --package-lock-only` (a release commit touches exactly five
 files), run `cargo run -p xtask -- versions --tag vX.Y.Z`, commit as `chore(release): X.Y.Z`,

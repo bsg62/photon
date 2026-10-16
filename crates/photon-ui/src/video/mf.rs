@@ -28,15 +28,40 @@ use windows::{
     core::{BSTR, GUID, HRESULT, HSTRING, Result as WinResult, implement},
 };
 
-/// Media Foundation is part of every Windows photon runs on; H.264 it always decodes, and
-/// HEVC with Microsoft's extension (a file without it answers `Unsupported`).
+/// Media Foundation is part of every Windows photon runs on but an "N" edition without the
+/// Media Feature Pack; H.264 it always decodes, and HEVC with Microsoft's extension (a file
+/// without it answers `Unsupported`).
 pub fn can_play() -> bool {
     started().is_ok()
+}
+
+/// The DLLs of Media Foundation's that photon calls into. The program delay-loads them
+/// (`build.rs`), so that a Windows "N" edition without them starts at all; a delay-load that
+/// fails is an exception Rust cannot catch, so each is loaded here first, from System32, and
+/// every way into Media Foundation comes through `started`.
+const DLLS: [&str; 2] = ["mfplat.dll", "mfreadwrite.dll"];
+
+/// Whether Media Foundation's DLLs are on this system.
+fn installed() -> Result<(), Failure> {
+    use windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+    for dll in DLLS {
+        // SAFETY: a library of the system's own, from System32, kept loaded for the delay
+        // load to find.
+        unsafe { LoadLibraryExW(&HSTRING::from(dll), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+            .map_err(|err| {
+                Failure::Unsupported(format!(
+                    "Media Foundation is not installed ({dll}: {err}): a Windows \"N\" edition \
+                     needs Microsoft's Media Feature Pack to play videos"
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 /// COM on this thread, and Media Foundation in this process. Each is a no-op the second
 /// time it is asked for.
 fn started() -> Result<(), Failure> {
+    installed()?;
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         MFStartup(MF_VERSION, MFSTARTUP_FULL)

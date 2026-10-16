@@ -1,0 +1,228 @@
+name: native-packages
+
+# photon-native's installers, built without Tauri's bundler (`xtask package`; spec
+# 2026-10-16-photon-native-platform-design.md, decision 8) and uploaded as artifacts - never
+# a release: main's Tauri release is untouched until the switch-over.
+on:
+  push:
+    branches: [native-ui]
+    paths:
+      - 'crates/**'
+      - 'Cargo.lock'
+      - '.github/workflows/native-packages.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/native-packages.yml'
+      - 'crates/photon-ui/packaging/**'
+      - 'crates/photon-ui/build.rs'
+      - 'crates/xtask/src/package.rs'
+  workflow_dispatch:
+
+jobs:
+  linux:
+    # The oldest Ubuntu the runners have: the glibc the binary is built against is the
+    # oldest one it runs on, and the AppImage carries GStreamer's libraries from here.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          # The 22.04 image holds libunwind-14-dev, which keeps out the libunwind-dev that
+          # GStreamer's headers depend on ("held broken packages").
+          sudo apt-get remove -y libunwind-14-dev || true
+          sudo apt-get install -y nasm dpkg-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - uses: dtolnay/rust-toolchain@stable
+      # Caches are saved from native-ui alone, as ci.yml's are (the 10 GB cap).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+      - run: cargo run -p xtask -- versions
+      # photon-native alone: in a build of the whole workspace Tauri's dialog plugin turns
+      # on GTK in a crate photon-native shares with it.
+      - run: cargo build --release --locked -p photon-ui --features avif-asm
+      - run: cargo run -p xtask -- package deb --binary target/release/photon-native --out dist
+      - name: The .deb installs what it says and links nothing it does not declare
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/*.deb)
+          dpkg-deb --info "$deb"
+          depends=$(dpkg-deb --field "$deb" Depends)
+          echo "$depends" | grep -q libgstreamer1.0 || { echo "::error::no GStreamer in Depends"; exit 1; }
+          ver=$(cargo run -q -p xtask -- versions | sed 's/.*passed: //')
+          dpkg-deb --field "$deb" Version | grep -qx "$ver" || { echo "::error::Version is not $ver"; exit 1; }
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/deb"
+          bin="$RUNNER_TEMP/deb/usr/bin/photon"
+          test -x "$bin"
+          ldd "$bin"
+          if ldd "$bin" | grep -q "not found"; then echo "::error::unresolved libraries"; exit 1; fi
+          # No system library the rule forbids: GTK would be one.
+          if ldd "$bin" | grep -qi gtk; then echo "::error::photon-native links GTK"; exit 1; fi
+          grep -qx 'Name=photon' "$RUNNER_TEMP"/deb/usr/share/applications/*.desktop
+          test -s "$RUNNER_TEMP/deb/usr/share/icons/hicolor/256x256/apps/io.github.bsg62.photon.png"
+      - name: linuxdeploy
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/linuxdeploy" \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/linuxdeploy"
+          echo "LINUXDEPLOY=$RUNNER_TEMP/linuxdeploy" >> "$GITHUB_ENV"
+          # No FUSE on the runner.
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+      - run: cargo run -p xtask -- package appimage --binary target/release/photon-native --out dist
+      - name: The AppImage names photon and carries no GStreamer plugin
+        run: |
+          set -euo pipefail
+          app=$(ls dist/*.AppImage)
+          test -x "$app"
+          ( cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract >/dev/null )
+          grep -qx 'Name=photon' "$RUNNER_TEMP"/squashfs-root/*.desktop
+          if find "$RUNNER_TEMP/squashfs-root" -path '*gstreamer-1.0/*' | grep -q .; then
+            echo "::error::the AppImage carries GStreamer plugins"; exit 1
+          fi
+      - uses: actions/upload-artifact@v5
+        with:
+          name: photon-native-linux
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `avif-asm` is x86-64 only (photon-core's Cargo.toml says why).
+          - target: aarch64-apple-darwin
+            arch: aarch64
+            features: ''
+          - target: x86_64-apple-darwin
+            arch: x86_64
+            features: --features avif-asm
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+      - run: cargo build --release --locked -p photon-ui --target ${{ matrix.target }} ${{ matrix.features }}
+      - run: >
+          cargo run -p xtask -- package dmg --arch ${{ matrix.arch }}
+          --binary target/${{ matrix.target }}/release/photon-native --out dist
+      - name: The disk image holds photon.app, signed
+        run: |
+          set -euo pipefail
+          dmg=$(ls dist/*.dmg)
+          mkdir -p "$RUNNER_TEMP/mnt"
+          hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/mnt" "$dmg"
+          test -x "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
+          codesign --verify --verbose "$RUNNER_TEMP/mnt/photon.app"
+          lipo -archs "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
+          hdiutil detach "$RUNNER_TEMP/mnt"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: photon-native-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: choco install nasm -y --no-progress; echo 'C:\Program Files\NASM' >> $env:GITHUB_PATH
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/native-ui' }}
+      - run: cargo build --release --locked -p photon-ui --features avif-asm
+      # Media Foundation's DLLs are delay-loaded (`crates/photon-ui/build.rs`), or a Windows
+      # "N" edition without them could not start photon at all.
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Media Foundation is delay-loaded
+        shell: pwsh
+        run: |
+          $imports = dumpbin /imports target\release\photon-native.exe | Out-String
+          $at = $imports.IndexOf('delay load imports', [StringComparison]::OrdinalIgnoreCase)
+          if ($at -lt 0) { Write-Output '::error::no delay-loaded imports'; exit 1 }
+          foreach ($dll in 'mfplat.dll', 'mfreadwrite.dll') {
+            $first = $imports.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase)
+            if ($first -lt $at) { Write-Output "::error::$dll is not delay-loaded"; exit 1 }
+            Write-Output "ok: $dll is delay-loaded"
+          }
+      - name: WiX 3
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile "$env:RUNNER_TEMP\wix.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wix.zip" -DestinationPath "$env:RUNNER_TEMP\wix"
+          echo "$env:RUNNER_TEMP\wix" >> $env:GITHUB_PATH
+      - run: cargo run -p xtask -- package msi --binary target\release\photon-native.exe --out dist
+      # The MSI's own tables: nobody can click through one here.
+      - name: The MSI replaces the Tauri one, installs photon.exe, and asks for its shortcut
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/*.msi)[0].FullName
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi, 0))
+          function Rows([string]$sql, [int]$columns) {
+            $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+            [void]$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            $out = @()
+            while ($rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) {
+              $row = @()
+              for ([int]$i = 1; $i -le $columns; $i++) {
+                $arg = [object[]]::new(1); $arg[0] = $i
+                $row += $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, $arg)
+              }
+              $out += ,$row
+            }
+            [void]$view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
+            return ,$out
+          }
+          $failed = $false
+          function Expect([string]$what, $actual, $expected) {
+            if ("$actual" -ne "$expected") {
+              Write-Output "::error::$what is '$actual', expected '$expected'"
+              $script:failed = $true
+            } else { Write-Output "ok: $what = '$actual'" }
+          }
+          $code = Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'UpgradeCode'" 1
+          Expect 'the upgrade code (the Tauri MSI''s)' $code[0][0] '{0CCAA18B-F3FF-50CE-AD76-6FB4D33F39B7}'
+          $file = Rows "SELECT ``FileName`` FROM ``File`` WHERE ``File`` = 'Path'" 1
+          Expect 'the program installed' (($file[0][0] -split '\|')[-1]) 'photon.exe'
+          $cond = Rows "SELECT ``Condition`` FROM ``Component`` WHERE ``Component`` = 'ApplicationShortcutDesktop'" 1
+          Expect 'the desktop shortcut component condition' $cond[0][0] 'DESKTOPSHORTCUT'
+          $box = Rows "SELECT ``Type``, ``Property`` FROM ``Control`` WHERE ``Dialog_`` = 'PhotonInstallDirDlg' AND ``Control`` = 'DesktopShortcut'" 2
+          Expect 'the checkbox control' ($box[0] -join ',') 'CheckBox,DESKTOPSHORTCUT'
+          $default = Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'DESKTOPSHORTCUT'" 1
+          Expect 'rows giving DESKTOPSHORTCUT a default' $default.Count 0
+          $secure = Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'SecureCustomProperties'" 1
+          Expect 'DESKTOPSHORTCUT on the secure list' (($secure[0][0] -split ';') -contains 'DESKTOPSHORTCUT') 'True'
+          $next = Rows "SELECT ``Argument`` FROM ``ControlEvent`` WHERE ``Dialog_`` = 'LicenseAgreementDlg' AND ``Control_`` = 'Next' AND ``Event`` = 'NewDialog'" 1
+          Expect 'the page after the licence' $next[0][0] 'PhotonInstallDirDlg'
+          if ($failed) { exit 1 }
+      - uses: actions/upload-artifact@v5
+        with:
+          name: photon-native-windows
+          path: dist/*.msi
+          if-no-files-found: error
+
+  summary:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: What these are
+        run: |
+          {
+            echo "photon-native's installers, built from this commit as artifacts - not a release."
+            echo
+            echo "The MSI has the Tauri MSI's upgrade code: installed over the Tauri photon of the"
+            echo "same version or a lower one it REMOVES the Tauri program (photon's library is left"
+            echo "alone), and over a higher one it is refused. To keep the Tauri photon, try the MSI"
+            echo "on a machine where it is not installed."
+          } >> "$GITHUB_STEP_SUMMARY"
