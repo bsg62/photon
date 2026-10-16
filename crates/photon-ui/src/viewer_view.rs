@@ -146,6 +146,10 @@ pub struct ViewerData<'a> {
     pub message: Option<Message<'a>>,
     /// The line in the bar: the file's name, its time, its size, its place.
     pub caption: &'a str,
+    /// What the line says in its place for a moment after a click copied the file name:
+    /// "Copied". The bar keeps the width of the line, so nothing in it moves under the
+    /// pointer - the second click of a double click on the name turned the photo.
+    pub caption_said: Option<&'a str>,
     /// The photo's own caption, where it has one.
     pub photo_caption: Option<&'a str>,
     /// The photo's width in pixels as it is seen, as the library says it; nought while
@@ -878,6 +882,7 @@ impl ViewerView {
         // While a keyword is being typed the keys are its field's: `h` is a letter, the
         // arrows move the caret, and Escape leaves the field and closes nothing.
         let typing = self.info.typing();
+        let held = ui.input(|input| input.modifiers);
         let over_panel =
             pointer.is_some_and(|at| controls.panel.is_some_and(|panel| panel.contains(at)));
         for event in &events {
@@ -886,7 +891,10 @@ impl ViewerView {
                 // `Key::C` with the command modifier into it): the photo on the
                 // clipboard - but not while a keyword is typed, whose field copies its
                 // own text.
-                Event::Copy if !typing && data.copyable => actions.push(ViewerAction::Copy),
+                // (Not with Shift or Alt, as in the grid.)
+                Event::Copy if !typing && data.copyable && !held.shift && !held.alt => {
+                    actions.push(ViewerAction::Copy);
+                }
                 Event::Key { pressed: true, .. } if typing => {}
                 Event::Key {
                     key,
@@ -1971,8 +1979,9 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<Vi
         } else {
             Sense::CLICK
         };
+        let words = data.caption_said.unwrap_or(data.caption);
         let response = ui.interact(caption, Id::new("viewer-caption"), sense);
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, data.caption));
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, words));
         if response.clicked() {
             pressed.push(ViewerAction::CopyName);
         }
@@ -1981,7 +1990,7 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<Vi
             &painter,
             (left, rect.center().y),
             room,
-            data.caption,
+            words,
             font,
             color(DARK.text_dim),
         );
@@ -2077,6 +2086,7 @@ mod tests {
         preview: Option<TextureHandle>,
         message: Option<(&'static str, bool)>,
         caption: String,
+        caption_said: Option<&'static str>,
         photo_caption: Option<&'static str>,
         starred: Option<bool>,
         can_prev: bool,
@@ -2138,6 +2148,7 @@ mod tests {
                 preview: None,
                 message: None,
                 caption: "a.jpg · Jul 14, 2026, 12:30 PM · 4000 × 3000 · 2.4 MB (1 / 3)".to_owned(),
+                caption_said: None,
                 photo_caption: None,
                 starred: Some(false),
                 can_prev: true,
@@ -2214,6 +2225,7 @@ mod tests {
                 preview: self.preview.as_ref(),
                 message: (self.message).map(|(text, over)| Message { text, over }),
                 caption: &self.caption,
+                caption_said: self.caption_said,
                 photo_caption: self.photo_caption,
                 starred: self.starred,
                 width: self.width,
@@ -4482,6 +4494,34 @@ mod tests {
         f
     }
 
+    // A double click on the file name copies it twice and presses nothing else: "Copied"
+    // stands in its place with the bar as wide as the line was, so nothing moves under the
+    // pointer. Laid out for the shorter word, the bar shrank and the second click turned
+    // the photo, cropped it or started a slideshow, by where on the name it fell.
+    #[test]
+    fn a_double_click_on_the_caption_presses_nothing_but_the_caption() {
+        let mut f = Fixture::new();
+        f.frame(Vec::new());
+        let caption = (f.texts.iter())
+            .find(|(text, _)| text.starts_with("a.jpg"))
+            .map(|(_, at)| *at)
+            .expect("the bar's caption");
+        for x in [5.0, 40.0, 80.0, 120.0] {
+            let at = pos2(caption.left() + x, caption.center().y);
+            f.caption_said = None;
+            f.frame(Vec::new());
+            assert_eq!(f.click(at), [ViewerAction::CopyName], "{x}");
+            f.caption_said = Some("Copied");
+            f.frame(Vec::new());
+            assert!(f.drew("Copied").is_some());
+            assert_eq!(
+                f.click(at),
+                [ViewerAction::CopyName],
+                "{x}, the second click"
+            );
+        }
+    }
+
     // A click on the bar beside its buttons names no face under it: a click on the
     // caption copies its file name, and the bar's glass is no widget at all - egui would
     // hand a click there to the outline beneath, and it is the view that says the bar
@@ -4757,6 +4797,9 @@ mod tests {
         let mut f = Fixture::new();
         f.frame(Vec::new());
         assert_eq!(f.frame(vec![Event::Copy]), [ViewerAction::Copy]);
+        let shift = Event::ModifiersChanged(Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(f.frame(vec![shift, Event::Copy]), [], "with Shift");
+        f.frame(vec![Event::ModifiersChanged(Modifiers::NONE)]);
         f.copyable = false;
         assert_eq!(f.frame(vec![Event::Copy]), []);
     }

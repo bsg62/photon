@@ -219,3 +219,38 @@ fn the_viewer_copies_its_photo_and_its_caption_its_file_name() {
         "the file name back"
     );
 }
+
+// A press for another photo while one is being copied is not dropped: it goes after it,
+// so that what is on the clipboard at the end is the last photo asked for. Dropped, the
+// "Photo copied" that came was the first photo's, and that is what was pasted.
+#[test]
+fn a_copy_of_another_photo_goes_after_the_one_on_its_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let picker = Arc::new(Picker::default());
+    let (mut harness, mut driver) = three(dir.path(), picker.clone());
+    pick(&mut driver, &mut harness, 0, Modifiers::NONE);
+    let rendering = photon_engine::engine::RENDERING.lock();
+    copy(&mut driver, &mut harness);
+    pick(&mut driver, &mut harness, 1, Modifiers::NONE);
+    copy(&mut driver, &mut harness);
+    drop(rendering);
+    driver.until(&mut harness, "both copied", |_| copied(&picker).len() == 2);
+}
+
+// Ctrl+Shift+C is no copy of a photo, though egui makes a copy of it too.
+#[test]
+fn ctrl_shift_c_copies_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let picker = Arc::new(Picker::default());
+    let (mut harness, mut driver) = three(dir.path(), picker.clone());
+    pick(&mut driver, &mut harness, 0, Modifiers::NONE);
+    harness.event(egui::Event::ModifiersChanged(
+        Modifiers::COMMAND | Modifiers::SHIFT,
+    ));
+    harness.event(egui::Event::Copy);
+    driver.act(&mut harness);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    assert_eq!(copied(&picker), []);
+}

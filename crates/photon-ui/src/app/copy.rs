@@ -4,9 +4,12 @@
 //! under `RENDERING`) and put on the clipboard by the platform, on a thread of its own:
 //! the decode takes a second or two, and the clipboard's write is not cheap either.
 //!
-//! **One copy at a time**: a second press while one is on its way is dropped, as the
-//! Svelte store drops it - another full-size decode of the same photo, for nothing. **What
-//! is done is said** ("Photo copied"): a copy changes nothing on screen, and without a
+//! **One copy at a time, and the last photo asked for is the one on the clipboard**: a
+//! second press for the photo on its way is dropped, as the Svelte store drops it -
+//! another full-size decode of the same photo, for nothing - and a press for another photo
+//! waits for it and goes after it, the latest such press alone. Dropped, Ctrl+C on the
+//! next photo of the viewer a moment after the last said "Photo copied" of the first, and
+//! the first was what was pasted. **What is done is said** ("Photo copied"): a copy changes nothing on screen, and without a
 //! word a copy cannot be told from a key that missed.
 
 use super::App;
@@ -19,7 +22,10 @@ pub(crate) const COPIED: &str = "Photo copied";
 impl App {
     /// Puts the photo `id` on the clipboard, unless a copy is on its way.
     pub(super) fn copy_photo(&mut self, id: i64) {
-        if self.copying.is_some() {
+        if let Some((busy, _)) = &self.copying {
+            if *busy != id {
+                self.next_copy = Some(id);
+            }
             return;
         }
         let (send, answer) = mpsc::channel();
@@ -38,14 +44,14 @@ impl App {
                 ctx.request_repaint();
             });
         match spawned {
-            Ok(_) => self.copying = Some(answer),
+            Ok(_) => self.copying = Some((id, answer)),
             Err(err) => tracing::error!(%err, "the copy's thread could not start"),
         }
     }
 
     /// The copy's answer, once it has one: said. Says whether it answered.
     pub(super) fn copied(&mut self, now: f64) -> bool {
-        let Some(copying) = &self.copying else {
+        let Some((_, copying)) = &self.copying else {
             return false;
         };
         let answer = match copying.try_recv() {
@@ -59,6 +65,9 @@ impl App {
         match answer {
             Ok(()) => self.toasts.done(COPIED, now),
             Err(said) => self.toasts.error(said, now),
+        }
+        if let Some(next) = self.next_copy.take() {
+            self.copy_photo(next);
         }
         true
     }

@@ -242,8 +242,11 @@ pub struct App {
     /// The system photon asks for a folder chosen and a message shown (`platform.rs`), or
     /// a test's stand-in.
     platform: Arc<dyn Platform>,
-    /// A copy of a photo to the clipboard, while one is on its way (`app/copy.rs`).
-    copying: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// A copy of a photo to the clipboard, while one is on its way, and the photo
+    /// (`app/copy.rs`).
+    copying: Option<(i64, std::sync::mpsc::Receiver<Result<(), String>>)>,
+    /// The photo a press asked for while another was being copied: the next.
+    next_copy: Option<i64>,
     /// The system's folder picker, while it is open: one at a time, on a thread of its own.
     picking: Option<pick::Picking>,
     /// How many dialogs have been opened: a folder chosen is put only into the dialog that
@@ -1369,6 +1372,7 @@ impl App {
             platform: Arc::new(crate::platform::System::default()),
             picking: None,
             copying: None,
+            next_copy: None,
             dialog_openings: 0,
             poster_worker: None,
             checking,
@@ -2815,12 +2819,12 @@ impl App {
         // "Copied" in the file name's place for a moment after the caption's click, as
         // the Svelte caption says it - and only of the photo whose name was copied.
         let named = (open.item.as_ref()).map(|item| item.id);
-        let caption = match open.name_copied {
+        let caption_said = match open.name_copied {
             Some((id, at)) if Some(id) == named && now - at < COPIED_MS => {
                 ctx.request_repaint_after(Duration::from_secs_f64((at + COPIED_MS - now) / 1000.0));
-                COPIED_NAME.to_owned()
+                Some(COPIED_NAME)
             }
-            _ => caption,
+            _ => None,
         };
         let photo_caption = (open.item.as_ref())
             .and_then(|item| viewer_caption::caption_line(item.caption.as_deref()));
@@ -2884,6 +2888,7 @@ impl App {
             preview: preview.as_ref(),
             message: (said.as_ref()).map(|(text, over)| Message { text, over: *over }),
             caption: &caption,
+            caption_said,
             photo_caption: photo_caption.as_deref(),
             // (Nothing is known of a photo that is gone: its facts went with it.)
             starred: open.item.as_ref().map(|item| item.starred),
