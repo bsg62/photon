@@ -62,10 +62,12 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
    a cancel, which rfd answers alike: where none opens, that is said, and the typed path
    stands beside every "Choose…" as the way left. rfd's `wayland` feature is not wanted,
    so on Wayland the portal's picker has no parent window. "Choose…" beside the export's
-   destination and beside Settings' "Add folder…" field opens it; the folder chosen is put
-   in the field and asked about as a typed one is, so the two ways are one rule. The empty
-   library's "Add folder…" opens the picker straight away, as the Svelte one does, over
-   Settings' folders with the field open. **The picker runs on a thread of its own**, the
+   destination and beside Settings' folder field opens it; the folder chosen is put in the
+   field and asked about as a typed one is, so the two ways are one rule. "Add folder…" -
+   Settings' and the empty library's - opens the picker straight away and watches the
+   folder chosen, as the Svelte one does (`add-folder.ts`); the field opens only where no
+   picker can. (Built first over Settings with the field open, which the first person to
+   run the window found was steps the Tauri photon does not have, 2026-10-16.) **The picker runs on a thread of its own**, the
    portal given ten seconds to open it: a portal answers when the user does, and a window
    that stopped drawing meanwhile would be taken by the system for one that does not
    answer. **One at a time, its answer for the field that last asked**: a press while one

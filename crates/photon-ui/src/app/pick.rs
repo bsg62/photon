@@ -1,6 +1,10 @@
 //! The system's folder picker, on the application's side: asked for by "Choose…" beside
-//! the export's destination and Settings' folder field, and by the empty library's "Add
-//! folder…"; its answer put into the field that asked, and asked about as a typed path is.
+//! the export's destination and Settings' folder field, its answer put into the field that
+//! asked and asked about as a typed path is; and by "Add folder…" - Settings' and the
+//! empty library's - whose folder is watched at once, as the Tauri photon's is
+//! (`add-folder.ts`). Those opened Settings' field a path is typed in first, and the
+//! picker over it: steps the Tauri photon does not have, which the first person to run
+//! the window said. The field is what is left where no picker can be opened.
 //!
 //! **The picker runs on a thread of its own**: a portal answers when the user does, and a
 //! window that stopped drawing meanwhile would be taken by the system for one that does
@@ -21,11 +25,13 @@ use crate::{
 };
 use std::sync::mpsc;
 
-/// Which field asked for a folder.
+/// Which field asked for a folder, or none: a folder to watch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PickFor {
     Export,
     AddFolder,
+    /// "Add folder…": the folder chosen is watched.
+    Watch,
 }
 
 /// The picker that is open.
@@ -40,7 +46,7 @@ pub(super) struct Picking {
 fn title(of: PickFor) -> &'static str {
     match of {
         PickFor::Export => "Export copies to…",
-        PickFor::AddFolder => "Add a folder to photon",
+        PickFor::AddFolder | PickFor::Watch => "Add a folder to photon",
     }
 }
 
@@ -87,7 +93,9 @@ impl App {
         let Some(Picking { of, opening, .. }) = self.picking.take() else {
             return false;
         };
-        if opening != self.dialog_openings {
+        // A folder to watch is watched whatever is on screen by then: it was asked for
+        // by the user, for nothing but itself.
+        if of != PickFor::Watch && opening != self.dialog_openings {
             return true;
         }
         let folder = match answer {
@@ -95,6 +103,10 @@ impl App {
             Picked::Cancelled => return true,
             Picked::Unavailable => {
                 self.toasts.error(NO_PICKER.to_owned(), now);
+                // Where no picker opens, the field a path is typed in is the way left.
+                if of == PickFor::Watch {
+                    self.type_a_folder();
+                }
                 return true;
             }
         };
@@ -102,6 +114,11 @@ impl App {
         // then said to be no folder, as it would be if it were typed.
         let text = (folder.into_os_string().into_string())
             .unwrap_or_else(|os| os.to_string_lossy().into_owned());
+        if of == PickFor::Watch {
+            // Said as a folder dropped on the window is: "Watching “…”", or why not.
+            self.writes.push(super::Write::Watch { paths: vec![text] });
+            return true;
+        }
         match (of, &mut self.dialog) {
             (PickFor::Export, Some(Dialog::Export(export))) => {
                 if let Some(ask) = export.type_in(text) {
@@ -118,5 +135,18 @@ impl App {
             _ => {}
         }
         true
+    }
+
+    /// Settings, at its folders, with the field a path is typed in open.
+    pub(super) fn type_a_folder(&mut self) {
+        if !matches!(&self.dialog, Some(Dialog::Settings(_))) {
+            self.open_settings(crate::settings::Section::Folders);
+        }
+        if let Some(Dialog::Settings(settings)) = &mut self.dialog {
+            settings.section = crate::settings::Section::Folders;
+            if settings.adding.is_none() {
+                settings.adding = Some(Default::default());
+            }
+        }
     }
 }

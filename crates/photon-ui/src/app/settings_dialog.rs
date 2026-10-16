@@ -614,9 +614,9 @@ impl App {
                     self.open_with_system(super::open::Opening::RevealWatched(id));
                 }
                 Asked::RevealLibrary => self.open_with_system(super::open::Opening::RevealLibrary),
-                Asked::AddOpen => {
-                    settings.adding = Some(Default::default());
-                }
+                // The system's picker, and the folder chosen watched, as in the Tauri
+                // photon; the field opens only where no picker can (`pick.rs`).
+                Asked::AddOpen => self.pick_folder(super::pick::PickFor::Watch),
                 Asked::AddPath(text) => {
                     if let Some(ask) =
                         (settings.adding.as_mut()).and_then(|adding| adding.type_in(text))

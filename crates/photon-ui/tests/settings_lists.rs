@@ -3,7 +3,7 @@
 //! its files, and a keyword renamed or removed is a rule in `library.db`: nothing here
 //! writes outside it.
 
-use crate::common::{Driver, Harness, drop_on, hold_over, over, photos_in};
+use crate::common::{Driver, Harness, Picker, drop_on, hold_over, over_with, photos_in};
 use eframe::egui::{self, Key, Modifiers, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use photon_engine::commands;
@@ -33,10 +33,14 @@ fn typed(driver: &mut Driver, harness: &mut Harness<'_>, text: &str) {
     driver.act(harness);
 }
 
-/// A library watching a folder of two real photos, shown; Settings open at `section`.
+/// A library watching a folder of two real photos, shown; Settings open at `section`. No
+/// folder picker can be opened there, so "Add folder…" opens the field a folder's path is
+/// typed in (`add_field`).
 fn opened_at<'a>(dir: &Path, section: &str) -> (Harness<'a>, Driver, PathBuf) {
     let pictures = photos_in(dir, "Pictures", &["a.jpg", "b.jpg"]);
-    let (mut harness, mut driver, _) = over(dir, Some(&pictures));
+    let picker = std::sync::Arc::new(Picker::default());
+    *picker.answer.lock().unwrap() = photon_ui::platform::Picked::Unavailable;
+    let (mut harness, mut driver, _) = over_with(dir, Some(&pictures), picker);
     driver.until(&mut harness, "the photos shown", |app| {
         app.photos() == 2 && app.last_frame().is_some_and(|frame| frame.settled)
     });
@@ -79,6 +83,14 @@ fn press(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
 
 /// A folder's path as the library stores it: on a Mac a temporary directory is under
 /// `/var`, which is a link to `/private/var`, and the library keeps where a path leads.
+/// "Add folder…" pressed where no picker opens, and the field it then opens.
+fn add_field(driver: &mut Driver, harness: &mut Harness<'_>) {
+    press(driver, harness, watched_list::ADD_FOLDER);
+    driver.until(harness, "the field open", |app| {
+        settings(app).is_some_and(|settings| settings.adding.is_some())
+    });
+}
+
 fn stored(path: &std::path::Path) -> String {
     let path = photon_core::paths::canonicalize(path).unwrap();
     path.to_str().unwrap().to_owned()
@@ -91,14 +103,15 @@ fn watched(app: &App) -> Vec<String> {
         .collect()
 }
 
-// A folder's path typed into the field "Add folder…" opens, asked about as it is typed,
+// A folder's path typed into the field "Add folder…" opens where no picker can be
+// opened, asked about as it is typed,
 // and added by Enter: watched, scanned, and the field closed.
 #[test]
 fn a_folder_is_added_by_its_typed_path() {
     let dir = tempfile::tempdir().unwrap();
     let more = photos_in(dir.path(), "More", &["c.jpg"]);
     let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
-    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    add_field(&mut driver, &mut harness);
     driver.act(&mut harness);
     typed(&mut driver, &mut harness, more.to_str().unwrap());
     driver.until(&mut harness, "the path passed", |app| {
@@ -123,7 +136,7 @@ fn a_folder_the_library_refuses_keeps_its_path_and_says_why() {
     let (mut harness, mut driver, pictures) = opened_at(dir.path(), "Folders");
     let inner = pictures.join("inner");
     std::fs::create_dir_all(&inner).unwrap();
-    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    add_field(&mut driver, &mut harness);
     driver.act(&mut harness);
     typed(&mut driver, &mut harness, inner.to_str().unwrap());
     driver.until(&mut harness, "the path passed", |app| {
@@ -155,7 +168,7 @@ fn a_folder_dropped_under_the_field_is_put_in_it() {
     let dir = tempfile::tempdir().unwrap();
     let more = photos_in(dir.path(), "More", &["c.jpg"]);
     let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
-    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    add_field(&mut driver, &mut harness);
     drop_on(&mut driver, &mut harness, &[&more]);
     driver.until(&mut harness, "the path asked about", |app| {
         settings(app)
@@ -408,7 +421,7 @@ fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id
     press(&mut driver, &mut harness, watched_list::REMOVE);
     press(&mut driver, &mut harness, watched_list::REMOVE_YES);
     // A folder added while the removal waits.
-    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    add_field(&mut driver, &mut harness);
     driver.act(&mut harness);
     typed(&mut driver, &mut harness, more.to_str().unwrap());
     driver.until(&mut harness, "the path passed", |app| {
@@ -447,7 +460,7 @@ fn a_folder_dropped_while_the_add_field_is_out_of_sight_is_not_lost() {
     let dir = tempfile::tempdir().unwrap();
     let more = photos_in(dir.path(), "More", &["c.jpg"]);
     let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
-    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    add_field(&mut driver, &mut harness);
     press(&mut driver, &mut harness, "Tags");
     drop_on(&mut driver, &mut harness, &[&more]);
     driver.settle(&mut harness);
@@ -470,7 +483,7 @@ fn the_card_over_the_add_field_says_what_a_drop_does_there() {
     let dir = tempfile::tempdir().unwrap();
     let more = photos_in(dir.path(), "More", &["c.jpg"]);
     let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
-    press(&mut driver, &mut harness, watched_list::ADD_FOLDER);
+    add_field(&mut driver, &mut harness);
     hold_over(&mut driver, &mut harness, &[&more]);
     driver.act(&mut harness);
     assert!(

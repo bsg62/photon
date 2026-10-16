@@ -331,18 +331,14 @@ fn the_empty_library_and_the_sidebar_open_settings_at_folders() {
         Some(Section::Folders)
     );
     key(&mut driver, &mut harness, Key::Escape);
-    // "Add folder…" opens it there too, with the field a folder is typed in open.
+    // "Add folder…" opens the system's picker and no Settings, as the Tauri photon's
+    // does: the picker here is cancelled, and nothing is open after it.
     driver.settle(&mut harness);
     harness.get_by_label("Add folder…").click();
     driver.act(&mut harness);
-    assert!(
-        settings(harness.state()).is_some_and(
-            |settings| settings.section == Section::Folders && settings.adding.is_some()
-        )
-    );
-    key(&mut driver, &mut harness, Key::Escape);
-    driver.act(&mut harness);
-    key(&mut driver, &mut harness, Key::Escape);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    assert!(settings(harness.state()).is_none());
 
     let other = tempfile::tempdir().unwrap();
     let (mut harness, mut driver, _) = crate::common::over(other.path(), None);

@@ -242,7 +242,8 @@ pub enum Asked {
         id: i64,
         path: String,
     },
-    /// "Add folder…": the field a path is typed in opens.
+    /// "Add folder…": the system's picker, the folder chosen watched; the field a path is
+    /// typed in where no picker opens.
     AddOpen,
     /// "Choose…" beside the field: the system's folder picker.
     AddChoose,

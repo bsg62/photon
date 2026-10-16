@@ -1684,8 +1684,8 @@ before the engine is opened, so no report is sent before someone listens.
 
 **The empty library's panel is `empty.rs` and `empty_panel.rs`**, and the view of it in
 All photos and Recent alone; every other view has its one line. "Add folder…" opens
-the system's folder picker over Settings' folders with the field a path is typed in open
-(`App::pick_folder`, below), "Watched folders…" Settings at its folders; and "Or
+the system's folder picker and watches the folder chosen (`App::pick_folder`, below),
+"Watched folders…" Settings at its folders; and "Or
 drop a folder onto this window." stands under them only where a drop can arrive
 (`LibraryFacts::drops`, below): a line that offered one where none arrives would be
 false, not inactive. The block is centred, so a longer sentence
@@ -2168,9 +2168,13 @@ build script refuses both, and in a build of the whole workspace Tauri's plugin 
 GTK. Going to the portal itself also tells a picker that could not be opened from a
 cancel, which rfd answers alike: no portal and no `zenity` is said (`NO_PICKER`), a
 cancel is not. "Choose…" beside the export's destination and beside Settings' folder
-field, and the empty library's "Add folder…", open it; the folder chosen goes into the
-field and is asked about as a typed path is - the field, which stays, is the way where no
-picker opens. **It runs on a thread of its own, one at a time, and its answer is for the
+field opens it, and the folder chosen goes into the field and is asked about as a typed
+path is; **"Add folder…" - Settings' and the empty library's - opens it and watches the
+folder chosen** (`PickFor::Watch`, the drop's `Write::Watch`), as the Tauri photon's
+`addFolderFromPicker` does, whatever has opened over the window by the time it answers.
+It opened Settings' field first and the picker over it, steps the Tauri photon does not
+have, which the first person to run the window found. Where no picker opens, that is said
+and Settings' field is opened - the way left. **It runs on a thread of its own, one at a time, and its answer is for the
 field that last asked for it** (`App::picking`, by the number of the dialog's opening,
 `App::dialog_openings`): a press while one is open - a picker tied to no window, as a
 portal's on Wayland and Windows' with no owner are, can be behind photon's - opens no
@@ -3233,8 +3237,9 @@ a use for it** (`settings_view::claims_escape`, asked by the dialog before it ta
 key): a question's Cancel, the keyword's field and the folder's field giving up, a filter
 that holds something emptied. The three fields claim Escape in their `EventFilter` - left
 to egui it takes the keyboard away at the start of the frame, before anyone can see whose
-it was - with all four of its fields said. **"Add folder…" is a path in a field**, typed or chosen in the
-system's picker: the field opens with the keyboard, is asked about as it is typed off the window's
+it was - with all four of its fields said. **The field a folder is typed in** opens where no picker could
+be opened ("Add folder…" is the picker, above), with "Choose…" beside it to try again: it
+opens with the keyboard, is asked about as it is typed off the window's
 thread (`check_folder`, the export field's rules, the text as it stands first), and is
 added by Enter or "Add" through `commands::add_folder`; the library's refusal - inside a
 folder already watched - stands under the field, which keeps the path. A folder added is
