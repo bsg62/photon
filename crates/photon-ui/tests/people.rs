@@ -16,12 +16,17 @@ use photon_core::{
 };
 use photon_ui::{app::App, dialogs::Dialog, fixture::Fixture, settings::Section};
 
-/// photon has looked at every photo of `library` and found one face on each photo of
-/// `groups`, embedded so that the library's own grouping puts each group's faces
-/// together: each group's a vector of its own, at right angles to every other's.
-fn grouped(library: &Fixture, groups: &[&[i64]]) -> Library {
+/// The library of `library`, with Find faces on.
+fn faced(library: &Fixture) -> Library {
     let lib = Library::open(&library.dirs().db_path).unwrap();
     lib.set_face_detection(true).unwrap();
+    lib
+}
+
+/// One face on each photo of `photos`, embedded as a vector of its own for each number
+/// given beside the photo - faces of one number are alike, of two numbers at right angles -
+/// and grouped by the library's own rule. Photos not given are not looked at yet.
+fn faces_on(lib: &Library, photos: &[(i64, usize)]) {
     let face = Detection {
         rect: Rect {
             left: 0.3,
@@ -38,40 +43,66 @@ fn grouped(library: &Fixture, groups: &[&[i64]]) -> Library {
         ],
         score: 0.9,
     };
-    let with_face: Vec<i64> = groups
-        .iter()
-        .flat_map(|group| group.iter().copied())
-        .collect();
-    let photos = lib.face_candidates(0, 1000, DETECTOR_VERSION).unwrap();
-    let batch: Vec<_> = (photos.into_iter())
-        .map(|photo| {
-            let faces = if with_face.contains(&photo.id) {
-                vec![face.clone()]
-            } else {
-                Vec::new()
-            };
-            (photo, faces)
-        })
-        .collect();
+    let of = |id: i64| {
+        photos
+            .iter()
+            .find(|(photo, _)| *photo == id)
+            .map(|(_, n)| *n)
+    };
+    let batch: Vec<_> = (lib
+        .face_candidates(0, 1000, DETECTOR_VERSION)
+        .unwrap()
+        .into_iter())
+    .filter(|photo| of(photo.id).is_some())
+    .map(|photo| (photo, vec![face.clone()]))
+    .collect();
     lib.write_face_batch(&batch, DETECTOR_VERSION).unwrap();
-    let candidates = lib.embed_candidates(0, 1000, EMBEDDER_VERSION).unwrap();
-    let batch: Vec<_> = (candidates.into_iter())
-        .map(|candidate| {
-            let group = groups
-                .iter()
-                .position(|group| group.contains(&candidate.item_id))
-                .unwrap();
-            let mut vector = [0.0_f32; DIM];
-            vector[group] = 1.0;
-            let faces = (candidate.faces.iter())
-                .map(|(id, _)| (*id, Some(vector)))
-                .collect();
-            (candidate, faces)
-        })
-        .collect();
+    let batch: Vec<_> = (lib
+        .embed_candidates(0, 1000, EMBEDDER_VERSION)
+        .unwrap()
+        .into_iter())
+    .map(|candidate| {
+        let mut vector = [0.0_f32; DIM];
+        vector[of(candidate.item_id).unwrap()] = 1.0;
+        let faces = (candidate.faces.iter())
+            .map(|(id, _)| (*id, Some(vector)))
+            .collect();
+        (candidate, faces)
+    })
+    .collect();
     lib.write_embeddings(&batch, EMBEDDER_VERSION).unwrap();
     lib.group_ungrouped_faces(&|| false).unwrap();
+}
+
+/// Every photo not looked at yet, looked at and found to have no face: the launch's pass
+/// then has nothing to do.
+fn look_rest(lib: &Library) {
+    let batch: Vec<_> = (lib
+        .face_candidates(0, 1000, DETECTOR_VERSION)
+        .unwrap()
+        .into_iter())
+    .map(|photo| (photo, Vec::new()))
+    .collect();
+    lib.write_face_batch(&batch, DETECTOR_VERSION).unwrap();
+}
+
+/// photon has looked at every photo of `library` and found one face on each photo of
+/// `groups`, embedded so that the library's own grouping puts each group's faces
+/// together: each group's a vector of its own, at right angles to every other's.
+fn grouped(library: &Fixture, groups: &[&[i64]]) -> Library {
+    let lib = faced(library);
+    let photos: Vec<(i64, usize)> = (groups.iter().enumerate())
+        .flat_map(|(n, group)| group.iter().map(move |id| (*id, n)))
+        .collect();
+    faces_on(&lib, &photos);
+    look_rest(&lib);
     lib
+}
+
+/// The unnamed groups, largest first, as the library lists them.
+fn unnamed(lib: &Library) -> Vec<i64> {
+    let page = lib.people_page(12).unwrap();
+    page.unnamed.iter().map(|group| group.id).collect()
 }
 
 fn button(pos: Pos2, button: PointerButton, pressed: bool) -> egui::Event {
@@ -694,4 +725,299 @@ fn a_name_for_a_group_gone_says_the_group_changed() {
         let page = app.people_page().unwrap();
         page.unnamed().iter().all(|g| g.id != group)
     });
+}
+
+/// A press on what AccessKit calls `label`, where it was last drawn.
+fn press(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
+    driver.seen(harness, label);
+    let at = harness.get_by_label(label).rect().center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    harness.event(button(at, PointerButton::Primary, false));
+    driver.act(harness);
+}
+
+/// The faces a strip of the page shows.
+fn strip(app: &App, strip: photon_ui::people_page::Strip) -> Vec<i64> {
+    let page = app.people_page().unwrap();
+    page.faces(strip).iter().map(|face| face.id).collect()
+}
+
+/// The named people the page lists.
+fn named(app: &App) -> Vec<String> {
+    let page = app.people_page().unwrap();
+    (page.people().iter())
+        .filter_map(|person| person.name.clone())
+        .collect()
+}
+
+// A face picked shows its strip's bar; "Not this person" takes it out of the strip at once,
+// and the library has it out of the group.
+#[test]
+fn a_face_picked_is_taken_out_of_its_group_from_the_bar() {
+    use photon_ui::people_page::Strip;
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = grouped(&library, &[&ids[0..3]]);
+    let group = unnamed(&lib)[0];
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    let before = strip(harness.state(), Strip::Unnamed(group));
+    press(&mut driver, &mut harness, "Unnamed group: face 1 of 3");
+    driver.seen(&mut harness, "1 selected");
+    driver.seen(&mut harness, photon_ui::people_view::OPEN_HINT);
+    press(&mut driver, &mut harness, "Not this person");
+    assert_eq!(strip(harness.state(), Strip::Unnamed(group)), before[1..]);
+    driver.act(&mut harness);
+    assert!(harness.query_by_label("1 selected").is_none());
+    let face = before[0];
+    driver.until(&mut harness, "the face out of the group", |_| {
+        let page = lib.people_page(12).unwrap();
+        (page.unnamed.iter())
+            .find(|g| g.id == group)
+            .is_none_or(|g| !g.faces.iter().any(|f| f.id == face))
+    });
+}
+
+// "Show more" loads the group's next faces and "Show fewer" folds them back.
+#[test]
+fn show_more_and_show_fewer() {
+    use photon_ui::people_page::Strip;
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 20, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = grouped(&library, &[&ids[0..15]]);
+    let group = unnamed(&lib)[0];
+    let (mut harness, mut driver) = opened(&library, 20);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    assert_eq!(strip(harness.state(), Strip::Unnamed(group)).len(), 12);
+    press(&mut driver, &mut harness, "Show more (3 left)");
+    driver.until(&mut harness, "the rest of the group", |app| {
+        strip(app, Strip::Unnamed(group)).len() == 15
+    });
+    driver.act(&mut harness);
+    press(&mut driver, &mut harness, "Show fewer");
+    assert_eq!(strip(harness.state(), Strip::Unnamed(group)).len(), 12);
+}
+
+// A person is renamed in their row: the field opens with the name chosen, what is typed
+// replaces it, and Enter stores it.
+#[test]
+fn a_person_is_renamed_in_their_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = grouped(&library, &[&ids[0..3]]);
+    lib.name_group(unnamed(&lib)[0], "Anna").unwrap();
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "Rename");
+    driver.act(&mut harness);
+    typed(&mut driver, &mut harness, "Anne");
+    driver.seen(&mut harness, "Rename to “Anne” · Enter");
+    key(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "Anne", |app| named(app) == ["Anne"]);
+}
+
+// "Merge into…" lists the others; picked, the merge is asked before it is done, and done.
+#[test]
+fn a_person_is_merged_into_another_once_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = grouped(&library, &[&ids[0..3], &ids[3..5]]);
+    let groups = unnamed(&lib);
+    lib.name_group(groups[0], "Anna").unwrap();
+    lib.name_group(groups[1], "Ben").unwrap();
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    // Anna's row comes first, by name.
+    let merge = harness
+        .query_all_by_label("Merge into…")
+        .next()
+        .unwrap()
+        .rect()
+        .center();
+    harness.event(egui::Event::PointerMoved(merge));
+    harness.event(button(merge, PointerButton::Primary, true));
+    harness.event(button(merge, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.state().menu_open());
+    // A frame more: egui draws a new area's first frame unseen, to measure it, and at a
+    // place of its own (pushed in from the window's edge by its default size), where
+    // AccessKit is told its items are.
+    driver.act(&mut harness);
+    // Anna is not offered herself: her buttons are the sidebar's row and nothing more.
+    let buttons = |harness: &Harness<'_>, name: &str| {
+        (harness.query_all_by_label(name))
+            .filter(|node| node.accesskit_node().role() == egui::accesskit::Role::Button)
+            .count()
+    };
+    assert_eq!(buttons(&harness, "Anna"), 1);
+    assert_eq!(buttons(&harness, "Ben"), 2, "Ben's row and the menu's Ben");
+    // The menu's Ben, under the button: the sidebar and the page name him too.
+    let item = (harness.query_all_by_label("Ben"))
+        .map(|node| node.rect())
+        .filter(|rect| rect.top() >= merge.y)
+        .min_by(|a, b| (a.top() - merge.y).total_cmp(&(b.top() - merge.y)))
+        .unwrap()
+        .center();
+    harness.event(egui::Event::PointerMoved(item));
+    harness.event(button(item, PointerButton::Primary, true));
+    harness.event(button(item, PointerButton::Primary, false));
+    driver.act(&mut harness);
+    assert!(matches!(
+        harness.state().dialog(),
+        Some(Dialog::Confirm(photon_ui::dialogs::Confirm::Merge { .. }))
+    ));
+    driver.seen(
+        &mut harness,
+        "Merge “Anna” into “Ben”? Their faces become Ben's. This cannot be undone.",
+    );
+    driver.frames_in(&mut harness, 0.5);
+    harness.get_by_label("Merge").click();
+    driver.act(&mut harness);
+    driver.until(&mut harness, "Anna merged into Ben", |app| {
+        named(app) == ["Ben"]
+    });
+}
+
+// Delete is asked before it is done; the person's faces stay, a group with no name.
+#[test]
+fn a_person_is_deleted_once_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = grouped(&library, &[&ids[0..3]]);
+    lib.name_group(unnamed(&lib)[0], "Anna").unwrap();
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    let row = harness.get_by_label("Delete").rect();
+    press(&mut driver, &mut harness, "Delete");
+    driver.seen(
+        &mut harness,
+        "Delete “Anna”? Their faces stay together as a group with no name.",
+    );
+    driver.frames_in(&mut harness, 0.5);
+    // The question's Delete, not the row's under it.
+    (harness.query_all_by_label("Delete"))
+        .find(|node| node.rect() != row)
+        .unwrap()
+        .click();
+    driver.act(&mut harness);
+    driver.until(&mut harness, "Anna gone, her faces a group", |app| {
+        let page = app.people_page().unwrap();
+        named(app).is_empty() && page.unnamed().len() == 1
+    });
+}
+
+// A group ignored leaves Unnamed at once and is listed under Ignored, folded; unfolded,
+// "Stop ignoring" brings it back.
+#[test]
+fn a_group_is_ignored_and_brought_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    grouped(&library, &[&ids[0..3]]);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "Ignore");
+    assert!(harness.state().people_page().unwrap().unnamed().is_empty());
+    press(&mut driver, &mut harness, "Ignored · 1 group, 0 faces");
+    press(&mut driver, &mut harness, "Stop ignoring");
+    driver.until(&mut harness, "the group back in Unnamed", |app| {
+        app.people_page().unwrap().unnamed().len() == 1
+    });
+}
+
+// A named person's suggestions - faces like theirs, found after they were named - are
+// confirmed together.
+#[test]
+fn a_persons_suggestions_are_confirmed_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = faced(&library);
+    faces_on(&lib, &[(ids[0], 0), (ids[1], 0), (ids[2], 0)]);
+    lib.name_group(unnamed(&lib)[0], "Anna").unwrap();
+    faces_on(&lib, &[(ids[3], 0), (ids[4], 0)]);
+    look_rest(&lib);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    driver.seen(&mut harness, "Suggestions");
+    driver.seen(&mut harness, "Anna: 2 to check");
+    press(&mut driver, &mut harness, "Confirm all");
+    driver.until(&mut harness, "the suggestions confirmed", |app| {
+        let page = app.people_page().unwrap();
+        page.suggestions().is_empty()
+            && page.count(photon_ui::people_page::Strip::Person(page.people()[0].id)) == 5
+    });
+}
+
+// Single faces picked are named together from their bar.
+#[test]
+fn single_faces_are_named_from_their_bar() {
+    use photon_ui::people_page::Strip;
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    grouped(&library, &[&ids[0..1], &ids[1..2]]);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "2 single faces");
+    let faces = strip(harness.state(), Strip::Single);
+    assert_eq!(faces.len(), 2);
+    press(&mut driver, &mut harness, "Single faces: face 1 of 2");
+    // A double click's time apart, or the second click opens the photo of the first.
+    driver.frames_in(&mut harness, 0.5);
+    press(&mut driver, &mut harness, "Single faces: face 2 of 2");
+    driver.seen(&mut harness, "2 selected");
+    press(&mut driver, &mut harness, "Name the selected faces");
+    typed(&mut driver, &mut harness, "Cara");
+    key(&mut driver, &mut harness, Key::Enter);
+    assert!(strip(harness.state(), Strip::Single).is_empty());
+    driver.until(&mut harness, "Cara with both faces", |app| {
+        let page = app.people_page().unwrap();
+        named(app) == ["Cara"] && page.count(Strip::Person(page.people()[0].id)) == 2
+    });
+}
+
+// A question about a person is about the person the page listed under that name: renamed
+// from elsewhere while it stands - the viewer's dialog cannot be open under it, but a
+// second window of photon on the same library, or a rename finishing, can - it closes,
+// rather than delete someone under a name they no longer have. The album's and the saved
+// search's question have the same rule (`App::listed`).
+#[test]
+fn a_question_about_a_person_renamed_meanwhile_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    let lib = grouped(&library, &[&ids[0..3]]);
+    let anna = unnamed(&lib)[0];
+    lib.name_group(anna, "Anna").unwrap();
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "Delete");
+    driver.seen(
+        &mut harness,
+        "Delete “Anna”? Their faces stay together as a group with no name.",
+    );
+    let engine = harness.state().engine().clone();
+    photon_engine::commands::rename_person(&engine, anna, "Anne").unwrap();
+    driver.until(&mut harness, "the question gone", |app| {
+        app.dialog().is_none()
+    });
+    driver.settle(&mut harness);
+    assert_eq!(named(harness.state()), ["Anne"], "and Anne is still there");
 }

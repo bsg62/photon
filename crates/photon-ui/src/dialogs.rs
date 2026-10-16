@@ -1,5 +1,5 @@
-//! The dialogs there are: the question asked before an album or a saved search is
-//! deleted, the keyword picker, the export's, the one that names a face or adds photos to
+//! The dialogs there are: the question asked before an album, a saved search or a person is
+//! deleted or a person merged into another, the keyword picker, the export's, the one that names a face or adds photos to
 //! a person, and Settings. One at a time, over the whole window, held by the application and
 //! drawn by `dialog_view.rs`.
 //!
@@ -14,11 +14,30 @@ use crate::{
     tag_picker::TagPicker,
 };
 
-/// A question asked before something is deleted that cannot be brought back.
+/// A question asked before something is done that cannot be taken back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Confirm {
-    Album { id: i64, name: String },
-    Search { id: i64, name: String },
+    Album {
+        id: i64,
+        name: String,
+    },
+    Search {
+        id: i64,
+        name: String,
+    },
+    /// A named person deleted, from the People page: their faces stay, a group with no
+    /// name.
+    Person {
+        id: i64,
+        name: String,
+    },
+    /// One person merged into another, from the People page's "Merge into…".
+    Merge {
+        from: i64,
+        from_name: String,
+        into: i64,
+        into_name: String,
+    },
 }
 
 /// An album of the user's own or a saved search, as what a question is about and what
@@ -30,23 +49,37 @@ pub enum Subject {
 }
 
 impl Confirm {
-    pub fn subject(&self) -> Subject {
+    /// The album or search a delete deletes; none for a question about people.
+    pub fn subject(&self) -> Option<Subject> {
         match self {
-            Confirm::Album { id, .. } => Subject::Album(*id),
-            Confirm::Search { id, .. } => Subject::Search(*id),
+            Confirm::Album { id, .. } => Some(Subject::Album(*id)),
+            Confirm::Search { id, .. } => Some(Subject::Search(*id)),
+            Confirm::Person { .. } | Confirm::Merge { .. } => None,
         }
     }
 
     /// The name the question was asked under.
     pub fn name(&self) -> &str {
         match self {
-            Confirm::Album { name, .. } | Confirm::Search { name, .. } => name,
+            Confirm::Album { name, .. }
+            | Confirm::Search { name, .. }
+            | Confirm::Person { name, .. } => name,
+            Confirm::Merge { from_name, .. } => from_name,
+        }
+    }
+
+    /// The button that does what was asked.
+    pub fn yes(&self) -> &'static str {
+        match self {
+            Confirm::Merge { .. } => MERGE,
+            _ => DELETE,
         }
     }
 }
 
 /// The button that does what was asked about, and the one that does not.
 pub const DELETE: &str = "Delete";
+pub const MERGE: &str = "Merge";
 pub const CANCEL: &str = "Cancel";
 
 impl Confirm {
@@ -56,6 +89,8 @@ impl Confirm {
         match self {
             Confirm::Album { .. } => "Delete album",
             Confirm::Search { .. } => "Delete saved search",
+            Confirm::Person { .. } => "Delete person",
+            Confirm::Merge { .. } => "Merge people",
         }
     }
 
@@ -68,6 +103,12 @@ impl Confirm {
             Confirm::Search { name, .. } => {
                 format!("Delete the saved search “{name}”? Your photos are not affected.")
             }
+            Confirm::Person { name, .. } => crate::people_page::delete_question(name),
+            Confirm::Merge {
+                from_name,
+                into_name,
+                ..
+            } => crate::people_page::merge_question(from_name, into_name),
         }
     }
 }

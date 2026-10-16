@@ -3028,12 +3028,36 @@ route, each asked for when its face is first in sight and once an opening; a fac
 preview is not cached is an empty square with a figure. They are let go of when the page
 closes. A name box is a field of its own for each group, Enter read and taken before it is
 drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"
-coloured, being a merge. The corrections (a person's suggestions, rename, merge, delete,
-ignoring, showing more) are the next pull request's, their buttons - "Show more" among
-them - in place and taking no press. A test holds the page's read back by renaming `detected_faces` from a second
+coloured, being a merge. A test holds the page's read back by renaming `detected_faces` from a second
 connection, the faces' seam (`tests/people.rs`); `native-shot` draws the page
 (`native-people-*`), its faces written through the library's own calls after the launch's
 scan.
+
+**The corrections are the Svelte page's, and each hides what it acts on until its write
+is answered** (`people_page.rs`: `act`, `confirm_all`, `name_singles`, `naming`, and the
+same numbering as a group named - written, hidden until a read asked after it lands;
+refused, put back with the library's words). A click picks a face or puts it back, in one
+strip at a time, and a strip with faces picked has its bar: what its section can do to
+them (`Strip::actions`: a suggestion's faces confirmed, taken off or ignored, a group's
+or a person's taken off or ignored, single faces ignored, ignored ones brought back), a
+name box for single faces (the first one's group named, the
+others' merged into the person it made, `write_faces`), "Clear", and how a photo is opened.
+"Confirm all" confirms the suggestions on screen, and says "Confirm these N" where there
+are more. A person is renamed in their row (`renaming`; the field opens with the name
+chosen, so what is typed replaces it, and Enter on their own name changes nothing);
+"Merge into…" opens a menu of the others (`MenuOf::Merge`), and a merge and a delete are
+asked first, as a question of the dialog layer (`Confirm::Merge`, `Confirm::Person`) that
+closes when the person is no longer listed under the name it was asked under - the album's
+rule (`App::listed`). **"Show more" fetches a page of the group at a time** (`More`, on a
+queue of its own, every page wanted) after what the strip holds, through the section's
+filter (a person's suggestions are their unconfirmed faces), and **a read keeps what it
+loaded**: each read asks again for as many faces as each strip had shown (`Ask::wants`,
+`Loaded::kept`), a strip shown more or fewer of while the read was on its way stays as it
+was left (each strip's generation), a face both reads hold is listed once, a strip whose
+fetch failed folds back alone, and a selection keeps only the faces still shown. The
+faces' writes go through the engine's `write_people`, as every People command does. Not
+tested, for want of a seam: that a re-fetch which fails costs its strip and not the page
+(`people::read`; nothing makes one call of the library fail and the next succeed).
 
 **What a review of the People page found, each with its test** (`tests/people.rs`,
 `people_view.rs`). *A write is no way out of the page*: the album on screen deleted from its
@@ -3046,7 +3070,7 @@ is drawn in sight or out of it and a face half in sight takes the keyboard, so T
 into groups below the window's edge. *A crop is let go of once the page no longer lists
 it* under that key, not only when the page closes. *A line of controls wraps* (`Line`): a
 group's offer, box and Ignore, and a person's buttons under a long name. *"Show more" stands
-in its place* under every strip of a group with more faces. A test that reads where egui
+under every strip of a group with more faces*. A test that reads where egui
 drew a widget after a frame reads the frame before it: egui swaps its two passes at the end
 of one (`Context::end_pass`), and `read_response` answers from the older. Not tested, for
 want of a seam: a write that panicked puts back every group hidden for a write on its way

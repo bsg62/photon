@@ -21,7 +21,7 @@ use crate::{
         visible::VisibleReport,
     },
     icons,
-    menu::Item,
+    menu::{self, Item},
     menu_view::{MenuView, Outcome},
     nav::{self, Landed, LastFolder, Nav, Place, Step, Target},
     people_page::{self, PeoplePage},
@@ -304,7 +304,9 @@ pub struct App {
     /// The People page, while it is on screen (`app/people.rs`).
     page: Option<PeoplePage>,
     people_view: PeopleView,
-    people_read: Latest<u64, people::Read>,
+    people_read: Latest<people_page::Ask, people::Read>,
+    /// The pages "Show more" asks for, each in its turn: every one is wanted.
+    people_more: Queue<people_page::More, people::Fetched>,
     /// The library's data changed since the page last heard of it.
     people_changed: bool,
     face_crops: Crops,
@@ -352,6 +354,8 @@ enum MenuOf {
     /// one is of whatever photo the viewer shows and the library has said something
     /// of: its items are built from that in every frame, and its picks act on it.
     Viewer(On),
+    /// "Merge into…" of a named person on the People page: the others.
+    Merge(i64),
 }
 
 /// What an item of whichever menu is open does.
@@ -360,6 +364,8 @@ enum Picked {
     Tile(TileAction),
     Side(SideAction),
     Viewer(ViewerPick),
+    /// The person to merge into.
+    Merge(i64),
 }
 
 /// Something to write to the library.
@@ -368,6 +374,25 @@ enum Write {
     NameGroup {
         group: i64,
         name: String,
+    },
+    /// Faces of the People page written: confirmed, rejected, ignored or no longer, or
+    /// single faces named.
+    Faces(people_page::FacesWrite),
+    /// A group of the People page ignored, or no longer.
+    GroupIgnored {
+        group: i64,
+        ignored: bool,
+    },
+    Rename {
+        person: i64,
+        name: String,
+    },
+    MergePeople {
+        from: i64,
+        into: i64,
+    },
+    DeletePerson {
+        person: i64,
     },
     /// The search in the box, under a name: the bookmark.
     SaveSearch {
@@ -485,10 +510,16 @@ enum Write {
 
 /// A write that was made.
 enum Wrote {
-    /// A group of the People page named.
+    /// A group of the People page named, ignored or no longer.
     GroupNamed {
         group: i64,
     },
+    /// Faces of the People page written.
+    FacesDone {
+        ids: Vec<i64>,
+    },
+    /// A person renamed, merged or deleted: the page is read again.
+    People,
     Search,
     TileSize,
     /// How many stars were written, of how many asked, and of which photos.
@@ -562,6 +593,15 @@ enum Unwritten {
     /// A group's name refused: in words the user can act on when the group is gone.
     GroupName {
         group: i64,
+        said: String,
+    },
+    /// A write of faces refused.
+    Faces {
+        ids: Vec<i64>,
+        said: String,
+    },
+    /// A person's rename, merge or delete refused.
+    People {
         said: String,
     },
     Search {
@@ -823,16 +863,45 @@ impl App {
                             .map(|_| Wrote::GroupNamed { group })
                             .map_err(|err| Unwritten::GroupName {
                                 group,
-                                // The group is gone - a grouping run emptied it, another write
-                                // merged it away - and the library's "that is not a named
-                                // person" reads as the user's mistake.
-                                said: if err.kind == "notAPerson" {
-                                    people_page::STALE_GROUP.to_owned()
-                                } else {
-                                    err.message
-                                },
+                                said: people::said(err),
                             })
                     }
+                    Write::GroupIgnored { group, ignored } => {
+                        commands::ignore_person(&engine, group, ignored)
+                            .map(|()| Wrote::GroupNamed { group })
+                            .map_err(|err| Unwritten::GroupName {
+                                group,
+                                said: people::said(err),
+                            })
+                    }
+                    Write::Faces(write) => {
+                        let ids = write.ids().to_vec();
+                        people::write_faces(&engine, write)
+                            .map(|()| Wrote::FacesDone { ids: ids.clone() })
+                            .map_err(|err| Unwritten::Faces {
+                                ids,
+                                said: people::said(err),
+                            })
+                    }
+                    Write::Rename { person, name } => {
+                        (commands::rename_person(&engine, person, &name))
+                            .map(|_| Wrote::People)
+                            .map_err(|err| Unwritten::People {
+                                said: people::said(err),
+                            })
+                    }
+                    Write::MergePeople { from, into } => {
+                        (commands::merge_people(&engine, from, into))
+                            .map(|()| Wrote::People)
+                            .map_err(|err| Unwritten::People {
+                                said: people::said(err),
+                            })
+                    }
+                    Write::DeletePerson { person } => (commands::delete_person(&engine, person))
+                        .map(|()| Wrote::People)
+                        .map_err(|err| Unwritten::People {
+                            said: people::said(err),
+                        }),
                     Write::AlbumNew { name, sent } => commands::create_album(&engine, &name)
                         .map(|_| Wrote::Named { sent })
                         .map_err(|err| Unwritten::Name {
@@ -1105,11 +1174,19 @@ impl App {
             "people page",
             {
                 let engine = engine.clone();
-                move |number: u64| people::read(&engine, number)
+                move |ask| people::read(&engine, ask)
             },
             repaint(&ctx),
         );
         let face_crops = Crops::of(engine.clone(), repaint(&ctx));
+        let people_more = Queue::spawn(
+            "show more",
+            {
+                let engine = engine.clone();
+                move |asked| people::more(&engine, asked)
+            },
+            repaint(&ctx),
+        );
         let stats_read = Latest::spawn(
             "statistics",
             {
@@ -1302,6 +1379,7 @@ impl App {
             page: None,
             people_view: PeopleView::default(),
             people_read,
+            people_more,
             people_changed: false,
             face_crops,
             last_folder,
@@ -1562,6 +1640,21 @@ impl App {
                     let faces = viewer_faces::actions(&viewer_faces::drawn(item), on);
                     (viewer_menu::viewer_menu(&faces, item.hidden).into_iter())
                         .map(|item| item.map(Picked::Viewer))
+                        .collect()
+                }),
+            // The People page's other named people, while it lists the one to merge.
+            MenuOf::Merge(from) => (self.page.as_ref())
+                .filter(|page| page.name_of(from).is_some())
+                .map(|page| {
+                    (page.people().iter())
+                        .filter(|person| person.id != from)
+                        .map(|person| Item::Pick {
+                            label: person.name.clone().unwrap_or_default(),
+                            hint: None,
+                            works: true,
+                            look: menu::Look::Plain,
+                            does: Picked::Merge(person.id),
+                        })
                         .collect()
                 }),
         }
@@ -1878,13 +1971,23 @@ impl App {
     /// asked under.
     fn listed(&self, confirm: &Confirm) -> bool {
         let collections = self.held.collections();
-        let name = match confirm.subject() {
-            Subject::Album(id) => (collections.albums.iter())
-                .find(|album| album.id == id)
+        let named = |id: i64| self.page.as_ref().and_then(|page| page.name_of(id));
+        let name = match confirm {
+            Confirm::Album { id, .. } => (collections.albums.iter())
+                .find(|album| album.id == *id)
                 .map(|album| album.name.as_str()),
-            Subject::Search(id) => (collections.searches.iter())
-                .find(|search| search.id == id)
+            Confirm::Search { id, .. } => (collections.searches.iter())
+                .find(|search| search.id == *id)
                 .map(|search| search.name.as_str()),
+            // A person, as the People page lists them: the page gone, or the person
+            // merged away or renamed since, the question is about no one on screen.
+            Confirm::Person { id, .. } => named(*id),
+            Confirm::Merge {
+                from,
+                into,
+                into_name,
+                ..
+            } => named(*from).filter(|_| named(*into) == Some(into_name.as_str())),
         };
         name == Some(confirm.name())
     }
@@ -1953,10 +2056,21 @@ impl App {
                 }
             }
             (Done::Confirmed, Some(Dialog::Confirm(confirm))) => {
-                let subject = confirm.subject();
+                let confirm = confirm.clone();
                 self.dialog = None;
-                self.deleting.push((subject, false));
-                self.writes.push(Write::Delete(subject));
+                match (confirm.subject(), confirm) {
+                    (Some(subject), _) => {
+                        self.deleting.push((subject, false));
+                        self.writes.push(Write::Delete(subject));
+                    }
+                    (None, Confirm::Person { id, .. }) => {
+                        self.writes.push(Write::DeletePerson { person: id });
+                    }
+                    (None, Confirm::Merge { from, into, .. }) => {
+                        self.writes.push(Write::MergePeople { from, into });
+                    }
+                    (None, Confirm::Album { .. } | Confirm::Search { .. }) => {}
+                }
             }
             // The path is asked about as it is typed: whether it is a folder, and one
             // photon will write into.
@@ -3970,6 +4084,16 @@ impl App {
                 // read again because this side knows it wrote one.
                 Ok(Ok(Wrote::Search)) => self.collecting.ask(()),
                 Ok(Ok(Wrote::GroupNamed { group })) => self.group_named(group, true, now_ms),
+                Ok(Ok(Wrote::FacesDone { ids })) => self.faces_written(&ids, true, now_ms),
+                Ok(Err(Unwritten::Faces { ids, said })) => {
+                    self.toasts.error(said, now_ms);
+                    self.faces_written(&ids, false, now_ms);
+                }
+                Ok(Ok(Wrote::People)) => self.read_people(now_ms),
+                Ok(Err(Unwritten::People { said })) => {
+                    self.toasts.error(said, now_ms);
+                    self.read_people(now_ms);
+                }
                 Ok(Err(Unwritten::GroupName { group, said })) => {
                     self.toasts.error(said, now_ms);
                     self.group_named(group, false, now_ms);
@@ -4421,6 +4545,7 @@ impl eframe::App for App {
         // not one the grid drew by itself.
         let reported = self.take_answers(now) || reported;
         let reported = self.people_answers(ui.ctx(), now) || reported;
+        let reported = self.more_answers(now) || reported;
         self.adopt();
         let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before
@@ -4530,6 +4655,7 @@ impl eframe::App for App {
                             Picked::Tile(action) => self.pick(action),
                             Picked::Side(action) => self.side(action),
                             Picked::Viewer(pick) => self.viewer_pick(pick),
+                            Picked::Merge(into) => self.merge_into(open.of, into),
                         }
                     }
                 },
@@ -4662,7 +4788,7 @@ impl eframe::App for App {
             });
         let pressed = if under_dialog { Vec::new() } else { pressed };
         for action in pressed {
-            self.people_act(action);
+            self.people_act(ui.ctx(), action);
         }
         // What lies under a dialog does nothing. egui keeps the pointer from it through
         // the dialog's own ground, which it finds under the pointer only from the frame
