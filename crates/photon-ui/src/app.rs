@@ -3893,11 +3893,9 @@ impl App {
             Action::Panel(PanelButton::ShowHidden) => self.go(Step::View(View::Hidden)),
             Action::Panel(PanelButton::WatchedFolders) => self.open_settings(Section::Folders),
             Action::Settings => self.open_settings(Section::Folders),
-            // Settings' list of folders, with the field a folder is typed in open.
             // The system's picker straight away, as the Svelte panel opens it, over
             // Settings' list of folders with the field a folder is typed in open: where
-            // the picker could not be opened - no portal - it answers as a cancel does,
-            // and the field is what is left.
+            // no picker can be opened, that is said, and the field is what is left.
             Action::Panel(PanelButton::AddFolder) => {
                 self.open_settings(Section::Folders);
                 if let Some(Dialog::Settings(settings)) = &mut self.dialog {

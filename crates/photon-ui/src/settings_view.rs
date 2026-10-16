@@ -1112,10 +1112,11 @@ impl SettingsView {
                     },
                     palette,
                 );
-                // The system's picker, one at a time - dimmed while it is open, a button
-                // that senses no press: the folder chosen is put in the field and asked
-                // about as a typed one is.
-                let look = if adding.choosing || adding.busy() {
+                // The system's picker: the folder chosen is put in the field and asked
+                // about as a typed one is. Not dimmed while it is open, which would take
+                // the keyboard off it (`app/pick.rs`); while a path is being added, as
+                // the field takes nothing then.
+                let look = if adding.busy() {
                     Look::Off
                 } else {
                     Look::Plain
@@ -2153,10 +2154,6 @@ mod tests {
         assert_eq!(click(&mut f, ADD_FOLDER), [Asked::AddOpen]);
         f.frame(Vec::new());
         assert_eq!(click(&mut f, CHOOSE), [Asked::AddChoose]);
-        // While the picker is open, it takes no second press.
-        the(&mut f).adding.as_mut().unwrap().choosing = true;
-        f.frame(Vec::new());
-        assert_eq!(click(&mut f, CHOOSE), []);
     }
 
     fn tag(name: &str, total: i64) -> TagCount {

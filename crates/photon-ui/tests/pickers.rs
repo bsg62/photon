@@ -43,15 +43,10 @@ fn press(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
 }
 
 /// What Settings' folder field holds, while it is open.
-fn adding(harness: &Harness<'_>) -> Option<(String, Dest, bool)> {
+fn adding(harness: &Harness<'_>) -> Option<(String, Dest)> {
     match harness.state().dialog() {
-        Some(Dialog::Settings(settings)) => (settings.adding.as_ref()).map(|adding| {
-            (
-                adding.path().to_owned(),
-                adding.dest().clone(),
-                adding.choosing,
-            )
-        }),
+        Some(Dialog::Settings(settings)) => (settings.adding.as_ref())
+            .map(|adding| (adding.path().to_owned(), adding.dest().clone())),
         _ => None,
     }
 }
@@ -84,15 +79,68 @@ fn add_folder_opens_the_picker_and_the_folder_chosen_is_in_the_field() {
         matches!(app.dialog(), Some(Dialog::Settings(settings))
             if settings.adding.as_ref().is_some_and(|adding| matches!(adding.dest(), Dest::Passed(_))))
     });
-    let (path, dest, choosing) = adding(&harness).unwrap();
+    let (path, dest) = adding(&harness).unwrap();
     assert_eq!(path, chosen.display().to_string());
     assert_eq!(dest, passed(&chosen));
-    assert!(!choosing);
     assert_eq!(*picker.asked.lock().unwrap(), ["Add a folder to photon"]);
 }
 
-// The picker is one at a time: while it is open, "Choose…" takes no press and asks
-// nothing; and a folder chosen for a dialog that closed meanwhile is put into no other.
+const ADD: &str = photon_ui::watched_list::ADD_FOLDER;
+
+/// Settings closed, and opened again at its folders with the field open - by the
+/// sidebar's way to Settings and Settings' own "Add folder…", which ask for no picker,
+/// where the empty library's "Add folder…" would.
+fn reopened(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
+    driver.act(harness);
+    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
+    driver.act(harness);
+    driver.until(harness, "Settings closed", |app| app.dialog().is_none());
+    // The empty library's own, under Settings once it is open.
+    let panels = harness.get_by_label(ADD).rect();
+    press(driver, harness, "Add a folder in Settings…");
+    driver.settle(harness);
+    driver.frames_in(harness, 0.5);
+    (harness.query_all_by_label(ADD))
+        .find(|node| node.rect() != panels)
+        .expect("Settings' Add folder…")
+        .click();
+    driver.act(harness);
+    assert!(adding(harness).is_some(), "the field open");
+}
+
+// The picker is one at a time, and its answer is for the field that last asked: Settings
+// closed and opened again while the first picker is still open (behind the window, where
+// nothing ties it to it), its "Choose…" opens no second picker and takes the first for
+// itself. Before, the press did nothing and the folder chosen went to the Settings that
+// had closed.
+#[test]
+fn choose_while_a_picker_is_open_takes_it_for_the_field_it_is_pressed_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let chosen = dir.path().join("Holidays");
+    std::fs::create_dir_all(&chosen).unwrap();
+    let chosen = photon_core::paths::canonicalize(&chosen).unwrap();
+    let picker = Arc::new(Picker::default());
+    *picker.answer.lock().unwrap() = Picked::Folder(chosen.clone());
+    let (release, held) = mpsc::channel();
+    *picker.held.lock().unwrap() = Some(held);
+    let (mut harness, mut driver) = added(dir.path(), picker.clone());
+    driver.until(&mut harness, "the picker open", |_| {
+        picker.asked.lock().unwrap().len() == 1
+    });
+    reopened(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, CHOOSE);
+    assert_eq!(picker.asked.lock().unwrap().len(), 1, "a second picker");
+    release.send(()).unwrap();
+    driver.until(&mut harness, "the folder in the field", |app| {
+        matches!(app.dialog(), Some(Dialog::Settings(settings))
+            if settings.adding.as_ref().is_some_and(|adding| !adding.path().is_empty()))
+    });
+    assert_eq!(adding(&harness).unwrap().0, chosen.display().to_string());
+}
+
+// A folder chosen for a dialog that closed - and was not asked for again - goes into no
+// other: the dialog opened since is not what it was chosen for.
 #[test]
 fn a_folder_chosen_for_a_dialog_that_closed_goes_nowhere() {
     let dir = tempfile::tempdir().unwrap();
@@ -106,37 +154,24 @@ fn a_folder_chosen_for_a_dialog_that_closed_goes_nowhere() {
     driver.until(&mut harness, "the picker open", |_| {
         picker.asked.lock().unwrap().len() == 1
     });
-    assert!(adding(&harness).is_some_and(|(_, _, choosing)| choosing));
-    press(&mut driver, &mut harness, CHOOSE);
-    assert_eq!(picker.asked.lock().unwrap().len(), 1, "a second picker");
-    // Settings closed, and opened again with its field, before the picker answers.
-    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
-    driver.act(&mut harness);
-    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
-    driver.act(&mut harness);
-    driver.until(&mut harness, "Settings closed", |app| {
-        app.dialog().is_none()
-    });
-    press(&mut driver, &mut harness, "Add folder…");
+    reopened(&mut driver, &mut harness);
     release.send(()).unwrap();
     driver.settle(&mut harness);
     driver.frames_in(&mut harness, 0.5);
-    let (path, _, choosing) = adding(&harness).expect("the field open");
+    let (path, _) = adding(&harness).expect("the field open");
     assert_eq!(path, "", "the folder chosen for the Settings that closed");
-    assert!(!choosing);
 }
 
-// A picker cancelled - or one that could not be opened, which rfd answers the same way -
-// leaves what was typed in the field as it was.
+// A picker cancelled leaves what was typed in the field as it was, and says nothing.
 #[test]
 fn a_cancelled_picker_leaves_the_field_as_it_was() {
     let dir = tempfile::tempdir().unwrap();
     let picker = Arc::new(Picker::default());
     let (mut harness, mut driver) = added(dir.path(), picker.clone());
-    driver.until(&mut harness, "the picker answered", |app| {
-        matches!(app.dialog(), Some(Dialog::Settings(settings))
-            if settings.adding.as_ref().is_some_and(|adding| !adding.choosing))
+    driver.until(&mut harness, "the picker asked", |_| {
+        picker.asked.lock().unwrap().len() == 1
     });
+    driver.settle(&mut harness);
     press(&mut driver, &mut harness, photon_ui::watched_list::FIELD);
     harness.event(egui::Event::Text("/photos/new".to_owned()));
     driver.act(&mut harness);
@@ -151,9 +186,8 @@ fn a_cancelled_picker_leaves_the_field_as_it_was() {
     });
     driver.settle(&mut harness);
     driver.act(&mut harness);
-    let (path, _, choosing) = adding(&harness).unwrap();
+    let (path, _) = adding(&harness).unwrap();
     assert_eq!(path, "/photos/new");
-    assert!(!choosing);
     assert!(harness.state().toasts().is_empty(), "a cancel says nothing");
 }
 
@@ -225,5 +259,5 @@ fn where_no_picker_can_be_opened_it_is_said() {
             .iter()
             .any(|toast| toast.message == photon_ui::platform::NO_PICKER)
     });
-    assert!(adding(&harness).is_some_and(|(path, _, choosing)| path.is_empty() && !choosing));
+    assert!(adding(&harness).is_some_and(|(path, _)| path.is_empty()));
 }

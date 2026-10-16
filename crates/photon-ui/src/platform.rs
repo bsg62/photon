@@ -62,6 +62,10 @@ impl Platform for System {
     }
 }
 
+/// How long the portal is given to open its picker.
+#[cfg(target_os = "linux")]
+const PORTAL_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The portal's file chooser, asked for a folder.
 #[cfg(target_os = "linux")]
 fn portal_folder(title: &str) -> Result<Picked, ashpd::Error> {
@@ -71,11 +75,30 @@ fn portal_folder(title: &str) -> Result<Picked, ashpd::Error> {
         .directory(true)
         .multiple(false)
         .modal(true);
-    let answer = pollster::block_on(async { request.send().await?.response() });
+    // The call that opens the picker has a time of its own; the user's choosing has none.
+    // A portal that accepts the call and never opens anything - one dying as it starts -
+    // would otherwise hold the picker open for the session.
+    let opened = pollster::block_on(futures_lite::future::or(
+        async { Some(request.send().await) },
+        async {
+            async_io::Timer::after(PORTAL_PATIENCE).await;
+            None
+        },
+    ));
+    let Some(opened) = opened else {
+        return Err(ashpd::Error::Response(ResponseError::Other));
+    };
+    let answer = opened.and_then(|request| request.response());
     match answer {
-        Ok(files) => Ok((files.uris().first())
-            .and_then(|uri| uri.to_file_path().ok())
-            .map_or(Picked::Cancelled, Picked::Folder)),
+        // A place that is no file of this computer's - a share the desktop opened as
+        // `smb://` - goes into the field as it is, which says it is no whole path: chosen
+        // and nothing said, it would read as a picker that did nothing.
+        Ok(files) => Ok(files.uris().first().map_or(Picked::Cancelled, |uri| {
+            Picked::Folder(
+                uri.to_file_path()
+                    .unwrap_or_else(|()| PathBuf::from(uri.as_str())),
+            )
+        })),
         Err(ashpd::Error::Response(ResponseError::Cancelled)) => Ok(Picked::Cancelled),
         Err(err) => Err(err),
     }
@@ -89,13 +112,20 @@ fn zenity_folder(title: &str) -> Picked {
         .args(["--file-selection", "--directory", "--title", title])
         .output();
     match run {
+        // The path as bytes, as a path on Linux is: not every name is UTF-8.
         Ok(out) if out.status.success() => {
-            let path = String::from_utf8_lossy(&out.stdout);
-            let path = path.trim_end_matches(['\n', '\r']);
+            use std::os::unix::ffi::OsStringExt;
+            let mut path = out.stdout;
+            while path
+                .last()
+                .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
+            {
+                path.pop();
+            }
             if path.is_empty() {
                 Picked::Cancelled
             } else {
-                Picked::Folder(PathBuf::from(path))
+                Picked::Folder(PathBuf::from(std::ffi::OsString::from_vec(path)))
             }
         }
         Ok(out) if out.status.code() == Some(1) => Picked::Cancelled,
@@ -127,7 +157,19 @@ pub fn startup_failed(err: &eframe::Error) -> String {
 /// through `zenity`, where that is installed; where it is not, nothing is shown, which is
 /// why the caller also writes it to the standard error and the log.
 pub fn show_error(text: &str) {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // On Windows the system's own box, from `user32`: rfd's is a task dialog wherever
+    // Tauri's dialog plugin is in the build (its `common-controls-v6`, which a build of the
+    // whole workspace unifies in), and a task dialog is in Common Controls 6 alone, which
+    // a program without a manifest asking for it is not given - it would not start.
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let wide = |words: &str| words.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let (text, title) = (wide(text), wide("photon"));
+        // SAFETY: both are UTF-16 and NUL-terminated, and outlive the call; no owner window.
+        unsafe { MessageBoxW(0, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR) };
+    }
+    #[cfg(target_os = "macos")]
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title("photon")

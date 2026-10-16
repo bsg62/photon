@@ -121,8 +121,6 @@ pub struct Adding {
     /// The number the path was sent under, while the library is adding it.
     sent: Option<u64>,
     sends: u64,
-    /// The system's picker is open for this field: "Choose…" takes no second press.
-    pub choosing: bool,
 }
 
 impl Default for Adding {
@@ -133,7 +131,6 @@ impl Default for Adding {
             said: None,
             sent: None,
             sends: 0,
-            choosing: false,
         }
     }
 }

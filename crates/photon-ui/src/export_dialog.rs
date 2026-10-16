@@ -83,8 +83,6 @@ pub struct ExportDialog {
     /// stored choice, read a moment later, does not undo what the user has just said.
     ticked: bool,
     max_edge: Option<u32>,
-    /// The system's picker is open for the destination: "Choose…" takes no second press.
-    pub choosing: bool,
 }
 
 impl ExportDialog {
@@ -101,7 +99,6 @@ impl ExportDialog {
             apply_edits: true,
             ticked: false,
             max_edge: None,
-            choosing: false,
         }
     }
 

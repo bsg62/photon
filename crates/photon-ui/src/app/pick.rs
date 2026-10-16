@@ -4,10 +4,15 @@
 //!
 //! **The picker runs on a thread of its own**: a portal answers when the user does, and a
 //! window that stopped drawing meanwhile would be taken by the system for one that does
-//! not answer. One at a time: the "Choose…" of a field whose picker is open takes no
-//! second press. **The folder goes only into the dialog that asked**, by the number of its
-//! opening: closed meanwhile, or another opened in its place, the answer is dropped - put
-//! into a dialog the user had not asked it for, it would be a destination nobody chose.
+//! not answer. **One at a time, and its answer is for the field that last asked for it**,
+//! by the number of the dialog's opening: a press while a picker is open - a picker that
+//! is not tied to the window, which a portal's on Wayland and Windows' with no owner are
+//! not, can be behind it - opens no second one and takes the open one for the field it is
+//! made in. Taken for nothing, the old one's answer went to a dialog that had closed, and
+//! the new "Choose…" did nothing at all. A folder chosen for a dialog that has closed since
+//! goes nowhere: put into another, it would be a destination nobody chose. "Choose…" is
+//! never dimmed for it: dimmed, a button gives the keyboard up (egui lets go of what senses
+//! no press), and after the picker nothing in the dialog had it.
 
 use super::App;
 use crate::{
@@ -43,7 +48,9 @@ impl App {
     /// Opens the system's folder picker for the field `of` of the dialog on screen, unless
     /// one is open already.
     pub(super) fn pick_folder(&mut self, of: PickFor) {
-        if self.picking.is_some() {
+        if let Some(picking) = &mut self.picking {
+            picking.of = of;
+            picking.opening = self.dialog_openings;
             return;
         }
         let (send, answer) = mpsc::channel();
@@ -63,7 +70,6 @@ impl App {
             opening: self.dialog_openings,
             answer,
         });
-        self.set_choosing(of, true);
     }
 
     /// The picker's answer, once it has given one: the folder put in the field that asked
@@ -84,7 +90,6 @@ impl App {
         if opening != self.dialog_openings {
             return true;
         }
-        self.set_choosing(of, false);
         let folder = match answer {
             Picked::Folder(folder) => folder,
             Picked::Cancelled => return true,
@@ -113,18 +118,5 @@ impl App {
             _ => {}
         }
         true
-    }
-
-    /// Marks the field `of` of the dialog on screen as waiting for the picker, or not.
-    fn set_choosing(&mut self, of: PickFor, choosing: bool) {
-        match (of, &mut self.dialog) {
-            (PickFor::Export, Some(Dialog::Export(export))) => export.choosing = choosing,
-            (PickFor::AddFolder, Some(Dialog::Settings(settings))) => {
-                if let Some(adding) = &mut settings.adding {
-                    adding.choosing = choosing;
-                }
-            }
-            _ => {}
-        }
     }
 }

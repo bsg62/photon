@@ -197,14 +197,9 @@ pub(crate) fn show(
         egui::text_edit::TextEditState::default().store(ui.ctx(), id);
     }
     let typed = output.response.changed();
-    // The system's picker, one at a time - dimmed while it is open, a button that senses
-    // no press: the folder chosen is put in the field and asked about as a typed one is.
-    let look = if dialog.choosing {
-        Look::Off
-    } else {
-        Look::Plain
-    };
-    let chose = button(ui, choose_at, Id::new("dialog-choose"), CHOOSE, look).clicked();
+    // The system's picker: the folder chosen is put in the field and asked about as a
+    // typed one is. Never dimmed, which would take the keyboard off it (`app/pick.rs`).
+    let chose = button(ui, choose_at, Id::new("dialog-choose"), CHOOSE, Look::Plain).clicked();
 
     // Against the field, while the dialog is still open: a folder photon will not write
     // into is worth saying before the export and not after it.
@@ -494,13 +489,6 @@ photon would index the copies as new photos";
         let mut f = passed();
         let go = f.at(EXPORT);
         assert_eq!(f.click(go), Done::Export);
-        // While the picker is open, "Choose…" takes no second press.
-        let mut f = passed();
-        let choose = f.at(CHOOSE);
-        if let Dialog::Export(export) = &mut f.dialog {
-            export.choosing = true;
-        }
-        assert_eq!(f.click(choose), Done::Open);
     }
 
     // Against the field, while the dialog is open: the words are wrapped to it, and it

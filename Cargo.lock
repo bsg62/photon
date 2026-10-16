@@ -5245,12 +5245,14 @@ name = "photon-ui"
 version = "0.53.1"
 dependencies = [
  "ashpd",
+ "async-io",
  "block2 0.6.2",
  "dirs",
  "eframe",
  "egui_extras",
  "egui_kittest",
  "fastframe-fonts",
+ "futures-lite",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",

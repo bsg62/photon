@@ -23,7 +23,11 @@ fn main() -> ExitCode {
         )
         .init();
     let Some(dirs) = args.dirs() else {
-        eprintln!("photon could not find a directory to keep its library in");
+        // Said where it can be read with no window, as a failed start is below: a
+        // release build on Windows has no console to print it in.
+        let said = "photon could not find a directory to keep its library in.";
+        eprintln!("{said}");
+        photon_ui::platform::show_error(said);
         return ExitCode::FAILURE;
     };
 

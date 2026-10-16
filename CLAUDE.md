@@ -2149,13 +2149,21 @@ cancel, which rfd answers alike: no portal and no `zenity` is said (`NO_PICKER`)
 cancel is not. "Choose…" beside the export's destination and beside Settings' folder
 field, and the empty library's "Add folder…", open it; the folder chosen goes into the
 field and is asked about as a typed path is - the field, which stays, is the way where no
-picker opens. **It runs on a thread of its own**, one at a time (`App::picking`;
-"Choose…" is dimmed while it is open), and **its answer goes only into the dialog that
-asked**, by the number of its opening (`App::dialog_openings`): closed meanwhile, or
-another opened in its place, the folder is dropped. Where photon has no window to say
-something in - the library that could not be opened - it says it in the system's message
-box (`platform::show_error`; on Linux through `zenity` where that is installed), on the
-standard error and in the log, in the Tauri photon's words (`platform::startup_failed`).
+picker opens. **It runs on a thread of its own, one at a time, and its answer is for the
+field that last asked for it** (`App::picking`, by the number of the dialog's opening,
+`App::dialog_openings`): a press while one is open - a picker tied to no window, as a
+portal's on Wayland and Windows' with no owner are, can be behind photon's - opens no
+second one and takes the open one for that field; a folder chosen for a dialog closed
+since goes nowhere. "Choose…" is never dimmed for it: a dimmed button senses no press,
+and egui takes the keyboard off what senses none. The portal is given ten seconds to open
+its picker (`PORTAL_PATIENCE`) and the user all the time they want; a place that is no
+file of this computer's (`smb://`) goes into the field as it is, which says it is no
+whole path. Where photon has no window to say something in - the library that could not
+be opened - it says it in the system's message box (`platform::show_error`: `MessageBoxW`
+on Windows, since rfd's is a task dialog under the workspace's unified features and
+needs Common Controls 6, which photon-native has no manifest for; rfd's on macOS; `zenity`
+on Linux where that is installed), on the standard error and in the log, in the Tauri
+photon's words (`platform::startup_failed`).
 **The system is one trait, `Platform`, and a test stands in for it** (`App::with_platform`;
 `common::Picker`, which answers and can be held): every test builder that can press
 "Choose…" or the empty library's "Add folder…" launches with one (`no_platform`), or the
