@@ -2623,7 +2623,11 @@ is made a `ColorImage` on this thread and uploaded from it - about a millisecond
 a release build once the needless unmultiplying pass was dropped, four at 4K, and ten times
 that in a debug build; and a player has no crash-loop guard, where a poster does - a file
 whose later frames crash a decoder takes the window down at each opening, which is not a
-loop, since each needs a click.
+loop, since each needs a click. And a player is opened and let go of on the window's thread (GStreamer's
+`Null` joins its streaming threads, Media Foundation's `Shutdown` waits), so a video on a share
+that has stopped answering can hold the window: the poster worker leaves such a decoder
+behind, the player cannot - on a Mac AVFoundation wants that thread. Not reproduced; found by
+the switch-over's whole-branch review.
 
 **A video's controls are its strip, its keys and a click on its picture** (`Playing::act`,
 `playback::Act` - `createVideoPlayer` ported; drawn by `ViewerView::strip`, `VideoControls.

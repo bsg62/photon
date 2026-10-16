@@ -6,8 +6,8 @@ use std::path::Path;
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
     Image,
-    /// Played and poster-framed by the webview, never decoded by photon
-    /// (spec `2026-09-26-photon-video-design.md`).
+    /// Played and poster-framed by the system's own framework (photon-ui's `video`), never
+    /// decoded by photon (spec `2026-10-14-photon-native-video-design.md`).
     Video,
 }
 
@@ -21,8 +21,11 @@ impl MediaKind {
             "jpg" | "jpeg" | "jpe" | "png" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "avif" => {
                 Some(Self::Image)
             }
-            // Only what all three webviews can plausibly play: a tile that will not play is
-            // worse than no tile (AVI, MKV and 3GP are out).
+            // What the systems play: a tile that will not play is worse than no tile (AVI,
+            // MKV and 3GP are out). MP4, M4V and MOV play on all three; WebM on two - a Mac's
+            // AVFoundation reads no WebM, where the Tauri photon's web view did - and stays,
+            // since taken out it would be purged from every library that holds one, with
+            // its albums.
             "mp4" | "m4v" | "mov" | "webm" => Some(Self::Video),
             _ => None,
         }

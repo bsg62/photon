@@ -1,5 +1,5 @@
 //! The running library: photon-core services plus the current grid snapshot and the
-//! background scans. Plain Rust, so it can be tested without a webview.
+//! background scans. Plain Rust, so it can be tested without a window.
 
 use crate::events::{
     Events, ExportProgress, FacePhase, FaceProgress, FolderStatus, LibraryChanged,
@@ -380,8 +380,8 @@ pub struct Engine {
     /// (dropping this `Arc`) before or as part of stopping it, so it never outlives an
     /// explicit stop.
     watcher: Mutex<Option<Arc<WatcherService>>>,
-    /// Serialises `set_star` and `set_stars`. Tauri runs async commands concurrently on a
-    /// worker pool, and two stars into one folder are two read-modify-writes of the same
+    /// Serialises `set_star` and `set_stars`. The engine is called from more than one thread
+    /// (the window's queue of writes, and whatever a test or a second caller runs), and two stars into one folder are two read-modify-writes of the same
     /// INI: unserialised, the second read would miss the first write and the rename would
     /// drop it. Held across the database write too, so the rows land in the order the file
     /// did - and no further. The grid rebuild runs after it is released: rebuilds order
@@ -532,8 +532,8 @@ impl Engine {
 
         let sort = lib.grid_sort()?;
         let face_enabled = lib.face_detection()?;
-        // The first grid is not built here. `open` runs inside Tauri's `setup`, on the main
-        // thread, before the webview can load: a full read of the library and its index -
+        // The first grid is not built here. `open` runs on the main thread before the window's
+        // first frame: a full read of the library and its index -
         // 200ms warm at 300k photos, far longer on a cold disk or a network share - held
         // the window blank for all of it. `startup` builds it instead, as an ordinary
         // `refresh_grid`, and until then the engine holds an empty index at version 0,
@@ -708,7 +708,7 @@ impl Engine {
     /// A poster frame was stored: rebuild the grid, at most once per `FRAME_REFRESH_EVERY`.
     ///
     /// The scan's throttle is leading-edge only - it may skip the last tick because the end
-    /// of the scan refreshes anyway. Frames have no end to lean on: the webview draws them
+    /// of the scan refreshes anyway. Frames have no end to lean on: the window draws them
     /// one by one for as long as any are pending, and the last of a burst would be left
     /// unshown. So the first frame after a quiet second rebuilds at once, and any frame
     /// inside the second schedules one trailing rebuild at its end, which every later frame
@@ -1363,7 +1363,7 @@ impl Engine {
             reason: None,
         };
         // Progress is throttled the way the scanner's is: a per-file event for a 5,000-photo
-        // export is 5,000 round trips into the webview, all to move one bar.
+        // export is 5,000 events for the window, all to move one bar.
         let mut last = Instant::now();
         for (n, &id) in ids.iter().enumerate() {
             let outcome = self.export_one(id, &dest, options);
@@ -1809,7 +1809,7 @@ impl Engine {
     /// library full of photos, sent the user off to add a folder they already have. The
     /// next rebuild that succeeds (a view switch, a scan that moves rows) puts the photos
     /// back and clears it. In `GridInfo` rather than a toast: the UI pulls it with the grid,
-    /// so it cannot be lost to a webview whose listener is not up yet, and it stays for as
+    /// so it cannot be lost to a listener that is not up yet, and it stays for as
     /// long as it is true rather than for as long as a toast does.
     ///
     /// Not published over a grid something else has built meanwhile (see `publish`).

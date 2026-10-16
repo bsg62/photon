@@ -29,6 +29,10 @@ name = "video"
 path = "tests/video/main.rs"
 harness = false
 
+[build-dependencies]
+# The program's icon on Windows (`build.rs`), at the version Tauri's build locked.
+embed-resource = "3.0.11"
+
 [features]
 # rav1d's assembly for AVIF, x86-64 targets only (photon-core's `avif-asm` says why): the
 # installers' workflow turns it on.

@@ -1,6 +1,6 @@
 //! What photon reads from a video file's container: its displayed size, running time,
-//! capture date, and an iPhone's make and model. Never a frame - the webview draws the
-//! poster frame and plays the video (spec `2026-09-26-photon-video-design.md`).
+//! capture date, and an iPhone's make and model. Never a frame - the system's own framework
+//! draws the poster frame and plays the video, in the window (photon-ui's `video`).
 //!
 //! Hand-rolled, like the XMP and INI readers: MP4 and QuickTime share ISO-BMFF's boxes, and
 //! photon needs five of them. The walk follows fixed paths (`moov/mvhd`, `moov/trak/tkhd`,
@@ -16,7 +16,7 @@ use std::path::Path;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VideoMeta {
     /// As displayed: a quarter-turn matrix swaps the stored size, so nothing downstream ever
-    /// rotates a frame the webview has already rotated.
+    /// rotates a frame the system's framework has already rotated.
     pub width: u32,
     pub height: u32,
     pub duration_ms: Option<i64>,

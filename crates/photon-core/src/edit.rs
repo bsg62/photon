@@ -320,7 +320,7 @@ impl Placement {
 pub enum Chroma {
     /// 4:2:0, colour at half the resolution each way, as most cameras store a JPEG: no loss
     /// worth having for a render the viewer shows once and throws away, and half the
-    /// samples to encode and for the webview to decode.
+    /// samples to encode and to decode.
     Half,
     /// 4:4:4, colour at full resolution: for a copy the user keeps, which may be edited
     /// again and re-encoded by something else.

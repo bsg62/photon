@@ -176,6 +176,14 @@ jobs:
             if ($first -lt $at) { Write-Output "::error::$dll is not delay-loaded"; exit 1 }
             Write-Output "ok: $dll is delay-loaded"
           }
+      # The icon Explorer, a shortcut and the taskbar read from the file (`build.rs`).
+      - name: The program carries its icon
+        shell: pwsh
+        run: |
+          Add-Type -Namespace Shell -Name Icons -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconExW(string file, int index, IntPtr[] large, IntPtr[] small, uint count);'
+          $count = [Shell.Icons]::ExtractIconExW((Resolve-Path target\release\photon.exe).Path, -1, $null, $null, 0)
+          if ($count -lt 1) { Write-Output '::error::photon.exe carries no icon'; exit 1 }
+          Write-Output "ok: photon.exe carries $count icon(s)"
       - name: WiX 3
         shell: pwsh
         run: |

@@ -229,8 +229,8 @@ impl InFlight {
     /// on disk right now is removed, because photon chose to stop - nothing killed it.
     ///
     /// This has to be the one actually doing the removing, not merely trusting the worker to
-    /// clean up after itself: in production, `ThumbService::close` is followed by tauri's own
-    /// `process::exit`, with the worker threads never joined first (`RunEvent::Exit` ->
+    /// clean up after itself: in production, `ThumbService::close` is followed by the
+    /// process's exit, with the worker threads never joined first (`App::close` ->
     /// `Engine::shutdown` -> `close()`), so a worker cannot be relied on to run its job to
     /// completion and drop its `Marker` the way it would on an ordinary, crash-free exit.
     pub(crate) fn disarm(&self) {

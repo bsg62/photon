@@ -116,6 +116,23 @@ impl<J: Send + 'static, R: Send + 'static> Latest<J, R> {
     pub fn waiting(&self) -> bool {
         self.answered < self.asked
     }
+
+    /// Waits until the latest question has been answered, for `patience` at most, and
+    /// says whether it was. For a `Latest` that writes, as the window closes: the sidebar's
+    /// width dragged, or the folder scrolled to, in the instant before was otherwise lost
+    /// with the task. The answer is taken here and not handed out.
+    pub fn finish(&mut self, patience: Duration) -> bool {
+        let until = Instant::now() + patience;
+        while self.waiting() {
+            let left = until.saturating_duration_since(Instant::now());
+            match self.answers.recv_timeout(left) {
+                Ok((number, _)) if number == self.asked => self.answered = number,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+        true
+    }
 }
 
 /// The worker ends at its next wait. It is not joined: work in flight may be a database
@@ -281,6 +298,27 @@ mod tests {
         sync::mpsc::{Sender, channel},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn finish_waits_for_the_latest_question_and_no_longer_than_it_is_told() {
+        let (done, told) = channel();
+        let mut task: Latest<u32, ()> = Latest::spawn(
+            "finish",
+            move |job| {
+                std::thread::sleep(Duration::from_millis(u64::from(job)));
+                done.send(job).unwrap();
+            },
+            || {},
+        );
+        task.ask(150);
+        assert!(task.finish(Duration::from_secs(10)));
+        assert_eq!(told.try_recv(), Ok(150), "answered before it was done");
+        assert!(!task.waiting());
+        // Nothing asked since: nothing to wait for.
+        assert!(task.finish(Duration::ZERO));
+        task.ask(2_000);
+        assert!(!task.finish(Duration::from_millis(50)));
+    }
 
     /// Waits for an answer; a worker that never answers fails the test instead of hanging it.
     fn answer_of<J: Send + 'static, R: Send + 'static>(
