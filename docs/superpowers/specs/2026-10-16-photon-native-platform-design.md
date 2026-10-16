@@ -180,9 +180,10 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
      photon is not installed, or once it is removed - said in the workflow's summary.
    - **The version's authority is the workspace's `Cargo.toml`** (`[workspace.package]
      version`), and `xtask versions` checks the others against it - `tauri.conf.json` and
-     `ui/package.json` until sub-project 8 deletes them. `xtask metadata` checks the
-     native packages' metadata (the identifier, the categories, the copyright, the
-     licence) in place of the bundle section it reads today.
+     `ui/package.json` until sub-project 8 deletes them. The native packages' metadata -
+     the identifier, the categories, the copyright, the upgrade code - is in the files
+     `xtask package` writes and is held by their tests; `xtask metadata` goes on checking
+     the Tauri bundle's until it is deleted.
    - **A Windows "N" edition starts.** The `windows` crate links Media Foundation's DLLs
      when the program loads, so where the Media Feature Pack is missing photon-native
      cannot start at all. Every Media Foundation DLL it imports is delay-loaded
@@ -195,9 +196,10 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
      `windows` crate imports through `windows-link`'s raw-dylib, which rustc makes into an
      import library that `/DELAYLOAD` names by DLL - held by the workflow's `dumpbin
      /imports` check; that photon starts without them is the smoke checklist's.
-   - `THIRD-PARTY-NOTICES.md` gains what the native build adds - egui's fonts, the
-     binding crates' licences - checked by `xtask metadata` against the lockfile's licence
-     fields for the crates it names.
+   - `THIRD-PARTY-NOTICES.md` gains what the native build adds that asks for its notice
+     to go with it: egui's fonts, compiled into the program, with their licences as their
+     package ships them. The crates the native build links are listed there as photon-core's
+     are, by what their licences ask; no check reads the file against the lockfile.
 
    Unsigned, as the Tauri installers are.
 

@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  photon-native's MSI: Tauri's template (crates/tauri-bundler/src/bundle/windows/msi/main.wxs at
+  tag tauri-cli-v2.11.4, MIT/Apache-2.0) as photon's Tauri MSI used it, with Tauri's own
+  placeholders taken out - built by `xtask package msi` with WiX 3, the toolset Tauri's bundler
+  uses - and what photon does not use left out: deep links, file associations, the updater's
+  task, WebView2, merge modules.
+
+  What it keeps, each held by the packaging workflow's reading of the built MSI's tables:
+  - the desktop shortcut opt-in (DESKTOPSHORTCUT: the checkbox on the install-folder page of
+    install-dir-ui.wxs, or `msiexec /i photon.msi DESKTOPSHORTCUT=1`);
+  - the upgrade code of photon's Tauri MSI, so that this one replaces it: Tauri derives it
+    as a UUID v5 of "photon.exe.app.x64" in the DNS namespace (`tauri inspect
+    wix-upgrade-code` answers the same), written here as a literal so that nothing derives
+    it again;
+  - the binary installed as photon.exe, where the Tauri MSI put its own.
+
+  Preprocessor variables, given by xtask: Version, Binary (photon-native.exe), Icon
+  (icon.ico), LicenseRtf (the licence as RTF).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product
+            Id="*"
+            Name="photon"
+            UpgradeCode="0ccaa18b-f3ff-50ce-ad76-6fb4d33f39b7"
+            Language="!(loc.Language)"
+            Manufacturer="David Henning"
+            Version="$(var.Version)">
+
+        <Package Id="*"
+                 Keywords="Installer"
+                 InstallerVersion="450"
+                 Languages="0"
+                 Compressed="yes"
+                 InstallScope="perMachine"
+                 SummaryCodepage="!(loc.Codepage)"/>
+
+        <!-- Reinstall all files; rewrite all registry entries; reinstall all shortcuts. -->
+        <Property Id="REINSTALLMODE" Value="amus" />
+        <!-- Set by the install-folder page's checkbox, or on the msiexec command line.
+             Unset by default, so the shortcut is opt-in. Secure, or a per-machine install
+             drops it on the way from the dialog to the elevated part that creates it. -->
+        <Property Id="DESKTOPSHORTCUT" Secure="yes" />
+
+        <!-- A lower version over a higher one is refused: the native MSI from a workflow
+             of the branch, whose version is behind main's releases, installs where the
+             Tauri photon is not installed, or once it is removed. -->
+        <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="!(loc.DowngradeErrorMessage)" AllowSameVersionUpgrades="yes" />
+
+        <InstallExecuteSequence>
+            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+        </InstallExecuteSequence>
+
+        <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
+
+        <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+        <Icon Id="ProductIcon" SourceFile="$(var.Icon)"/>
+        <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
+        <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+        <SetProperty Id="ARPNOMODIFY" Value="1" After="InstallValidate" Sequence="execute"/>
+        <Property Id="ARPURLINFOABOUT" Value="https://photon.webcodr.io"/>
+
+        <!-- The folder an earlier install chose: the MSI's own key (the Tauri MSI's too). -->
+        <Property Id="INSTALLDIR">
+          <RegistrySearch Id="PrevInstallDirWithName" Root="HKCU" Key="Software\David Henning\photon" Name="InstallDir" Type="raw" />
+        </Property>
+
+        <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchApp)" />
+        <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"/>
+        <CustomAction Id="LaunchApplication" Impersonate="yes" FileKey="Path" ExeCommand="" Return="asyncNoWait" />
+
+        <UI>
+            <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+            <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+        </UI>
+
+        <!-- WixUI_InstallDir with the desktop-shortcut checkbox (install-dir-ui.wxs). -->
+        <UIRef Id="WixUI_PhotonInstallDir" />
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="DesktopFolder" Name="Desktop">
+                <Component Id="ApplicationShortcutDesktop" Guid="*">
+                    <!-- Only when asked for. -->
+                    <Condition>DESKTOPSHORTCUT</Condition>
+                    <Shortcut Id="ApplicationDesktopShortcut" Name="photon" Description="Runs photon" Target="[!Path]" WorkingDirectory="INSTALLDIR" />
+                    <RemoveFolder Id="DesktopFolder" On="uninstall" />
+                    <RegistryValue Root="HKCU" Key="Software\David Henning\photon" Name="Desktop Shortcut" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+            </Directory>
+            <Directory Id="ProgramFiles64Folder" Name="PFiles">
+                <Directory Id="INSTALLDIR" Name="photon"/>
+            </Directory>
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="photon"/>
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="RegistryEntries" Guid="*">
+                <RegistryKey Root="HKCU" Key="Software\David Henning\photon">
+                    <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
+                </RegistryKey>
+            </Component>
+            <Component Id="Path" Guid="*" Win64="yes">
+                <File Id="Path" Name="photon.exe" Source="$(var.Binary)" KeyPath="yes" Checksum="yes"/>
+            </Component>
+            <Component Id="CMP_UninstallShortcut" Guid="*">
+                <Shortcut Id="UninstallShortcut"
+                          Name="Uninstall photon"
+                          Description="Uninstalls photon"
+                          Target="[System64Folder]msiexec.exe"
+                          Arguments="/x [ProductCode]" />
+                <RemoveFolder Id="INSTALLDIR" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\David Henning\photon" Name="Uninstaller Shortcut" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
+        </DirectoryRef>
+
+        <DirectoryRef Id="ApplicationProgramsFolder">
+            <Component Id="ApplicationShortcut" Guid="*">
+                <Shortcut Id="ApplicationStartMenuShortcut"
+                    Name="photon"
+                    Description="Runs photon"
+                    Target="[!Path]"
+                    Icon="ProductIcon"
+                    WorkingDirectory="INSTALLDIR">
+                    <ShortcutProperty Key="System.AppUserModel.ID" Value="io.github.bsg62.photon"/>
+                </Shortcut>
+                <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
+                <RegistryValue Root="HKCU" Key="Software\David Henning\photon" Name="Start Menu Shortcut" Type="integer" Value="1" KeyPath="yes"/>
+           </Component>
+        </DirectoryRef>
+
+        <Feature
+                Id="MainProgram"
+                Title="Application"
+                Description="!(loc.InstallAppFeature)"
+                Level="1"
+                ConfigurableDirectory="INSTALLDIR"
+                AllowAdvertise="no"
+                Display="expand"
+                Absent="disallow">
+            <ComponentRef Id="RegistryEntries"/>
+            <Feature Id="ShortcutsFeature" Title="Shortcuts" Level="1">
+                <ComponentRef Id="Path"/>
+                <ComponentRef Id="CMP_UninstallShortcut" />
+                <ComponentRef Id="ApplicationShortcut" />
+                <ComponentRef Id="ApplicationShortcutDesktop" />
+            </Feature>
+        </Feature>
+
+        <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" After="CostFinalize"/>
+    </Product>
+</Wix>

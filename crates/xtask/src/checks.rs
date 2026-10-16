@@ -4,9 +4,10 @@
 /// The version as each of the three files states it.
 #[derive(Debug, Clone)]
 pub struct Versions {
-    /// `crates/photon-app/tauri.conf.json` — the authoritative one.
+    /// `crates/photon-app/tauri.conf.json`, until sub-project 8 takes the Tauri photon away.
     pub tauri: String,
-    /// The workspace `Cargo.toml`.
+    /// The workspace `Cargo.toml` - the authoritative one since photon-native's installers
+    /// are built without Tauri's bundler, which read its version from `tauri.conf.json`.
     pub cargo: String,
     /// `ui/package.json`.
     pub ui: String,
@@ -42,34 +43,32 @@ pub fn parse_cargo_version(toml_src: &str) -> Result<String, String> {
         .ok_or_else(|| "Cargo.toml has no `[workspace.package] version`".to_owned())
 }
 
-/// Checks that all three versions agree with `tauri.conf.json`, and — when a tag triggered
-/// the run — that the tag is exactly `v<version>`.
+/// Checks that all three versions agree with the workspace's `Cargo.toml`, and - when a tag
+/// triggered the run - that the tag is exactly `v<version>`.
 ///
 /// Returns every problem rather than the first, so one CI run tells you everything to fix.
 pub fn check_versions(v: &Versions, tag: Option<&str>) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
-    if v.cargo != v.tauri {
+    if v.tauri != v.cargo {
         problems.push(format!(
-            "Cargo.toml says {}, but tauri.conf.json says {}",
-            v.cargo, v.tauri
+            "tauri.conf.json says {}, but Cargo.toml says {}",
+            v.tauri, v.cargo
         ));
     }
-    if v.ui != v.tauri {
+    if v.ui != v.cargo {
         problems.push(format!(
-            "ui/package.json says {}, but tauri.conf.json says {}",
-            v.ui, v.tauri
+            "ui/package.json says {}, but Cargo.toml says {}",
+            v.ui, v.cargo
         ));
     }
     if let Some(tag) = tag {
-        let expected = format!("v{}", v.tauri);
+        let expected = format!("v{}", v.cargo);
         if tag != expected {
-            problems.push(format!(
-                "tag is {tag}, but tauri.conf.json expects {expected}"
-            ));
+            problems.push(format!("tag is {tag}, but Cargo.toml expects {expected}"));
         }
     }
     if problems.is_empty() {
-        Ok(v.tauri.clone())
+        Ok(v.cargo.clone())
     } else {
         Err(problems)
     }
@@ -206,12 +205,31 @@ mod tests {
     }
 
     #[test]
-    fn a_disagreeing_cargo_version_fails_and_names_the_file() {
-        let v = versions("0.1.0", "0.2.0", "0.1.0");
+    fn a_disagreeing_tauri_version_fails_and_names_the_file() {
+        let v = versions("0.2.0", "0.1.0", "0.1.0");
         let errs = check_versions(&v, None).unwrap_err();
         assert_eq!(errs.len(), 1);
-        assert!(errs[0].contains("Cargo.toml"), "got {:?}", errs);
+        assert!(errs[0].contains("tauri.conf.json"), "got {:?}", errs);
         assert!(errs[0].contains("0.2.0"), "got {:?}", errs);
+    }
+
+    // Cargo.toml is the authority: the version it says is the one the others are wrong
+    // against, and the one the tag is held to.
+    #[test]
+    fn cargo_toml_is_the_authority() {
+        let v = versions("0.1.0", "0.2.0", "0.1.0");
+        let errs = check_versions(&v, Some("v0.2.0")).unwrap_err();
+        assert_eq!(errs.len(), 2, "got {:?}", errs);
+        assert!(
+            errs.iter()
+                .all(|err| err.contains("but Cargo.toml says 0.2.0")),
+            "got {:?}",
+            errs
+        );
+        assert_eq!(
+            check_versions(&versions("0.2.0", "0.2.0", "0.2.0"), Some("v0.2.0")).unwrap(),
+            "0.2.0"
+        );
     }
 
     #[test]
@@ -224,7 +242,7 @@ mod tests {
 
     #[test]
     fn both_disagreeing_are_both_reported() {
-        let v = versions("0.1.0", "0.2.0", "9.9.9");
+        let v = versions("0.2.0", "0.1.0", "9.9.9");
         assert_eq!(check_versions(&v, None).unwrap_err().len(), 2);
     }
 
