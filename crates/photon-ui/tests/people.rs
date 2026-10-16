@@ -727,8 +727,11 @@ fn a_name_for_a_group_gone_says_the_group_changed() {
     });
 }
 
-/// A press on what AccessKit calls `label`, where it was last drawn.
+/// A press on what AccessKit calls `label`, where it was last drawn - once a double
+/// click's time has passed since the last, as a user's next click does: a press within it
+/// of the page moving presses nothing (`PeopleView`'s `deaf`).
 fn press(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) {
+    driver.frames_in(harness, 0.4);
     driver.seen(harness, label);
     let at = harness.get_by_label(label).rect().center();
     harness.event(egui::Event::PointerMoved(at));

@@ -188,9 +188,12 @@ pub struct Loaded {
     pub kept: HashMap<Strip, Vec<PageFace>>,
 }
 
-/// "Show more" asked of a strip: `limit` of the group's `filter`ed faces after `offset`.
+/// "Show more" asked of a strip: `limit` of the group's `filter`ed faces after `offset`,
+/// for the page as it was opened (`opening`) and the strip as it stood (`generation`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct More {
+    pub opening: u64,
+    pub generation: u64,
     pub strip: Strip,
     pub group: i64,
     pub filter: FaceFilter,
@@ -224,6 +227,12 @@ impl FacesWrite {
 /// The page's state between frames.
 #[derive(Debug, Default)]
 pub struct PeoplePage {
+    /// Which opening of the page this is: an answer to "Show more" asked of an earlier
+    /// one is not this page's.
+    opening: u64,
+    /// Strips whose "Show more" is on its way: the next page starts where that one ends,
+    /// which is not known until it lands.
+    fetching: HashSet<Strip>,
     page: Option<Page>,
     /// Faces "Show more" loaded beyond each strip's first ones.
     extra: HashMap<Strip, Vec<PageFace>>,
@@ -251,6 +260,29 @@ pub struct PeoplePage {
 }
 
 impl PeoplePage {
+    /// The page at its `opening`th opening.
+    pub fn new(opening: u64) -> Self {
+        Self {
+            opening,
+            ..Self::default()
+        }
+    }
+
+    /// Every face the page holds, shown or hidden for a write on its way, with what "Show
+    /// more" loaded: what its crops are kept for.
+    pub fn every_face(&self) -> impl Iterator<Item = &PageFace> {
+        let page = self.page.iter().flat_map(|page| {
+            let groups = (page.unnamed.iter())
+                .chain(&page.suggestions)
+                .chain(&page.people)
+                .chain(&page.ignored_groups);
+            (groups.flat_map(|group| &group.faces))
+                .chain(&page.single_faces)
+                .chain(&page.ignored_faces)
+        });
+        page.chain(self.extra.values().flatten())
+    }
+
     /// The page as the library last answered: none until the first read lands.
     pub fn page(&self) -> Option<&Page> {
         self.page.as_ref()
@@ -500,28 +532,72 @@ impl PeoplePage {
             .is_some_and(|faces| !faces.is_empty())
     }
 
-    /// What "Show more" asks of the library for `strip`: a page after what it holds.
-    pub fn show_more(&self, strip: Strip) -> Option<More> {
+    /// What "Show more" asks of the library for `strip`: a page after what it holds -
+    /// nothing while one is on its way, whose end is where the next would start: asked
+    /// again from what is held, a second press fetched the same page, and the one after
+    /// it started two pages on, leaving a page out.
+    pub fn show_more(&mut self, strip: Strip) -> Option<More> {
+        if self.fetching.contains(&strip) {
+            return None;
+        }
         let group = group_in(self.page.as_ref()?, strip)?;
         let held = self.extra.get(&strip).map_or(0, Vec::len);
+        let generation = self.generation.get(&strip).copied().unwrap_or(0);
+        let offset = group.faces.len() + held;
+        let id = group.id;
+        self.fetching.insert(strip);
         Some(More {
+            opening: self.opening,
+            generation,
             strip,
-            group: group.id,
+            group: id,
             filter: strip.filter(),
-            offset: group.faces.len() + held,
+            offset,
             limit: MORE,
         })
     }
 
-    /// The page "Show more" asked for, landed.
-    pub fn more_landed(&mut self, strip: Strip, faces: Vec<PageFace>) {
-        self.extra.entry(strip).or_default().extend(faces);
-        self.bump(strip);
+    /// The page "Show more" asked for, landed: for the strip as it was asked of. Shown
+    /// fewer of since, or a page of an earlier opening, it is no longer wanted.
+    pub fn more_landed(&mut self, more: More, faces: Vec<PageFace>) {
+        if !self.more_over(more) {
+            return;
+        }
+        if self.generation.get(&more.strip).copied().unwrap_or(0) != more.generation {
+            return;
+        }
+        self.extra.entry(more.strip).or_default().extend(faces);
+        self.bump(more.strip);
     }
 
+    /// "Show more" could not be fetched: it can be asked again.
+    pub fn more_failed(&mut self, more: More) {
+        self.more_over(more);
+    }
+
+    /// Whether `more` is this opening's, and its strip no longer waiting on it.
+    fn more_over(&mut self, more: More) -> bool {
+        more.opening == self.opening && self.fetching.remove(&more.strip)
+    }
+
+    /// The strip folds back to its first faces, and a face picked among those it no
+    /// longer shows is no longer picked: the bar would act on faces nobody can see.
     pub fn show_fewer(&mut self, strip: Strip) {
         self.extra.remove(&strip);
         self.bump(strip);
+        if let Some((at, ids)) = &mut self.selection
+            && *at == strip
+        {
+            let shown: HashSet<i64> = (self.page.iter())
+                .flat_map(|page| group_in(page, strip))
+                .flat_map(|group| &group.faces)
+                .map(|face| face.id)
+                .collect();
+            ids.retain(|id| shown.contains(id));
+            if ids.is_empty() {
+                self.selection = None;
+            }
+        }
     }
 
     fn bump(&mut self, strip: Strip) {
@@ -1021,11 +1097,11 @@ mod tests {
             (asked.group, asked.filter, asked.offset, asked.limit),
             (1, FaceFilter::Confirmed, STRIP, MORE)
         );
-        model.more_landed(person, faces([900, 901]));
+        model.more_landed(asked, faces([900, 901]));
         assert!(shown(&model, person).contains(&901));
         assert_eq!(model.faces(person).len(), STRIP + 2);
         assert_eq!(model.show_more(person).unwrap().offset, STRIP + 2);
-        let filter = |strip| model.show_more(strip).unwrap().filter;
+        let mut filter = |strip| model.show_more(strip).unwrap().filter;
         assert_eq!(filter(Strip::Suggestion(2)), FaceFilter::Unconfirmed);
         assert_eq!(filter(Strip::Unnamed(3)), FaceFilter::All);
         assert_eq!(filter(Strip::Ignored(4)), FaceFilter::All);
@@ -1046,7 +1122,7 @@ mod tests {
         loaded(&mut model, page());
         for _ in 0..3 {
             let more = model.show_more(A).unwrap();
-            model.more_landed(A, clamped(1000, more.offset, more.limit));
+            model.more_landed(more, clamped(1000, more.offset, more.limit));
         }
         assert_eq!(model.faces(A).len(), STRIP + 3 * MORE);
         let ask = model.reload(1.0);
@@ -1071,7 +1147,7 @@ mod tests {
         let page = || answer(vec![group(1, None, faces(0..STRIP as i64), 1000)]);
         loaded(&mut model, page());
         let more = model.show_more(A).unwrap();
-        model.more_landed(A, clamped(1000, more.offset, more.limit));
+        model.more_landed(more, clamped(1000, more.offset, more.limit));
         // Folded meanwhile.
         let ask = model.reload(1.0);
         model.show_fewer(A);
@@ -1081,10 +1157,10 @@ mod tests {
         assert_eq!(model.faces(A).len(), STRIP);
         // Expanded meanwhile, a second page on the first.
         let more = model.show_more(A).unwrap();
-        model.more_landed(A, clamped(1000, more.offset, more.limit));
+        model.more_landed(more, clamped(1000, more.offset, more.limit));
         let ask = model.reload(2.0);
         let more = model.show_more(A).unwrap();
-        model.more_landed(A, clamped(1000, more.offset, more.limit));
+        model.more_landed(more, clamped(1000, more.offset, more.limit));
         let kept = refetched(&page(), &ask.wants, 1000);
         model.loaded(ask.number, Loaded { page: page(), kept });
         assert_eq!(model.faces(A).len(), STRIP + 2 * MORE);
@@ -1094,9 +1170,73 @@ mod tests {
     fn a_face_read_by_both_the_strip_and_show_more_is_listed_once() {
         let mut model = PeoplePage::default();
         loaded(&mut model, unnamed_page());
-        model.more_landed(A, faces([3, 4]));
+        let more = model.show_more(A).unwrap();
+        model.more_landed(more, faces([3, 4]));
         assert_eq!(shown(&model, A), [1, 2, 3, 4]);
         assert_eq!(model.count(A), 5);
+    }
+
+    // "Show more" pressed again while its page is on its way asks nothing: the next page
+    // starts where that one ends. Asked from what was held, the second press fetched the
+    // same page and the third started two pages on, leaving one out.
+    #[test]
+    fn show_more_waits_for_the_page_on_its_way() {
+        let page = || answer(vec![group(1, None, faces(0..STRIP as i64), 1000)]);
+        let mut model = PeoplePage::default();
+        loaded(&mut model, page());
+        let first = model.show_more(A).unwrap();
+        assert_eq!(model.show_more(A), None);
+        model.more_landed(first, clamped(1000, first.offset, first.limit));
+        assert_eq!(model.show_more(A).unwrap().offset, STRIP + MORE);
+        // A fetch that failed can be asked again.
+        let mut model = PeoplePage::default();
+        loaded(&mut model, page());
+        let failed = model.show_more(A).unwrap();
+        model.more_failed(failed);
+        assert_eq!(model.show_more(A).unwrap().offset, STRIP);
+    }
+
+    // A page that lands after "Show fewer", or for an earlier opening of the page, is not
+    // put in the strip: the user folded it, or never asked this page for it.
+    #[test]
+    fn a_page_no_longer_wanted_is_dropped() {
+        let page = || answer(vec![group(1, None, faces(0..STRIP as i64), 1000)]);
+        let mut model = PeoplePage::default();
+        loaded(&mut model, page());
+        let more = model.show_more(A).unwrap();
+        model.show_fewer(A);
+        model.more_landed(more, clamped(1000, more.offset, more.limit));
+        assert!(
+            !model.is_expanded(A),
+            "folded, and opened by the page that landed"
+        );
+        let mut earlier = PeoplePage::new(1);
+        loaded(&mut earlier, page());
+        let more = earlier.show_more(A).unwrap();
+        let mut model = PeoplePage::new(2);
+        loaded(&mut model, page());
+        model.more_landed(more, clamped(1000, more.offset, more.limit));
+        assert!(
+            !model.is_expanded(A),
+            "an earlier opening's page landed in this one"
+        );
+    }
+
+    // "Show fewer" lets go of the faces picked among those it no longer shows: the bar
+    // would count them and act on faces nobody can see.
+    #[test]
+    fn show_fewer_lets_go_of_the_faces_it_hides() {
+        let mut model = PeoplePage::default();
+        loaded(
+            &mut model,
+            answer(vec![group(1, None, faces(0..STRIP as i64), 1000)]),
+        );
+        let more = model.show_more(A).unwrap();
+        model.more_landed(more, clamped(1000, more.offset, more.limit));
+        model.toggle(A, 1);
+        model.toggle(A, STRIP as i64 + 3);
+        model.show_fewer(A);
+        assert_eq!(model.selected(A), [1]);
     }
 
     // A strip whose fetch failed is left out of `kept`, and folds back; the others stay.
@@ -1112,8 +1252,10 @@ mod tests {
             ..Page::default()
         };
         loaded(&mut model, page());
-        model.more_landed(Strip::Person(1), faces([900, 901]));
-        model.more_landed(Strip::Person(2), faces([950, 951]));
+        for (n, landed) in [(1, [900, 901]), (2, [950, 951])] {
+            let more = model.show_more(Strip::Person(n)).unwrap();
+            model.more_landed(more, faces(landed));
+        }
         let ask = model.reload(1.0);
         let kept = HashMap::from([(Strip::Person(2), faces([950, 951]))]);
         model.loaded(ask.number, Loaded { page: page(), kept });

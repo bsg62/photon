@@ -147,7 +147,8 @@ impl App {
         if self.page.is_some() {
             return;
         }
-        let mut model = PeoplePage::default();
+        self.people_openings += 1;
+        let mut model = PeoplePage::new(self.people_openings);
         let ask = model.reload(now);
         self.people_read.ask(ask);
         self.page = Some(model);
@@ -237,8 +238,11 @@ impl App {
         for (_, answer) in self.people_more.answers() {
             answered = true;
             match (answer, &mut self.page) {
-                (Ok((more, Ok(faces))), Some(model)) => model.more_landed(more.strip, faces),
-                (Ok((_, Err(said))), Some(_)) => self.toasts.error(said, now),
+                (Ok((more, Ok(faces))), Some(model)) => model.more_landed(more, faces),
+                (Ok((more, Err(said))), Some(model)) => {
+                    model.more_failed(more);
+                    self.toasts.error(said, now);
+                }
                 _ => {}
             }
         }

@@ -98,6 +98,9 @@ pub struct PeopleData<'a> {
     pub finds_faces: bool,
     /// The face pass's line, while one is running.
     pub progress: Option<&'a str>,
+    /// A dialog or a menu over the page closed, or a menu's item was picked, within a
+    /// double click's time: a press now is that double click's second.
+    pub just_covered: bool,
 }
 
 /// A name being typed: for a group, for the single faces selected, or as a person's new
@@ -135,6 +138,13 @@ pub struct PeopleView {
     clicked: Option<(i64, f64)>,
     /// What had the keyboard when the page was last drawn.
     focused: Option<Id>,
+    /// When the page last did something that moves what is drawn under the pointer.
+    moved_at: Option<f64>,
+    /// A press is the second of a double click whose first moved the page: nothing it
+    /// lands on is done, until it has come up.
+    deaf: bool,
+    /// Whether single faces were selected when the page was last drawn.
+    singles_bar: bool,
 }
 
 impl PeopleView {
@@ -209,6 +219,36 @@ impl PeopleView {
         let mut page = self.column.begin(ui, rect, inner);
         let mut actions = Vec::new();
         let double = (ui.ctx()).options(|options| options.input_options.max_double_click_delay);
+        // The second press of a double click lands on what the first put under the
+        // pointer: an action of a bar takes the bar away, and what stood under it moves up
+        // - the suggestion's "Confirm" became "Confirm these 6", a group's "Ignore these
+        // faces" the group's own "Ignore". A press that goes down within a double click's
+        // time of the page moving, or of a dialog or menu over it closing, presses nothing
+        // until it has come up (`DialogView::deaf` the other way round).
+        let (now, pressed, released) = ui.input(|input| {
+            (
+                input.time,
+                input.pointer.any_pressed(),
+                input.pointer.any_released(),
+            )
+        });
+        let moved = self.moved_at.is_some_and(|at| now - at < double);
+        if pressed && (moved || data.just_covered) {
+            self.deaf = true;
+        }
+        let deaf = self.deaf;
+        if released {
+            self.deaf = false;
+        }
+        // The single faces' name box is one field for every selection of them: a new
+        // selection opens it empty and with a history of its own, or the name typed for
+        // the last faces, and Ctrl+Z, came back for the next.
+        let singles = !data.model.selected(Strip::Single).is_empty();
+        if singles && !self.singles_bar {
+            self.names.remove(&Naming::Singles);
+            egui::text_edit::TextEditState::default().store(ui.ctx(), Naming::Singles.id());
+        }
+        self.singles_bar = singles;
         ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
             ui.set_clip_rect(rect.intersect(ui.clip_rect()));
             let mut draw = Draw {
@@ -264,10 +304,25 @@ impl PeopleView {
         // A crop is let go of once the page no longer lists its face under that key - its
         // photo turned or renamed, its face gone - and not only when the page closes: kept,
         // every key a face had while the page stood open was a texture held.
-        if let Some(page) = data.model.page() {
-            let listed = listed(page);
+        if data.model.page().is_some() {
+            let listed: HashSet<CropOf> = (data.model.every_face())
+                .map(|face| (face.id, face.thumb_key.clone()))
+                .collect();
             self.textures.retain(|of, _| listed.contains(of));
             self.missing.retain(|of| listed.contains(of));
+        }
+        if deaf {
+            actions.clear();
+        }
+        // A face picked or put back moves nothing above the pointer (its bar comes and
+        // goes under the strip), and a photo opened leaves the page.
+        if (actions.iter()).any(|action| {
+            !matches!(
+                action,
+                PeopleAction::Toggle { .. } | PeopleAction::Open(_) | PeopleAction::OpenSettings
+            )
+        }) {
+            self.moved_at = Some(now);
         }
         actions
     }
@@ -310,19 +365,6 @@ impl Line {
     fn bottom(&self) -> f32 {
         self.bottom
     }
-}
-
-/// Every face the page lists, by its id and its photo's key.
-fn listed(page: &photon_core::library::PeoplePage) -> HashSet<CropOf> {
-    let groups = (page.unnamed.iter())
-        .chain(&page.suggestions)
-        .chain(&page.people)
-        .chain(&page.ignored_groups);
-    (groups.flat_map(|group| &group.faces))
-        .chain(&page.single_faces)
-        .chain(&page.ignored_faces)
-        .map(|face| (face.id, face.thumb_key.clone()))
-        .collect()
 }
 
 /// What a name box's Enter or Escape came to.
@@ -598,21 +640,22 @@ impl Draw<'_, '_> {
     /// The bar under a strip with faces selected: how many, what can be done to them, a
     /// name box for single faces, "Clear", and how a photo is opened.
     fn bar(&mut self, model: &PeoplePage, strip: Strip, selected: usize) {
-        let top = self.page.y;
-        let mut left = self.page.left;
+        // On to the next line where the page is too narrow, as the Svelte `.actions` wraps:
+        // in one row, "Clear" stood past the card's edge in a window of the least width.
+        let mut line = Line::new(self.page.left, self.page.y, self.page.width);
         let words = format!("{selected} selected");
-        let place = self.page.painter.text(
-            pos2(left, top + CONTROL / 2.0),
-            egui::Align2::LEFT_CENTER,
-            &words,
-            fonts::semibold(self.ui.ctx(), T[2]),
-            color(self.palette.text),
-        );
-        self.label(place, &words);
-        left = place.right() + S[1];
+        let font = fonts::semibold(self.ui.ctx(), T[2]);
+        let width = (self.page.painter)
+            .layout_no_wrap(words.clone(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x;
+        let at = line.place(width, CONTROL);
+        self.words(at, &words, font, self.palette.text);
         for action in strip.actions() {
+            let label = action.label();
+            let at = line.place(button_width(self.ui, label), CONTROL);
             let (_, pressed) =
-                self.inline_button(&mut left, top, action.label(), Look::Plain, strip);
+                self.inline_button(&mut at.x.clone(), at.y, label, Look::Plain, strip);
             if pressed {
                 self.actions.push(PeopleAction::Act {
                     strip,
@@ -620,40 +663,50 @@ impl Draw<'_, '_> {
                 });
             }
         }
-        let mut bottom = top + CONTROL;
         if strip == Strip::Single {
-            let field_left = left;
-            let (under, typed) = self.name_box(
-                model,
-                Naming::Singles,
-                pos2(field_left, top),
-                "Name the selected faces",
-            );
+            // Room for the line under the field whether or not anything is said there, as
+            // a group's box keeps it: it comes with the first letter typed.
+            let hint = line_height(self.ui, &fonts::regular(T[1])) + 2.0;
+            let at = line.place(FIELD_WIDTH.min(self.page.width), CONTROL + hint);
+            let label = "Name the selected faces";
+            let (_, typed) = self.name_box(model, Naming::Singles, at, label);
             if let Some(Typed::Commit(name)) = typed {
                 self.actions.push(PeopleAction::NameSingles(name));
             }
-            bottom = bottom.max(under);
-            left = field_left + FIELD_WIDTH + S[1];
         }
-        let (_, cleared) = self.inline_button(&mut left, top, "Clear", Look::Plain, strip);
+        let at = line.place(button_width(self.ui, "Clear"), CONTROL);
+        let (_, cleared) = self.inline_button(&mut at.x.clone(), at.y, "Clear", Look::Plain, strip);
         if cleared {
             self.actions.push(PeopleAction::Clear);
         }
-        let at = pos2(left, top + CONTROL / 2.0);
-        if self
+        let font = fonts::regular(T[1]);
+        let width = (self.page.painter)
+            .layout_no_wrap(OPEN_HINT.to_owned(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x;
+        let at = line.place(width, CONTROL);
+        self.words(at, OPEN_HINT, font, self.palette.text_dim);
+        self.page.put(line.bottom());
+    }
+
+    /// Words at the left of a control's height at `at`, where they are in sight.
+    fn words(
+        &mut self,
+        at: Pos2,
+        words: &str,
+        font: egui::FontId,
+        tint: crate::theme::tokens::Rgba,
+    ) {
+        let at = pos2(at.x, at.y + CONTROL / 2.0);
+        if !self
             .page
             .sees(Rect::from_center_size(at, vec2(1.0, CONTROL)))
         {
-            let place = self.page.painter.text(
-                at,
-                egui::Align2::LEFT_CENTER,
-                OPEN_HINT,
-                fonts::regular(T[1]),
-                color(self.palette.text_dim),
-            );
-            self.label(place, OPEN_HINT);
+            return;
         }
-        self.page.put(bottom);
+        let place =
+            (self.page.painter).text(at, egui::Align2::LEFT_CENTER, words, font, color(tint));
+        self.label(place, words);
     }
 
     fn face(&mut self, rect: Rect, face: &PageFace, shown: &Shown<'_>) {
@@ -1000,7 +1053,11 @@ impl Draw<'_, '_> {
                 let label = format!("Rename {name}");
                 let at = pos2(self.page.left, top);
                 let (under, typed) = self.name_box(model, naming, at, &label);
-                bottom = bottom.max(under);
+                // Room for the line under the field whether or not anything is said
+                // there: it comes with the first letter that is not the person's own name,
+                // and every card under the row moved down a line with it.
+                let hint = line_height(self.ui, &fonts::regular(T[1])) + 2.0;
+                bottom = bottom.max(under).max(top + CONTROL + hint);
                 match typed {
                     Some(Typed::Commit(typed)) => {
                         self.actions.push(PeopleAction::Rename {
@@ -1234,6 +1291,8 @@ mod tests {
         texts: Vec<(String, Rect)>,
         /// The window's width.
         width: f32,
+        /// Whether a dialog or a menu over the page has just closed.
+        just_covered: bool,
     }
 
     impl Fixture {
@@ -1253,6 +1312,7 @@ mod tests {
                 time: 0.0,
                 texts: Vec::new(),
                 width: 1000.0,
+                just_covered: false,
             }
         }
 
@@ -1268,6 +1328,7 @@ mod tests {
                 model: &self.model,
                 finds_faces: self.finds_faces,
                 progress: None,
+                just_covered: self.just_covered,
             };
             let (view, crops) = (&mut self.view, &mut self.crops);
             let mut actions = Vec::new();
@@ -1337,6 +1398,8 @@ mod tests {
             }]
         );
         let ignore = f.drew("Ignore").expect("in its place").center();
+        // A click of its own, not the second of a double click.
+        f.time += 1.0;
         assert_eq!(
             f.click(ignore),
             [PeopleAction::Ignore {
@@ -1554,6 +1617,234 @@ mod tests {
         );
         let delete = f.drew("Delete").expect("Delete");
         assert!(delete.right() <= f.width, "{delete:?}");
+    }
+
+    /// Where the face `id` was drawn: from the frame before the last, egui swapping its
+    /// two passes at the end of a frame.
+    fn face_at(f: &Fixture, id: i64) -> Pos2 {
+        f.ctx
+            .read_response(Id::new(("people-face", id)))
+            .expect("the face drawn")
+            .rect
+            .center()
+    }
+
+    fn typed(text: &str) -> Event {
+        Event::Text(text.to_owned())
+    }
+
+    // A crop is kept for every face the page shows, the faces "Show more" loaded among
+    // them: kept only for the page's first faces, a face past the first twelve had its
+    // crop let go of in the frame after it was cut, and - asked for once an opening - it
+    // stood an empty square for good.
+    #[test]
+    fn a_crop_of_a_face_show_more_loaded_is_kept() {
+        let mut long = group(1, (1..=12).map(face).collect(), None);
+        long.face_count = 20;
+        let page = Page {
+            unnamed: vec![long],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        let more = f.model.show_more(Strip::Unnamed(1)).unwrap();
+        f.model.more_landed(more, vec![face(13)]);
+        f.frame(Vec::new());
+        let of: CropOf = (13, face(13).thumb_key);
+        let side = CROP_PX as usize;
+        f.view.took(
+            &f.ctx,
+            vec![(of.clone(), Made::Pixels(vec![0; side * side * 4]))],
+        );
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert!(
+            f.view.holds_crop(&of),
+            "the crop of a face Show more loaded"
+        );
+    }
+
+    // The second press of a double click on a bar's button does nothing: the first takes
+    // the bar away, and what stood under it moves up into its place - here "Confirm all",
+    // which confirmed every suggestion on screen where the user had picked one.
+    #[test]
+    fn a_double_click_on_a_bars_button_presses_nothing_under_it() {
+        let mut anna = group(5, (1..=6).map(face).collect(), None);
+        anna.name = Some("Anna".to_owned());
+        anna.face_count = 20;
+        let page = Page {
+            suggestions: vec![anna],
+            ..Page::default()
+        };
+        let strip = Strip::Suggestion(5);
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let picked = face_at(&f, 1);
+        assert_eq!(f.click(picked), [PeopleAction::Toggle { strip, face: 1 }]);
+        f.model.toggle(strip, 1);
+        f.time += 1.0;
+        f.frame(Vec::new());
+        let confirm = f.drew("Confirm").expect("the bar's Confirm").center();
+        let action = PeopleAction::Act {
+            strip,
+            action: FaceAction::Confirm,
+        };
+        assert_eq!(f.click(confirm), [action]);
+        f.model.act(strip, FaceAction::Confirm);
+        assert_eq!(f.click(confirm), [], "the second click of the double click");
+        // What stands there now - a click of its own presses it.
+        f.time += 1.0;
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let all = (f.ctx)
+            .read_response(Id::new(("people-button", "Confirm these 5", 5_i64)))
+            .expect("Confirm these 5");
+        assert!(
+            all.rect.contains(confirm),
+            "{:?} is not under {confirm:?}",
+            all.rect
+        );
+        assert_eq!(f.click(confirm), [PeopleAction::ConfirmAll(5)]);
+    }
+
+    // A press within a double click's time of a dialog or a menu over the page closing is
+    // that double click's second, and presses nothing: the second click on a question's
+    // "Delete" landed on whatever button of the page stood under it.
+    #[test]
+    fn a_press_just_after_a_dialog_closed_presses_nothing() {
+        let page = Page {
+            unnamed: vec![group(1, vec![face(1), face(2)], None)],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let ignore = f.drew("Ignore").expect("Ignore").center();
+        f.just_covered = true;
+        assert_eq!(f.click(ignore), []);
+        f.just_covered = false;
+        assert_eq!(
+            f.click(ignore),
+            [PeopleAction::Ignore {
+                group: 1,
+                ignored: true
+            }]
+        );
+    }
+
+    // A bar's line wraps where the page is narrow, as the Svelte `.actions` does: in one
+    // row the single faces' "Clear" stood past the card's edge in a window of the least
+    // width.
+    #[test]
+    fn a_bar_stays_inside_a_narrow_page() {
+        let mut single = face(7);
+        single.person_id = Some(70);
+        let page = Page {
+            single_faces: vec![single],
+            single_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.width = 420.0;
+        f.frame(Vec::new());
+        let summary = f.drew("1 single face").expect("the fold").center();
+        f.click(summary);
+        f.model.toggle(Strip::Single, 7);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let clear = f.drew("Clear").expect("Clear in sight");
+        assert!(clear.right() <= f.width - S[3], "Clear at {clear:?}");
+        let hint = f.drew(OPEN_HINT).expect("the hint in sight");
+        assert!(hint.right() <= f.width - S[3], "the hint at {hint:?}");
+    }
+
+    // Typing a person's new name moves nothing under their row: the line under the field
+    // comes with the first letter that is not their own name, and its room is kept.
+    #[test]
+    fn typing_a_new_name_moves_nothing_under_the_row() {
+        let named = |id: i64, name: &str, face_id: i64| {
+            let mut person = group(id, vec![face(face_id)], None);
+            person.name = Some(name.to_owned());
+            person
+        };
+        let page = Page {
+            people: vec![named(1, "Anna", 1), named(2, "Ben", 2)],
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let rename = f.drew("Rename").expect("Anna's Rename").center();
+        f.click(rename);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let before = f.drew("Ben").expect("Ben's row");
+        f.frame(vec![typed("C")]);
+        f.frame(Vec::new());
+        assert!(
+            f.drew("Rename to “C” · Enter").is_some(),
+            "the line under the field"
+        );
+        let after = f.drew("Ben").expect("Ben's row");
+        assert_eq!(after.top(), before.top(), "Ben's row moved");
+    }
+
+    // The single faces' name box opens empty for each new selection: one field serves
+    // every selection, and the name typed for the last faces stood in it for the next.
+    #[test]
+    fn the_single_faces_name_box_opens_empty_for_a_new_selection() {
+        let mut single = face(7);
+        single.person_id = Some(70);
+        let page = Page {
+            single_faces: vec![single],
+            single_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.frame(Vec::new());
+        let summary = f.drew("1 single face").expect("the fold").center();
+        f.click(summary);
+        f.model.toggle(Strip::Single, 7);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        let field = f.drew("Add a name").expect("the box").center();
+        f.click(field);
+        // Typed with rests, as a person types: egui notes a point to go back to when the
+        // text has rested.
+        for letter in ["Z", "e", "d"] {
+            f.frame(vec![typed(letter)]);
+            for _ in 0..90 {
+                f.frame(Vec::new());
+            }
+        }
+        assert!(f.drew("Zed").is_some(), "typed into the box");
+        f.model.clear_selection();
+        f.frame(Vec::new());
+        f.model.toggle(Strip::Single, 7);
+        f.frame(Vec::new());
+        f.frame(Vec::new());
+        assert!(f.drew("Zed").is_none(), "the last selection's name");
+        // And with a history of its own: Ctrl+Z in it brings nothing of the last back.
+        let field = f.drew("Add a name").expect("the box").center();
+        f.click(field);
+        for _ in 0..90 {
+            f.frame(Vec::new());
+        }
+        let undo = |pressed| Event::Key {
+            key: Key::Z,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+        f.frame(vec![undo(true), undo(false)]);
+        f.frame(Vec::new());
+        assert!(
+            !f.texts.iter().any(|(text, _)| text.starts_with('Z')),
+            "the last selection's name came back by Ctrl+Z"
+        );
     }
 
     // The words are the Svelte page's.

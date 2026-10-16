@@ -3059,6 +3059,24 @@ faces' writes go through the engine's `write_people`, as every People command do
 tested, for want of a seam: that a re-fetch which fails costs its strip and not the page
 (`people::read`; nothing makes one call of the library fail and the next succeed).
 
+**What a review of the corrections found, each with its test** (`people_view.rs`,
+`people_page.rs`). *A crop is kept for every face the model holds*, the faces "Show more"
+loaded among them (`PeoplePage::every_face`): kept by the page's first faces alone, a face
+past the twelfth lost its crop the frame after it was cut, and stood an empty square for
+good. *The second press of a double click presses nothing on the page when the first moved
+it* - a bar's action takes the bar away and what stood under it moves up ("Confirm" became
+"Confirm these 5", a group's "Ignore these faces" its own "Ignore") - nor within a double
+click's time of a dialog or a menu over it closing (`PeopleView`'s `deaf`, `moved_at`,
+`PeopleData::just_covered`; a face picked or put back moves nothing above the pointer and
+does not count). *The bar wraps* (`Line`), and the name box in it and the rename field
+keep the room of the line under them. *"Show more" asks nothing while its page is on its
+way* (`fetching`): asked from what was held, a second press fetched the same page and the
+third left one out; and a page that lands after "Show fewer", or for an earlier opening of
+the page (`More::opening`, `generation`), is dropped. *"Show fewer" lets go of the faces
+picked among those it hides.* *The single faces' box opens empty, with a history of its
+own, for each new selection.* A test of the whole application that presses on the page
+waits a double click's time first (`press` in `tests/people.rs`).
+
 **What a review of the People page found, each with its test** (`tests/people.rs`,
 `people_view.rs`). *A write is no way out of the page*: the album on screen deleted from its
 sidebar menu sent `go` to All photos, which left the page - it is `ask_step` now; and Escape

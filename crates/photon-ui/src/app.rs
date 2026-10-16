@@ -307,6 +307,9 @@ pub struct App {
     people_read: Latest<people_page::Ask, people::Read>,
     /// The pages "Show more" asks for, each in its turn: every one is wanted.
     people_more: Queue<people_page::More, people::Fetched>,
+    /// How many times the People page has been opened: what "Show more" answers to an
+    /// earlier opening are told apart by.
+    people_openings: u64,
     /// The library's data changed since the page last heard of it.
     people_changed: bool,
     face_crops: Crops,
@@ -1380,6 +1383,7 @@ impl App {
             people_view: PeopleView::default(),
             people_read,
             people_more,
+            people_openings: 0,
             people_changed: false,
             face_crops,
             last_folder,
@@ -4772,10 +4776,13 @@ impl eframe::App for App {
         };
         let (view, thumbs, selection) = (&mut self.view, &mut self.thumbs, &mut self.selection);
         let progress = self.scans.faces_line();
+        let double = (ui.ctx()).options(|options| options.input_options.max_double_click_delay);
+        let just_covered = (self.overlay_closed).is_some_and(|at| now - at < double * 1000.0);
         let people = self.page.as_ref().map(|model| PeopleData {
             model,
             finds_faces: self.engine.face_detection(),
             progress: progress.as_deref(),
+            just_covered,
         });
         let (people_view, crops) = (&mut self.people_view, &mut self.face_crops);
         let mut output = None;
