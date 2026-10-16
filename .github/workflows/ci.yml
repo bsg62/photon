@@ -99,7 +99,7 @@ jobs:
       # picture (`metadata` and `scanner` read AVIFs too, but only their containers). All of
       # photon-core's tests a second time was two minutes on Windows for the same answer.
       # The macOS runners are arm64, where it does not build (photon-core's Cargo.toml), so
-      # there it is only built, for the x86-64 dmg native-packages.yml cross-compiles.
+      # there it is only built, for the x86-64 dmg release.yml cross-compiles.
       - if: runner.os != 'macOS'
         run: "cargo test -p photon-core --features avif-asm --lib -- avif:: colour:: decode:: edit::"
       - if: runner.os == 'macOS'

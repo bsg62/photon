@@ -1,4 +1,4 @@
-//! Media Foundation's DLLs delay-loaded by photon-native on Windows (spec
+//! Media Foundation's DLLs delay-loaded by photon on Windows (spec
 //! `2026-10-16-photon-native-platform-design.md`, decision 8): the `windows` crate links
 //! them when the program loads, and a Windows "N" edition without the Media Feature Pack
 //! then could not start photon at all. Delay-loaded, they are looked for at the first call,

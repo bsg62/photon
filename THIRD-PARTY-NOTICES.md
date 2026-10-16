@@ -127,7 +127,7 @@ This license governs use of the accompanying software. If you use the software, 
 
 ## egui's default fonts
 
-photon-native draws with the fonts egui embeds (`epaint_default_fonts` 0.36.2, licence
+photon draws with the fonts egui embeds (`epaint_default_fonts` 0.36.2, licence
 "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0"), compiled into the program. Each font
 and its licence, as that package ships them:
 

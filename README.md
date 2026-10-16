@@ -478,7 +478,7 @@ cargo run -p xtask -- native-shot   # pictures of the window, drawn off screen, 
 ```
 
 The installers are built by `cargo run -p xtask -- package` (`deb`, `appimage`, `dmg`,
-`msi`), as the `native-packages` workflow does on each platform.
+`msi`), as the `release` workflow does on each platform.
 
 Before each release, run the [manual smoke checklist](docs/smoke-checklist.md) on each OS.
 
