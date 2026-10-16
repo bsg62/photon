@@ -197,7 +197,11 @@ fn deleting_the_album_on_screen_goes_to_all_photos() {
     driver.until(&mut harness, "All photos shown", |app| {
         app.settled() == &Place::of(GridView::All) && app.photos() == 900 && !app.busy()
     });
-    assert!(album_names(harness.state()).is_empty());
+    // The lists are read after the delete's answer, which can land after All photos has:
+    // asserted at once, Windows' runner found the album still listed.
+    driver.until(&mut harness, "the album gone from the lists", |app| {
+        album_names(app).is_empty()
+    });
 }
 
 // A saved search is a name over a query: deleting it leaves the grid alone, the photos
