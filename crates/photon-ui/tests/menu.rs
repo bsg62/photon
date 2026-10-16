@@ -305,10 +305,10 @@ fn a_write_the_engine_refuses_is_a_message_and_the_selection_stands() {
     let ids = photo_ids(&library);
     let (mut harness, mut driver) = opened(&library, 900);
     right_click(&mut driver, &mut harness, 4);
-    // From the keyboard: down past "Copy photo", the first item that works, to the
-    // star, and Enter.
-    key(&mut driver, &mut harness, Key::ArrowDown, Modifiers::NONE);
-    key(&mut driver, &mut harness, Key::ArrowDown, Modifiers::NONE);
+    // From the keyboard: down past Reveal, Open and "Copy photo" to the star, and Enter.
+    for _ in 0..4 {
+        key(&mut driver, &mut harness, Key::ArrowDown, Modifiers::NONE);
+    }
     key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
     assert!(!harness.state().menu_open());
     driver.until(&mut harness, "the message", |app| !app.toasts().is_empty());

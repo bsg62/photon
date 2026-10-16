@@ -32,20 +32,11 @@ pub enum SideAction {
     },
 }
 
-impl SideAction {
-    /// Whether the item works yet. The file manager is the platform's, a later
-    /// sub-project's: its item is in its place and takes no press, so that nothing
-    /// moves under a hand that has learnt where it is when it starts to work.
-    pub fn works(&self) -> bool {
-        !matches!(self, Self::RevealFolder(_))
-    }
-}
-
 fn pick(label: &str, look: Look, works: bool, does: SideAction) -> Item<SideAction> {
     Item::Pick {
         label: label.to_owned(),
         hint: None,
-        works: works && does.works(),
+        works,
         look,
         does,
     }
@@ -196,7 +187,7 @@ mod tests {
             lines(&menu),
             [
                 "Rescan",
-                "Reveal in file manager (off)",
+                "Reveal in file manager",
                 "Rename in photon…",
                 "Hide folder",
             ]
@@ -230,7 +221,7 @@ mod tests {
             lines(&menu),
             [
                 "Rescan",
-                "Reveal in file manager (off)",
+                "Reveal in file manager",
                 "Rename in photon…",
                 "Use folder name",
                 "Hide folder",
@@ -264,26 +255,6 @@ mod tests {
         });
         assert_eq!(lines(&menu)[0], "Rescan (off)");
         assert_eq!(lines(&menu)[2], "Rename in photon…");
-    }
-
-    #[test]
-    fn what_is_the_platforms_does_not_work_yet() {
-        assert!(!SideAction::RevealFolder(1).works());
-        for action in [
-            SideAction::DeleteAlbum(1),
-            SideAction::DeleteSearch(1),
-            SideAction::RenameAlbum(1),
-            SideAction::RenameSearch(1),
-            SideAction::Rescan { watched: 1 },
-            SideAction::RenameFolder(1),
-            SideAction::UseFolderName(1),
-            SideAction::HideFolder {
-                folder: 1,
-                hidden: true,
-            },
-        ] {
-            assert!(action.works(), "{action:?}");
-        }
     }
 
     // The words are the Svelte menus': read out of the components that draw them.

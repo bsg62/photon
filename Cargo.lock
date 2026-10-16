@@ -5292,6 +5292,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+ "open",
  "parking_lot",
  "photon-core",
  "photon-engine",
@@ -5305,10 +5306,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-bidi",
+ "url",
  "webp",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-sys 0.52.0",
+ "zbus",
 ]
 
 [[package]]

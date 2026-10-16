@@ -17,7 +17,10 @@
 //! on Linux: built there it must have GTK or the portal and refuses both at once, and in a
 //! build of the whole workspace Tauri's dialog plugin asks for GTK.
 
-use std::path::PathBuf;
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 
 /// What is said where no picker could be opened: the field is the way that is left.
 pub const NO_PICKER: &str =
@@ -40,6 +43,13 @@ pub trait Platform: Send + Sync + 'static {
 
     /// A picture, `width` by `height` in RGBA, put on the clipboard; or why not.
     fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String>;
+
+    /// `path` shown in the system's file manager, selected in its folder; or why not.
+    fn reveal(&self, path: &Path) -> Result<(), String>;
+
+    /// `target` - a file, or a web address - opened by whatever the system opens it with.
+    /// photon registers no file types, so a photo is never opened in photon itself.
+    fn open(&self, target: &OsStr) -> Result<(), String>;
 }
 
 /// The system photon runs on.
@@ -51,6 +61,14 @@ pub struct System {
 impl Platform for System {
     fn copy_image(&self, width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String> {
         self.clipboard.copy_image(width, height, rgba)
+    }
+
+    fn reveal(&self, path: &Path) -> Result<(), String> {
+        reveal(path)
+    }
+
+    fn open(&self, target: &OsStr) -> Result<(), String> {
+        open::that_detached(target).map_err(|err| format!("Couldn't open it: {err}"))
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -147,6 +165,95 @@ fn keeper() -> std::sync::mpsc::Sender<Job> {
         tracing::error!(%err, "the clipboard's thread could not start");
     }
     jobs
+}
+
+/// `path` shown in Explorer, selected: the shell's own call, as Tauri's opener makes it, on
+/// a thread that has made COM ready. Where the shell cannot select it - Electron's note
+/// says the call fails "mysteriously" with "file not found" on some systems, where Tauri's
+/// opener opens the folder; here any failure does, the path having been found before -
+/// its folder is opened instead.
+#[cfg(target_os = "windows")]
+fn reveal(path: &Path) -> Result<(), String> {
+    use windows::{
+        Win32::{
+            System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
+            UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
+        },
+        core::HSTRING,
+    };
+    let folder = path.parent().unwrap_or(path);
+    // SAFETY: called on this thread before any other COM call it makes; a second call on
+    // a thread already ready answers so, which is no error here.
+    let ready = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let (folder_name, path_name) = (HSTRING::from(folder), HSTRING::from(path));
+    // SAFETY: both strings outlive the calls, and each list made is freed below.
+    let (folder_item, path_item) = unsafe {
+        (
+            ILCreateFromPathW(&folder_name),
+            ILCreateFromPathW(&path_name),
+        )
+    };
+    let shown = if folder_item.is_null() || path_item.is_null() {
+        Err(())
+    } else {
+        // SAFETY: both lists are the shell's own, alive until they are freed below.
+        unsafe { SHOpenFolderAndSelectItems(folder_item, Some(&[path_item.cast_const()]), 0) }
+            .map_err(|_| ())
+    };
+    // SAFETY: each is a list the shell made above, or null, which `ILFree` passes over.
+    unsafe {
+        ILFree(Some(folder_item.cast_const()));
+        ILFree(Some(path_item.cast_const()));
+    }
+    let shown = shown.or_else(|()| {
+        open::that_detached(folder).map_err(|err| format!("Couldn't show it in Explorer: {err}"))
+    });
+    if ready {
+        // SAFETY: balances the `CoInitializeEx` above, on the same thread, after its last
+        // COM call.
+        unsafe { windows::Win32::System::Com::CoUninitialize() };
+    }
+    shown
+}
+
+/// `path` shown in the Finder, selected: `open -R`, the Finder's own way to be asked.
+#[cfg(target_os = "macos")]
+fn reveal(path: &Path) -> Result<(), String> {
+    let shown = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .status();
+    match shown {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("Couldn't show it in the Finder ({status}).")),
+        Err(err) => Err(format!("Couldn't show it in the Finder: {err}")),
+    }
+}
+
+/// `path` shown in the file manager, selected: the file manager's own D-Bus interface,
+/// which every desktop's file manager answers, as Tauri's opener asks it; where none
+/// answers, its folder opened by whatever opens folders.
+#[cfg(target_os = "linux")]
+fn reveal(path: &Path) -> Result<(), String> {
+    let shown = (|| {
+        let uri = url::Url::from_file_path(path).map_err(|()| "no file path".to_owned())?;
+        let connection = zbus::blocking::Connection::session().map_err(|err| err.to_string())?;
+        connection
+            .call_method(
+                Some("org.freedesktop.FileManager1"),
+                "/org/freedesktop/FileManager1",
+                Some("org.freedesktop.FileManager1"),
+                "ShowItems",
+                &(vec![uri.as_str()], ""),
+            )
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    })();
+    shown.or_else(|err| {
+        tracing::warn!(%err, "no file manager answered: opening the folder");
+        let folder = path.parent().unwrap_or(path);
+        open::that_detached(folder).map_err(|err| format!("Couldn't show it: {err}"))
+    })
 }
 
 /// How long the portal is given to open its picker.

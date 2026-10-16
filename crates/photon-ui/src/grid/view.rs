@@ -168,6 +168,8 @@ pub enum Ask {
     Compare,
     /// Ctrl/Cmd+C: copy the one photo selected to the clipboard.
     Copy,
+    /// Ctrl/Cmd+Shift+R: show the one photo selected in the system's file manager.
+    Reveal,
 }
 
 /// The keys of this frame that are the grid's, in the order they were pressed, each with
@@ -210,6 +212,9 @@ fn grid_keys(input: &egui::InputState) -> Vec<(GridKey, bool)> {
         let types_period = !modifiers.shift || *physical_key != Some(Key::Period);
         let grid_key = match key {
             Key::A if modifiers.command && !modifiers.alt => GridKey::SelectAll,
+            Key::R if modifiers.command && modifiers.shift && !modifiers.alt && !repeat => {
+                GridKey::Ask(Ask::Reveal)
+            }
             _ if chord => continue,
             Key::ArrowLeft => GridKey::Move(NavKey::Left),
             Key::ArrowRight => GridKey::Move(NavKey::Right),

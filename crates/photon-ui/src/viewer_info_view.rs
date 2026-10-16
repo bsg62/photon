@@ -78,6 +78,8 @@ pub enum InfoAction {
         id: i64,
         on: bool,
     },
+    /// The place the photo was taken, on OpenStreetMap in the browser.
+    Map,
 }
 
 #[derive(Default)]
@@ -329,8 +331,10 @@ impl InfoView {
                 page.actions.push(nearby);
             }
             flow.words(ui, page, "·", dim);
-            // The system's opener is a later sub-project's: in its place, and no link.
-            flow.words(ui, page, "Open in OpenStreetMap", dim);
+            let map = Id::new("viewer-info-map");
+            if flow.link(ui, page, map, "Open in OpenStreetMap") {
+                page.actions.push(InfoAction::Map);
+            }
             flow.end(page);
         }
 
@@ -1386,9 +1390,9 @@ mod tests {
             f.press("Photos nearby"),
             [InfoAction::Search("near:48.1374,11.5755".to_owned())]
         );
+        assert_eq!(f.press("Open in OpenStreetMap"), [InfoAction::Map]);
         for words in [
             "50 mm · f/1.8 · 1/250 s · ISO 400",
-            "Open in OpenStreetMap",
             "Camera",
             "IMG_0412.jpg",
             "Jun 15, 2024, 12:30 PM",

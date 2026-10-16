@@ -23,20 +23,11 @@ pub enum ViewerPick {
     Hide(bool),
 }
 
-impl ViewerPick {
-    /// Whether the item works yet. The file manager and the system's own application
-    /// for a file are a later sub-project's: their items are in their places and take no
-    /// press, so that nothing moves under a hand when they begin to work.
-    pub fn works(&self) -> bool {
-        !matches!(self, Self::Reveal | Self::OpenInApp)
-    }
-}
-
 fn plain(label: String, hint: Option<&'static str>, does: ViewerPick) -> Item<ViewerPick> {
     Item::Pick {
         label,
         hint,
-        works: does.works(),
+        works: true,
         look: Look::Plain,
         does,
     }
@@ -110,8 +101,8 @@ mod tests {
             lines(&viewer_menu(&[], false)),
             [
                 line("Locate in photon", true),
-                line("Reveal in file manager", false),
-                line("Open in default app", false),
+                line("Reveal in file manager", true),
+                line("Open in default app", true),
                 line("Hide photo", true),
             ]
         );

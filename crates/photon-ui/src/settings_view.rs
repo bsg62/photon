@@ -1277,14 +1277,19 @@ impl SettingsView {
         } else if rescan.clicked() {
             page.asked.push(Asked::Rescan(folder.id));
         }
-        // Reveal waits for a later sub-project, as every Reveal of the native window.
-        button(
+        // In the system's file manager - the likeliest of all to meet a drive that is
+        // gone, Settings offering it for a folder that is offline.
+        let reveal = button(
             ui,
             reveal_at,
             Id::new(("settings-reveal", folder.id)),
             watched_list::REVEAL,
-            Look::Off,
+            // Not of a folder whose removal is on its way, as its other buttons are not.
+            if folder.going { Look::Off } else { Look::Plain },
         );
+        if reveal.clicked() {
+            page.asked.push(Asked::RevealWatched(folder.id));
+        }
         let look = if folder.going { Look::Off } else { Look::Warn };
         let remove = button(
             ui,
@@ -1715,8 +1720,7 @@ impl SettingsView {
         let at = term.pair(ui, page, VERSION, line, false);
         value(ui, page, at, &version, palette.text, &font);
 
-        // The library's path, cut short to the room beside its Reveal, which waits for
-        // a later part of the native interface and takes no press.
+        // The library's path, cut short to the room beside its Reveal.
         let at = term.pair(ui, page, LIBRARY, CONTROL, true);
         let reveal = button_width(ui, REVEAL);
         let reveal_at =
@@ -1727,14 +1731,17 @@ impl SettingsView {
             pos2(reveal_at.left() - S[1], at.bottom()),
         );
         value(ui, page, path_at, &about.library, palette.text, &font);
-        if page.sees(reveal_at) {
-            button(
+        if page.sees(reveal_at)
+            && button(
                 ui,
                 reveal_at,
                 Id::new("settings-reveal-library"),
                 REVEAL,
-                Look::Off,
-            );
+                Look::Plain,
+            )
+            .clicked()
+        {
+            page.asked.push(Asked::RevealLibrary);
         }
 
         if let Some(memory) = settings.memory {
@@ -2045,7 +2052,7 @@ mod tests {
         assert!(f.drew(&about().library).is_some());
         assert!(f.drew("MIT").is_some());
         assert!(f.drew(MEMORY).is_none(), "no memory before it is read");
-        assert_eq!(asked(f.click(f.at(REVEAL))), []);
+        assert_eq!(asked(f.click(f.at(REVEAL))), [Asked::RevealLibrary]);
         the(&mut f).memory = Some(Memory {
             bytes: 350 * 1_048_576,
             processes: 1,
@@ -2090,6 +2097,17 @@ mod tests {
             .min_by(|a, b| (a.y - y).abs().total_cmp(&(b.y - y).abs()))
             .unwrap_or_else(|| panic!("no {label}"))
     }
+    // A folder whose removal is on its way offers nothing: its Reveal no more than its
+    // Rescan and Remove… - pressed after the folder was gone, it said the library's "not
+    // found".
+    #[test]
+    fn a_folder_being_removed_offers_no_reveal() {
+        let mut f = folders();
+        the(&mut f).seen.folders[0].going = true;
+        f.frame(Vec::new());
+        let at = on_row(&f, "f1", watched_list::REVEAL);
+        assert_eq!(asked(f.click(at)), []);
+    }
 
     // Each folder's row: its name, path and what is said of it, Rescan - no press while
     // it is scanned - Reveal in its place, and Remove…, which its row asks.
@@ -2104,7 +2122,7 @@ mod tests {
         let at = on_row(&f, "f2", RESCAN);
         assert_eq!(asked(f.click(at)), [], "being scanned");
         let at = on_row(&f, "f1", watched_list::REVEAL);
-        assert_eq!(asked(f.click(at)), [], "waits for a later sub-project");
+        assert_eq!(asked(f.click(at)), [Asked::RevealWatched(1)]);
         let at = on_row(&f, "f2", watched_list::REMOVE);
         assert_eq!(
             asked(f.click(at)),

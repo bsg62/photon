@@ -246,6 +246,10 @@ pub enum Asked {
     AddOpen,
     /// "Choose…" beside the field: the system's folder picker.
     AddChoose,
+    /// A watched folder's "Reveal": shown in the system's file manager.
+    RevealWatched(i64),
+    /// About's "Reveal": the library's file shown in the system's file manager.
+    RevealLibrary,
     /// What the field holds now.
     AddPath(String),
     /// The path that has passed is to be added: Enter, or "Add".

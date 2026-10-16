@@ -19,6 +19,7 @@ mod faces;
 mod faces_edges;
 mod lists;
 mod menu;
+mod opener;
 mod people;
 mod pickers;
 mod playback;
