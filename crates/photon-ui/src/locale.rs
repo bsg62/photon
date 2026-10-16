@@ -36,9 +36,18 @@ const ENGLISH: &str = "en-US";
 
 impl Locale {
     /// The formatters of the locale `tag` - a BCP 47 name, "de-DE" - or none where it is
-    /// not one. A locale ICU4X has no data of its own for falls back to its language's,
-    /// then to the root's, as a browser's does.
+    /// not one, or is one ICU4X has no words of its own for. ICU4X falls back from a
+    /// region to its language, and from a language it has nothing of to the root - "2026
+    /// M10 4", which is nobody's way of writing a date - where a browser falls back to its
+    /// own default: none here, and the caller takes English.
     pub fn of(tag: &str) -> Option<Self> {
+        let made = Self::made(tag)?;
+        let root = Self::made("und")?;
+        let probe = |locale: &Self| locale.month_year((2026, 1, 15));
+        (made.tag == "und" || probe(&made) != probe(&root)).then_some(made)
+    }
+
+    fn made(tag: &str) -> Option<Self> {
         let parsed: Tag = tag.parse().ok()?;
         let prefs = || (&parsed).into();
         Some(Self {
@@ -73,9 +82,12 @@ impl Locale {
         &self.tag
     }
 
-    /// A month of a year: "October 2026", "Oktober 2026".
-    pub fn month_year(&self, year: i32, month: u8) -> Option<String> {
-        let date = Date::try_new_iso(year, month, 1).ok()?;
+    /// The month of a year a day stands in: "October 2026", "Oktober 2026". Of that day,
+    /// and not of the month's first: a locale whose calendar is not the Gregorian one -
+    /// Persian, where a month turns round the 21st - puts other days of one Gregorian
+    /// month in another of its own.
+    pub fn month_year(&self, (year, month, day): (i32, u8, u8)) -> Option<String> {
+        let date = Date::try_new_iso(year, month, day).ok()?;
         Some(plain(self.month_year.format(&date)))
     }
 
@@ -85,10 +97,11 @@ impl Locale {
         Some(plain(self.day.format(&date)))
     }
 
-    /// A day of the year in no year: "October 4", "4. Oktober". In a leap year, so that
-    /// the 29th of February is one.
-    pub fn day_month(&self, month: u8, day: u8) -> Option<String> {
-        let date = Date::try_new_iso(2000, month, day).ok()?;
+    /// A day's day and month: "October 4", "4. Oktober". Of the real day, year and all:
+    /// in another calendar the same Gregorian day and month fall on another day of its
+    /// own from year to year.
+    pub fn day_month(&self, (year, month, day): (i32, u8, u8)) -> Option<String> {
+        let date = Date::try_new_iso(year, month, day).ok()?;
         Some(plain(self.day_month.format(&date)))
     }
 
@@ -139,8 +152,25 @@ pub fn set(locale: Locale) {
     *current = Some(Arc::new(locale));
 }
 
+#[cfg(test)]
+thread_local! {
+    static THIS_THREAD: std::cell::RefCell<Option<Arc<Locale>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A test's own locale, on its own thread: the process's would be every test's, and under
+/// `cargo test`, whose tests share a process, one test's German would be another's.
+#[cfg(test)]
+pub(crate) fn for_this_thread(locale: Option<Locale>) {
+    THIS_THREAD.with(|this| *this.borrow_mut() = locale.map(Arc::new));
+}
+
 /// The locale photon writes in: English until one is set.
 pub fn current() -> Arc<Locale> {
+    #[cfg(test)]
+    if let Some(locale) = THIS_THREAD.with(|this| this.borrow().clone()) {
+        return locale;
+    }
     if let Some(locale) = (CURRENT.read())
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
@@ -162,24 +192,47 @@ mod tests {
     #[test]
     fn dates_are_written_as_the_locale_writes_them() {
         let en = Locale::of("en-US").unwrap();
-        assert_eq!(en.month_year(2026, 10).unwrap(), "October 2026");
+        assert_eq!(en.month_year((2026, 10, 4)).unwrap(), "October 2026");
         assert_eq!(en.day(2026, 10, 4).unwrap(), "Sunday, October 4, 2026");
-        assert_eq!(en.day_month(10, 4).unwrap(), "October 4");
+        assert_eq!(en.day_month((2026, 10, 4)).unwrap(), "October 4");
         assert_eq!(
             en.date_time((2026, 10, 4), (12, 30)).unwrap(),
             "Oct 4, 2026, 12:30 PM"
         );
         let de = Locale::of("de-DE").unwrap();
-        assert_eq!(de.month_year(2026, 10).unwrap(), "Oktober 2026");
+        assert_eq!(de.month_year((2026, 10, 4)).unwrap(), "Oktober 2026");
         assert_eq!(de.day(2026, 10, 4).unwrap(), "Sonntag, 4. Oktober 2026");
-        assert_eq!(de.day_month(10, 4).unwrap(), "4. Oktober");
+        assert_eq!(de.day_month((2026, 10, 4)).unwrap(), "4. Oktober");
         assert_eq!(
             de.date_time((2026, 10, 4), (12, 30)).unwrap(),
             "04.10.2026, 12:30"
         );
         // A day no calendar holds is no date.
         assert_eq!(de.day(2026, 2, 30), None);
-        assert_eq!(de.day_month(2, 29).unwrap(), "29. Februar");
+        assert_eq!(de.day_month((2024, 2, 29)).unwrap(), "29. Februar");
+    }
+
+    // A locale ICU4X has no words for is no locale here, and the caller writes English:
+    // ICU4X's own fallback, the root's "2026 M10", is nobody's.
+    #[test]
+    fn a_locale_icu4x_has_nothing_of_is_none() {
+        assert!(Locale::of("xx-YY").is_none());
+        assert!(Locale::of("la").is_none());
+        assert!(
+            Locale::of("de-AT").is_some(),
+            "a region of a language it has"
+        );
+    }
+
+    // A calendar that is not the Gregorian one names a day's own month and day: in the
+    // Persian, the 25th of October 2026 is in Aban and the 4th in Mehr, and a day and
+    // month fall elsewhere from year to year (a review found both written from a month's
+    // first day, or a year 2000).
+    #[test]
+    fn a_month_and_a_day_are_of_the_real_day_in_another_calendar() {
+        let fa = Locale::of("fa-IR").unwrap();
+        assert_ne!(fa.month_year((2026, 10, 4)), fa.month_year((2026, 10, 25)));
+        assert_ne!(fa.day_month((2026, 3, 20)), fa.day_month((2000, 3, 20)));
     }
 
     #[test]

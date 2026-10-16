@@ -50,9 +50,6 @@ pub struct Driver {
 
 impl Driver {
     pub fn new(harness: &Harness<'_>) -> Self {
-        // English, whatever the machine running the test writes in: the application set
-        // the system's as it was made, and a test's words are English ones.
-        photon_ui::locale::set(photon_ui::locale::Locale::english());
         let clock = Arc::new(Mutex::new(0.0_f64));
         // The application was made before anyone listened: its first frame is due.
         let due = Arc::new(Mutex::new(Some(0.0_f64)));

@@ -54,6 +54,7 @@ pub struct Counts {
 /// zone between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Today {
+    pub year: i32,
     pub month: u32,
     pub day: u32,
 }
@@ -69,7 +70,7 @@ impl Today {
     pub fn label(self) -> String {
         let (month, day) = (u8::try_from(self.month), u8::try_from(self.day));
         (month.ok().zip(day.ok()))
-            .and_then(|(month, day)| crate::locale::current().day_month(month, day))
+            .and_then(|(month, day)| crate::locale::current().day_month((self.year, month, day)))
             .unwrap_or_default()
     }
 }
@@ -186,7 +187,11 @@ pub fn fixed_rows(counts: &Counts, at: &Place, today: Today) -> Vec<Row> {
 mod tests {
     use super::*;
 
-    const TODAY: Today = Today { month: 7, day: 4 };
+    const TODAY: Today = Today {
+        year: 2026,
+        month: 7,
+        day: 4,
+    };
 
     fn kinds(rows: &[Row]) -> Vec<Fixed> {
         rows.iter().map(|row| row.what).collect()
@@ -316,7 +321,15 @@ mod tests {
         assert_eq!(TODAY.query(), "on:07-04");
         // As English writes a day of the year (the locale's, `locale.rs`).
         assert_eq!(TODAY.label(), "July 4");
-        assert_eq!(Today { month: 12, day: 25 }.query(), "on:12-25");
+        assert_eq!(
+            Today {
+                year: 2026,
+                month: 12,
+                day: 25
+            }
+            .query(),
+            "on:12-25"
+        );
         assert_eq!(
             Fixed::OnThisDay.step(TODAY),
             Some(Step::Search("on:07-04".to_owned()))

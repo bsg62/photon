@@ -37,7 +37,12 @@ pub fn folder_summary(count: usize, taken_at_min: i64, zone: &TimeZone) -> Strin
         Ok(instant) => {
             let local = instant.to_zoned(zone.clone());
             let locale = crate::locale::current();
-            match locale.month_year(i32::from(local.year()), local.month().unsigned_abs()) {
+            let day = (
+                i32::from(local.year()),
+                local.month().unsigned_abs(),
+                local.day().unsigned_abs(),
+            );
+            match locale.month_year(day) {
                 Some(month) => format!("{count} · {month}"),
                 None => count,
             }
@@ -61,8 +66,9 @@ pub fn period_label(period: Period) -> String {
     let locale = crate::locale::current();
     // A day no calendar holds - the library's numbers, not a date - is its month.
     let day = period.day.and_then(|day| u8::try_from(day).ok());
+    // A month's own header is its first day's month, as the Svelte grouping wrote it.
     (day.and_then(|day| locale.day(at, month, day)))
-        .or_else(|| locale.month_year(at, month))
+        .or_else(|| locale.month_year((at, month, 1)))
         .unwrap_or(year)
 }
 
@@ -147,5 +153,26 @@ mod tests {
         assert_eq!(format_duration(754_000), "12:34");
         assert_eq!(format_duration(3_723_000), "1:02:03");
         assert_eq!(format_duration(-5), "0:00");
+    }
+
+    // A folder's month is the month its oldest photo stands in, in the locale's calendar:
+    // in the Persian one the 25th of October 2026 is in Aban, the 1st in Mehr - written
+    // from the month's first day, the folder said the month before (a review).
+    #[test]
+    fn a_folders_month_is_its_photos_own_in_the_locales_calendar() {
+        crate::locale::for_this_thread(crate::locale::Locale::of("fa-IR"));
+        let at = |day: i8| {
+            jiff::civil::date(2026, 10, day)
+                .to_zoned(TimeZone::UTC)
+                .unwrap()
+                .timestamp()
+                .as_second()
+        };
+        let (early, late) = (
+            folder_summary(3, at(1), &TimeZone::UTC),
+            folder_summary(3, at(25), &TimeZone::UTC),
+        );
+        crate::locale::for_this_thread(None);
+        assert_ne!(early, late);
     }
 }
