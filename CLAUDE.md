@@ -71,10 +71,12 @@ cargo run -p xtask -- metadata            # licence and installer metadata are c
 **Seeing the window without launching it**: `cargo run -p xtask -- native-shot` draws it
 off screen into `target/screenshots/native-*.png` (needs a GPU adapter, no display; not in
 CI - below, "The window"). The project website (`site/`, deployed to photon.webcodr.io by
-`pages.yml`) shows the interface with the CC0 photos in `crates/xtask/screenshots/photos`
-(credited in their `CREDITS.md`), as `site/img/*.webp` (`magick x.png -quality 85 x.webp`)
-and the link preview `site/img/og.jpg` at quality 88. Its pictures are still the Svelte
-UI's until the switch-over's pictures pull request draws them with `native-shot`.
+`pages.yml`) shows three of these pictures, drawn at its 1280 by 800 over the CC0 photos in
+`crates/xtask/screenshots/photos` (credited in their `CREDITS.md`): `native-site-main-light`,
+`native-site-main-dark` and `native-site-viewer-info-light`, as `site/img/*.webp` (`magick
+x.png -quality 85 x.webp`), and the first as the link preview `site/img/og.jpg` at quality
+88. The site's colours and icons are held to the app's by `tokens.rs`'s and `icons.rs`'s
+tests.
 
 `cargo run -p photon-ui` runs the window. **Do not run it to verify a change** - see
 Conventions.

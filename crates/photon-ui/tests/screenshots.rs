@@ -1,10 +1,11 @@
 //! The window as it is drawn, written to PNG without a window: the application itself,
-//! over a library made of the CC0 photos the Svelte screenshots use (credited in their
-//! `CREDITS.md`), rendered off screen through wgpu.
+//! over a library made of the CC0 photos in `crates/xtask/screenshots/photos` (credited in
+//! their `CREDITS.md`), rendered off screen through wgpu. The website's pictures are three
+//! of them (`native-site-*`).
 //!
 //! Ignored by default - it needs a GPU adapter, which a CI runner need not have - and run
-//! by `cargo run -p xtask -- native-shot`. Like `xtask screenshots` it replaces no item of
-//! the smoke checklist: it is one renderer's picture, read by whoever runs it.
+//! by `cargo run -p xtask -- native-shot`. It replaces no item of the smoke checklist: it
+//! is one renderer's picture, read by whoever runs it.
 //!
 //! Three of the folders are named in other scripts on purpose. What their headers show is
 //! what the pull request reports about text (`src/text.rs`).
@@ -37,8 +38,55 @@ fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Copies the photos into the four folders under `pictures`.
-fn library(pictures: &Path) {
+/// What a picture's library and window hold beyond the four folders, at the size most
+/// pictures are drawn at.
+#[derive(Clone, Copy)]
+struct Setup {
+    size: egui::Vec2,
+    /// Two videos at the end of the first folder, played by `Films`.
+    videos: bool,
+    /// A copy of the first folder's first photo, the last of the second folder's.
+    copy: bool,
+}
+
+const WINDOW: Setup = Setup {
+    size: vec2(1280.0, 1000.0),
+    videos: false,
+    copy: false,
+};
+
+/// The website's pictures (`site/img`), which stand 1280 by 800 in its page.
+const SITE: Setup = Setup {
+    size: vec2(1280.0, 800.0),
+    ..WINDOW
+};
+
+impl Setup {
+    /// How many photos and videos the library holds.
+    fn total(&self) -> usize {
+        let photos: usize = FOLDERS.iter().map(|(_, count, _)| count).sum();
+        photos + 2 * usize::from(self.videos) + usize::from(self.copy)
+    }
+}
+
+/// Dates a file `minutes` after noon of `day`, UTC.
+fn date(path: &Path, (year, month, day): (i16, i8, i8), minutes: u64) {
+    let noon = jiff::civil::date(year, month, day)
+        .at(12, 0, 0, 0)
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .timestamp();
+    let at = std::time::SystemTime::from(noon) + Duration::from_secs(60 * minutes);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(at)
+        .unwrap();
+}
+
+/// Copies the photos into the four folders under `pictures`, and what `setup` adds.
+fn library(pictures: &Path, setup: Setup) {
     let source = manifest().join("../xtask/screenshots/photos");
     let mut photos: Vec<PathBuf> = std::fs::read_dir(&source)
         .unwrap_or_else(|err| panic!("{}: {err}", source.display()))
@@ -50,23 +98,128 @@ fn library(pictures: &Path) {
     for (folder, count, (year, month, day)) in FOLDERS {
         let folder = pictures.join(folder);
         std::fs::create_dir_all(&folder).unwrap();
-        let noon = jiff::civil::date(year, month, day)
-            .at(12, 0, 0, 0)
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .unwrap()
-            .timestamp();
         for (n, photo) in photos.by_ref().take(count).enumerate() {
             let copy = folder.join(photo.file_name().unwrap());
             std::fs::copy(&photo, &copy).unwrap();
             // A photo every ten minutes from noon.
-            let taken = std::time::SystemTime::from(noon) + Duration::from_secs(600 * n as u64);
-            std::fs::File::options()
-                .write(true)
-                .open(&copy)
-                .unwrap()
-                .set_modified(taken)
-                .unwrap();
+            date(&copy, (year, month, day), 10 * n as u64);
         }
+    }
+    let (first, _, first_day) = FOLDERS[0];
+    if setup.videos {
+        // The video tests' own files, so that the library reads a size and a length from
+        // each; what they show is `Films`'s, a photo, and not their test patterns.
+        for (n, (name, fixture)) in [("Waves.mp4", "h264.mp4"), ("Harbour.mp4", "hevc.mp4")]
+            .into_iter()
+            .enumerate()
+        {
+            let path = pictures.join(first).join(name);
+            std::fs::copy(manifest().join("tests/video").join(fixture), &path).unwrap();
+            date(&path, first_day, 120 + 10 * n as u64);
+        }
+    }
+    if setup.copy {
+        let (second, _, second_day) = FOLDERS[1];
+        let mut firsts: Vec<PathBuf> = std::fs::read_dir(pictures.join(first))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jpg"))
+            .collect();
+        firsts.sort();
+        let path = pictures.join(second).join("copy of the coast.jpg");
+        std::fs::copy(&firsts[0], &path).unwrap();
+        date(&path, second_day, 120);
+    }
+}
+
+/// A stand-in for the system's video: every poster and every frame is a photo of the
+/// library's, so that a video looks like one in a picture on any machine - this one has
+/// no decoder for an MP4, and a CI runner need not have one either.
+struct Films(egui::ColorImage);
+
+impl Films {
+    fn new() -> std::sync::Arc<Self> {
+        let source = manifest().join("../xtask/screenshots/photos");
+        let mut photos: Vec<PathBuf> = std::fs::read_dir(&source)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jpg"))
+            .collect();
+        photos.sort();
+        let photo = image::open(photos.last().unwrap()).unwrap().to_rgba8();
+        // Sixteen by nine, as a video is.
+        let (width, height) = (photo.width(), photo.width() * 9 / 16);
+        let top = (photo.height().saturating_sub(height)) / 2;
+        let frame =
+            image::imageops::crop_imm(&photo, 0, top, width, height.min(photo.height())).to_image();
+        std::sync::Arc::new(Films(egui::ColorImage::from_rgba_unmultiplied(
+            [frame.width() as usize, frame.height() as usize],
+            frame.as_raw(),
+        )))
+    }
+
+    fn picture(&self, at: f64) -> photon_ui::video::Picture {
+        photon_ui::video::Picture {
+            width: self.0.size[0] as u32,
+            height: self.0.size[1] as u32,
+            at,
+            rgba: self.0.as_raw().to_vec(),
+        }
+    }
+}
+
+impl photon_ui::video::Videos for Films {
+    fn can_play(&self) -> bool {
+        true
+    }
+
+    fn poster(
+        &self,
+        _: &Path,
+        at: f64,
+    ) -> Result<photon_ui::video::Picture, photon_ui::video::Failure> {
+        Ok(self.picture(at))
+    }
+
+    fn open(
+        &self,
+        _: &Path,
+    ) -> Result<Box<dyn photon_ui::video::Stream>, photon_ui::video::Failure> {
+        Ok(Box::new(Reel {
+            frame: std::sync::Mutex::new(Some(self.picture(13.0))),
+        }))
+    }
+}
+
+/// A player that stands thirteen seconds into a video of forty-two, playing, and hands
+/// over its one frame once.
+struct Reel {
+    frame: std::sync::Mutex<Option<photon_ui::video::Picture>>,
+}
+
+impl photon_ui::video::Stream for Reel {
+    fn ready(&self) -> bool {
+        true
+    }
+    fn play(&self) {}
+    fn pause(&self) {}
+    fn seek(&self, _: f64) {}
+    fn set_volume(&self, _: f64) {}
+    fn set_muted(&self, _: bool) {}
+    fn position(&self) -> Option<f64> {
+        Some(13.0)
+    }
+    fn duration(&self) -> Option<f64> {
+        Some(42.0)
+    }
+    fn ended(&self) -> bool {
+        false
+    }
+    fn failure(&self) -> Option<photon_ui::video::Failure> {
+        None
+    }
+    fn frame(&self) -> Option<photon_ui::video::Picture> {
+        self.frame.lock().unwrap().take()
     }
 }
 
@@ -79,10 +232,10 @@ type Harness<'a> = egui_kittest::Harness<'a, App>;
 /// device is made at a time; the pictures are drawn side by side all the same.
 static DEVICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A window of the pictures' size that renders through a GPU adapter, off screen.
-fn window(theme: Option<egui::Theme>) -> egui_kittest::HarnessBuilder<App> {
+/// A window of `size` that renders through a GPU adapter, off screen.
+fn window(theme: Option<egui::Theme>, size: egui::Vec2) -> egui_kittest::HarnessBuilder<App> {
     let builder = egui_kittest::Harness::builder()
-        .with_size(vec2(1280.0, 1000.0))
+        .with_size(size)
         .with_pixels_per_point(1.0);
     let builder = match theme {
         Some(theme) => builder.with_theme(theme),
@@ -138,9 +291,14 @@ fn shot(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>)) {
 /// The same, for a picture that needs something in the library no command puts there:
 /// `then` is handed the library's own file as well.
 fn shot_over(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>, &Path)) {
+    shot_of(theme, name, WINDOW, then);
+}
+
+/// The same, over a library and in a window `setup` says.
+fn shot_of(theme: ThemeChoice, name: &str, setup: Setup, then: impl Fn(&mut Harness<'_>, &Path)) {
     let dir = tempfile::tempdir().unwrap();
     let pictures = dir.path().join("Pictures");
-    library(&pictures);
+    library(&pictures, setup);
     let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
     // The theme twice. Stored, which is where the application reads it from before its
     // first frame; and given to the harness, which sets one of its own - dark, unless told -
@@ -156,10 +314,16 @@ fn shot_over(theme: ThemeChoice, name: &str, then: impl Fn(&mut Harness<'_>, &Pa
     };
     let db = dirs.db_path.clone();
 
-    let mut harness =
-        window(Some(harness_theme)).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
+    let mut harness = window(Some(harness_theme), setup.size).build_eframe(|cc| {
+        let app = App::new(cc, dirs, Some(pictures)).unwrap();
+        if setup.videos {
+            app.with_videos(Films::new())
+        } else {
+            app
+        }
+    });
 
-    let total: usize = FOLDERS.iter().map(|(_, count, _)| count).sum();
+    let total = setup.total();
     until(&mut harness, "the library shown", |app| {
         let shown = app.last_frame().is_some_and(|frame| frame.settled);
         app.photos() == total && app.folders().len() >= FOLDERS.len() && shown
@@ -718,8 +882,8 @@ fn native_empty_library_light() {
         .unwrap()
         .set_theme(ThemeChoice::Light)
         .unwrap();
-    let mut harness =
-        window(Some(egui::Theme::Light)).build_eframe(|cc| App::new(cc, dirs, None).unwrap());
+    let mut harness = window(Some(egui::Theme::Light), WINDOW.size)
+        .build_eframe(|cc| App::new(cc, dirs, None).unwrap());
     until(&mut harness, "the empty library's panel", |app| {
         app.panel().is_some()
     });
@@ -821,8 +985,8 @@ fn native_viewer_info_dark() {
 }
 
 /// The viewer with the faces of its photo outlined: Anna's, with her name on its plate,
-/// and one nobody has named. The rectangles are placed for the picture, as the Svelte
-/// pictures' are (`mock.js`): the first is on the woman the photo is of, the second on
+/// and one nobody has named. The rectangles are placed for the picture: the first is on
+/// the woman the photo is of, the second on
 /// the skyline beside her, where there is no face - it is there to show what an outline
 /// that can be pressed looks like.
 fn with_faces(harness: &mut Harness<'_>, db: &Path) {
@@ -1207,7 +1371,8 @@ fn native_viewer_quality() {
     std::fs::create_dir_all(&pictures).unwrap();
     plate.save(pictures.join("plate.png")).unwrap();
     let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
-    let mut harness = window(None).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
+    let mut harness =
+        window(None, WINDOW.size).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
     harness.input_mut().max_texture_side = Some(8192);
     until(&mut harness, "the photo shown", |app| {
         app.photos() == 1 && app.last_frame().is_some_and(|frame| frame.settled)
@@ -1494,4 +1659,179 @@ fn native_people_light() {
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
 fn native_people_dark() {
     shot_over(ThemeChoice::Dark, "native-people-dark.png", people);
+}
+
+/// Steps the application until AccessKit names `label`, which a sidebar row tells it.
+fn until_named(harness: &mut Harness<'_>, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while harness.query_by_label(label).is_none() {
+        assert!(Instant::now() < deadline, "never: {label}");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Steps until the grid has every thumbnail it shows, and has stopped asking for frames.
+fn thumbnails_in(harness: &mut Harness<'_>) {
+    until(harness, "the thumbnails", |app| {
+        app.last_frame()
+            .is_some_and(|frame| frame.settled && !frame.loading)
+    });
+    for _ in 0..10 {
+        harness.step();
+    }
+}
+
+// The smallest tiles: more of the library in the window, the headers as they are.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_small_light() {
+    shot(ThemeChoice::Light, "native-small-light.png", |harness| {
+        harness.get_by_label("Small").click();
+        harness.step();
+        thumbnails_in(harness);
+    });
+}
+
+// Scrolled into the second folder: its header pinned over the photos it heads, the
+// sidebar marking the folder at the top.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_pinned_header_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-pinned-header-dark.png",
+        |harness| {
+            let over = egui::pos2(800.0, 500.0);
+            harness.event(egui::Event::PointerMoved(over));
+            harness.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -260.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            });
+            for _ in 0..20 {
+                harness.step();
+            }
+            harness.event(egui::Event::PointerGone);
+            thumbnails_in(harness);
+        },
+    );
+}
+
+// Duplicates: a copy of a photo in another folder, both under their folders' headers,
+// the row in the sidebar with its count.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_duplicates_light() {
+    let setup = Setup {
+        copy: true,
+        ..WINDOW
+    };
+    shot_of(
+        ThemeChoice::Light,
+        "native-duplicates-light.png",
+        setup,
+        |harness, _| {
+            until_named(harness, "Duplicates");
+            harness.get_by_label("Duplicates").click();
+            until(harness, "the copies shown", |app| app.photos() == 2);
+            thumbnails_in(harness);
+        },
+    );
+}
+
+// A saved search opened from the sidebar: its words in the box, the photos that match.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_search_dark() {
+    shot(ThemeChoice::Dark, "native-search-dark.png", |harness| {
+        harness.get_by_label("Taken in July").click();
+        until(harness, "the search's photos", |app| {
+            app.photos() == FOLDERS[0].1
+        });
+        thumbnails_in(harness);
+    });
+}
+
+// The Videos view: each video's poster with its badge.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_videos_dark() {
+    let setup = Setup {
+        videos: true,
+        ..WINDOW
+    };
+    shot_of(
+        ThemeChoice::Dark,
+        "native-videos-dark.png",
+        setup,
+        |harness, _| {
+            until_named(harness, "Videos");
+            harness.get_by_label("Videos").click();
+            until(harness, "the videos shown", |app| app.photos() == 2);
+            thumbnails_in(harness);
+        },
+    );
+}
+
+// A video playing in the viewer: its frame, and the strip of its controls over the bar.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_video_light() {
+    let setup = Setup {
+        videos: true,
+        ..WINDOW
+    };
+    shot_of(
+        ThemeChoice::Light,
+        "native-viewer-video-light.png",
+        setup,
+        |harness, _| {
+            // The first folder's photos, then its two videos.
+            pick(harness, FOLDERS[0].1, Modifiers::NONE);
+            harness.key_press(Key::Enter);
+            until(harness, "the video's frame drawn", |app| {
+                app.video_frame().is_some()
+            });
+            // The controls stay while the pointer has just moved over the photo.
+            harness.event(egui::Event::PointerMoved(egui::pos2(640.0, 400.0)));
+            harness.step();
+        },
+    );
+}
+
+// The website's pictures (`site/img`, converted with `magick x.png -quality 85 x.webp`):
+// the main window in both themes and the viewer with its panel, at the page's 1280 by 800.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_site_main_light() {
+    shot_of(
+        ThemeChoice::Light,
+        "native-site-main-light.png",
+        SITE,
+        |harness, _| thumbnails_in(harness),
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_site_main_dark() {
+    shot_of(
+        ThemeChoice::Dark,
+        "native-site-main-dark.png",
+        SITE,
+        |harness, _| thumbnails_in(harness),
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_site_viewer_info_light() {
+    shot_of(
+        ThemeChoice::Light,
+        "native-site-viewer-info-light.png",
+        SITE,
+        with_faces,
+    );
 }
