@@ -4332,6 +4332,14 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// eframe keeps the window's size and place (`window.rs`), and with them egui's own
+    /// memory unless told not to: what photon remembers is in the library and in
+    /// `layout.json`, and a second record of it - an area's place, a field's text - would
+    /// be read back at the next launch over what the first one says.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     /// What the system says is held over the window and has dropped on it is taken out
     /// of the frame's input before egui reads it. egui asks for the next frame at once
     /// for as long as it is told that something is held (`InputState::

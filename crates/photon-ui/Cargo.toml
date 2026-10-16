@@ -35,7 +35,7 @@ photon-core = { path = "../photon-core" }
 photon-engine = { path = "../photon-engine" }
 # Pinned to the patch: egui changes behaviour, and its API, between releases. This is the
 # version `pch/rawmakase` ships on the same three platforms.
-eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "persistence", "wgpu", "wayland", "x11"] }
 # egui's SVG loader, for the icons.
 egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"] }
 # The platform's interface face, and an installed face for every script it lacks. MIT. Not

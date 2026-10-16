@@ -1437,6 +1437,18 @@ accessors are photon-core's and which the Tauri photon reads too. It is read bef
 first frame and written off the UI thread when the user changes one of the three; the
 width is stored as it was dragged and clamped where it is shown.
 
+**The window's own size and place are eframe's to keep** (`window.rs`; spec
+`2026-10-16-photon-native-platform-design.md`, the platform's): eframe's `persistence`
+feature writes them, maximized and fullscreen with them, into `window.ron` beside
+`library.db` as the window closes and every half minute, and puts the window back only
+where a monitor still is - on Wayland its size alone. egui's own memory is not kept
+(`persist_egui_memory`): photon keeps what it remembers itself, and egui's copy would be
+read back over it. A run asked to be fullscreen - the gate's - keeps nothing and is given
+nothing, since what eframe kept overrides the fullscreen asked for. A slideshow quit in the
+middle reopens fullscreen, as the Tauri photon does. The window's icon is the installers'
+PNG (`icons/photon-256.png`, held to the Tauri bundle's by a test until sub-project 8 moves
+the icons).
+
 **The sidebar is one list, drawn a window at a time** (`sidebar/list.rs`, a state module,
 and `sidebar/view.rs`). Every row is an `Entry` with what it is (`What`, its identity from
 frame to frame and what a click answers), and a height; `Stack` adds them up and the view
