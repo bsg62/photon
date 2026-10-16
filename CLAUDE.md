@@ -2064,8 +2064,8 @@ events, which is where the grid and the sidebar's menus read it, and the applica
 drops whatever the shell answers - a click that was over within that first frame was
 still a click on the sidebar's row. *The cross in the picker's corner shows the keyboard
 on it*, as every button does. Not closed, and known: a screen reader's press goes
-through a modal (egui's own, and not reachable until AccessKit is switched on); the
-picker lays out every keyword in every frame, which is slow in a library of thousands;
+through egui's modal, and the application's dropping of what the window answers under a
+dialog is what keeps it out (`tests/accesskit.rs`); the picker lays out every keyword in every frame, which is slow in a library of thousands;
 and a keyword's removal rule is dropped by adding that keyword again, as the engine has
 it.
 
@@ -2238,6 +2238,21 @@ folder opened where no file manager answers; Open is the `open` crate - `ShellEx
 shell as `\\server\share`. A video that cannot be played has its way out in the viewer's
 menu ("Open in default app"), as in the Svelte viewer, not a button of its own under the
 message. A test's system is the stand-in (`common::Picker`'s `opened`, `open_refused`).
+
+**The adapter that draws the window is photon's choice** (`gpu.rs`; spec decision 6): in
+wgpu's own order (`order`, held to wgpu-core's `request_adapter` - the GPUs by the power
+preference, then an adapter that does not say what it is, a virtual one, a software one
+last) over the adapters that can draw to the window's surface, **each tried for a device in
+turn** (`native_adapter_selector`): wgpu already takes WARP or llvmpipe where it is the
+only one, but does not go on when the adapter it chose cannot make a device, and the window
+did not open. The device made to try one is let go of and made again by egui-wgpu. A window
+a software adapter draws says so once (`gpu::SOFTWARE`, `launch_notice`; no test, the
+tests having no adapter); one that no adapter can draw is said where there is no window
+(`platform::startup_failed`). **AccessKit is switched on** (eframe's `accesskit`): every row,
+button and face has told it what it is since sub-project 1; a screen reader's press on
+what lies under a dialog is an action on a widget by its id, which egui's `Modal` does not
+stop, and the application's dropping of what the window answers under a dialog does
+(`tests/accesskit.rs`, with kittest's `click_accesskit`).
 
 **The viewer takes the whole window** (spec `2026-10-12-photon-native-viewer-design.md`;
 `viewer.rs` for which photo is open, `viewer_view.rs` for what is drawn, `App::viewer`
@@ -3290,9 +3305,10 @@ never for how many messages stand**: when nothing has answered for a quarter of 
 of real time `until` lets the clock go on to the next frame asked for, which is the end
 of a message's time, and a test that waited for "two messages" behind a slow write then
 waited for ever - on Windows' CI once, after passing everywhere a dozen times. A row is clicked by its name
-(`harness.get_by_label("Starred").click()`), which is why every row and button tells
-AccessKit what it is (`widget_info`) although AccessKit itself is switched on only in
-sub-project 7. Two things about egui's input that a frame test meets: egui works out for
+(`harness.get_by_label("Starred").click()`, which is the pointer's click at the node's
+place; a screen reader's is `click_accesskit`), which is why every row and button tells
+AccessKit what it is (`widget_info`) - and since the platform's sub-project a screen reader
+hears it too (eframe's `accesskit`). Two things about egui's input that a frame test meets: egui works out for
 itself whether a key going down is a repeat, whatever the event says, and it shows a new
 `Area` - a toast - only in the frame after the one it measures it in.
 

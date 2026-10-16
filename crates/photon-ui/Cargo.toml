@@ -35,7 +35,7 @@ photon-core = { path = "../photon-core" }
 photon-engine = { path = "../photon-engine" }
 # Pinned to the patch: egui changes behaviour, and its API, between releases. This is the
 # version `pch/rawmakase` ships on the same three platforms.
-eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "persistence", "wgpu", "wayland", "x11"] }
+eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "persistence", "wgpu", "wayland", "x11"] }
 # egui's SVG loader, for the icons.
 egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"] }
 # The platform's interface face, and an installed face for every script it lacks. MIT. Not
@@ -65,6 +65,9 @@ arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 # shell's `ShellExecuteExW` on Windows, `open` on a Mac, `xdg-open` on Linux. Tauri's
 # opener's own crate, at its version.
 open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
+# The graphics adapter tried for a device as it is chosen (`gpu.rs`), and the portal's
+# requests waited for on Linux (`platform.rs`): eframe's own executor, at its version.
+pollster = "1.0.1"
 # A video's poster encoded for the engine (`posters.rs`), and the tests' pictures read
 # back. photon-core's version.
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
@@ -108,9 +111,8 @@ windows-core = "0.62.2"
 # The folder picker on Linux (`platform.rs`): the XDG desktop portal over D-Bus, through
 # the client rfd itself uses there - pure Rust, no GTK. `async-std` is the executor it
 # runs on outside a runtime of its own (with tokio, its default, zbus panics with none
-# running); a request is waited for with eframe's `pollster`.
+# running); a request is waited for with `pollster`, above.
 ashpd = { version = "0.11.1", default-features = false, features = ["async-std"] }
-pollster = "1.0.1"
 # The time the portal is given to open its picker: the timer and the race of the executor
 # ashpd runs on, at their versions.
 async-io = "2.6.0"

@@ -4,6 +4,7 @@
 
 mod common;
 
+mod accesskit;
 mod app;
 mod band;
 mod clipboard;

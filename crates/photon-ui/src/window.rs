@@ -49,6 +49,11 @@ pub fn native_options(args: &Args, dirs: &Dirs) -> eframe::NativeOptions {
         window_builder: fullscreen
             .then(|| Box::new(|builder: egui::ViewportBuilder| builder.with_fullscreen(true)) as _),
         persistence_path: Some(dirs.window_path.clone()),
+        // The adapter that draws it, and the fallback where none of the machine's own can.
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: crate::gpu::setup(),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -397,6 +402,17 @@ mod tests {
             options.persistence_path.as_deref(),
             Some(Path::new("/data/app/window.ron"))
         );
+    }
+
+    // The adapter is photon's choice, which goes on to the next where one cannot make a
+    // device (`gpu.rs`), and not wgpu's, which does not.
+    #[test]
+    fn the_adapter_is_photons_choice() {
+        let options = native_options(&Args::default(), &dirs());
+        let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = options.wgpu_options.wgpu_setup else {
+            panic!("an existing wgpu setup");
+        };
+        assert!(setup.native_adapter_selector.is_some());
     }
 
     #[test]
