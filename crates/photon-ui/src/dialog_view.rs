@@ -15,7 +15,7 @@
 //! taken out of the frame's input.
 
 use crate::{
-    dialogs::{CANCEL, Confirm, DELETE, Dialog},
+    dialogs::{CANCEL, Confirm, Dialog},
     export_view,
     icons::Icon,
     person_picker::{self, PersonPicker},
@@ -499,7 +499,8 @@ fn confirm(
     ui.interact(room, Id::new("dialog-question"), Sense::hover())
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, confirm.question()));
 
-    let delete = button_width(ui, DELETE);
+    let yes = confirm.yes();
+    let delete = button_width(ui, yes);
     let cancel = button_width(ui, CANCEL);
     let row = Rect::from_min_max(pos2(room.left(), room.bottom() - CONTROL), room.max);
     let delete_at = Rect::from_min_max(pos2(row.right() - delete, row.top()), row.max);
@@ -513,13 +514,7 @@ fn confirm(
     if opened {
         cancelled.request_focus();
     }
-    let deleted = button(
-        ui,
-        delete_at,
-        Id::new("dialog-delete"),
-        DELETE,
-        Look::Danger,
-    );
+    let deleted = button(ui, delete_at, Id::new("dialog-delete"), yes, Look::Danger);
     if deleted.clicked() {
         Done::Confirmed
     } else if cancelled.clicked() {
@@ -794,7 +789,7 @@ impl<'a> Picker<'a> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::tag_picker::Mode;
+    use crate::{dialogs::DELETE, tag_picker::Mode};
     use eframe::egui::{Color32, PointerButton, Pos2, RawInput};
 
     pub(crate) const WINDOW: Vec2 = vec2(1000.0, 700.0);

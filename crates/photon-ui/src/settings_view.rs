@@ -319,7 +319,7 @@ pub(crate) fn text_field(
 /// A field opened in this frame takes the keyboard, with a history of its own - one
 /// field under one id serves every row, egui keeps a field's undo by id - and its words
 /// chosen, so that what is typed replaces them.
-fn opened_field(ui: &egui::Ui, id: Id, text: &str) {
+pub(crate) fn opened_field(ui: &egui::Ui, id: Id, text: &str) {
     let mut state = egui::text_edit::TextEditState::default();
     state
         .cursor
