@@ -1675,6 +1675,15 @@ mod tests {
             for _ in 0..=(fade / self.dt).ceil() as usize {
                 self.frame(Vec::new());
             }
+            // And until no frame is owed at once: on a loaded machine the last of them can
+            // still arrive late, and its fade asks for frames of its own.
+            for _ in 0..500 {
+                let frame = self.frame(Vec::new());
+                if self.repaint_delay != Duration::ZERO && !frame.loading {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
         }
 
         fn key(&mut self, key: Key) -> GridOutput {
@@ -3788,6 +3797,9 @@ mod tests {
         f.frame(Vec::new());
         f.view.scroll_to(f64::INFINITY);
         f.frame(Vec::new());
+        // The thumbnails at the end in, or one arriving late fades and asks for frames of
+        // its own: macOS' CI saw it.
+        f.thumbs_settled();
         f.drag(Pos2::new(300.0, 300.0), Pos2::new(300.0, 590.0));
         f.frame(Vec::new());
         f.frame(Vec::new());
