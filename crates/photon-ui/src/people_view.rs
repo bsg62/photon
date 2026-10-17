@@ -2069,18 +2069,7 @@ mod tests {
                 .count()
         };
         // Draws, and takes the crops cut for what was drawn.
-        let settle = |f: &mut Fixture, events: Vec<Event>| {
-            f.frame(events);
-            for _ in 0..200 {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                let made = f.crops.answers();
-                if made.is_empty() {
-                    break;
-                }
-                f.view.took(&f.ctx, made);
-                f.frame(Vec::new());
-            }
-        };
+        let settle = settled_after;
         let at = pos2(500.0, 400.0);
         settle(&mut f, vec![Event::PointerMoved(at)]);
         assert!(f.view.holds_crop(&(1, format!("{:016x}", 1))));
@@ -2136,15 +2125,23 @@ mod tests {
 
     /// Draws, and takes the crops cut for what was drawn, until none comes.
     fn settled(f: &mut Fixture) {
-        f.frame(vec![Event::PointerMoved(pos2(500.0, 400.0))]);
-        for _ in 0..200 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
+        settled_after(f, vec![Event::PointerMoved(pos2(500.0, 400.0))]);
+    }
+
+    /// A frame with `events`, then the crops it and the frames after it asked for, each
+    /// taken and drawn, until none is on its way: waited for by the cutters' count, not by
+    /// a pause - on Windows' CI the first crop was not cut within the first poll.
+    fn settled_after(f: &mut Fixture, events: Vec<Event>) {
+        f.frame(events);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while f.crops.waiting() > 0 {
+            assert!(std::time::Instant::now() < deadline, "the crops never came");
+            std::thread::sleep(std::time::Duration::from_millis(1));
             let made = f.crops.answers();
-            if made.is_empty() {
-                break;
+            if !made.is_empty() {
+                f.view.took(&f.ctx, made);
+                f.frame(Vec::new());
             }
-            f.view.took(&f.ctx, made);
-            f.frame(Vec::new());
         }
     }
 

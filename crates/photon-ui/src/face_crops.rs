@@ -66,6 +66,8 @@ pub struct Crops {
     /// Moves when the page closes: an answer of an older opening is dropped.
     opening: u64,
     asked: HashSet<CropOf>,
+    /// Asked for in this opening and not answered yet.
+    unanswered: usize,
 }
 
 impl Crops {
@@ -104,6 +106,7 @@ impl Crops {
             answers,
             opening: 0,
             asked: HashSet::new(),
+            unanswered: 0,
         }
     }
 
@@ -124,6 +127,7 @@ impl Crops {
         if !self.asked.insert(of.clone()) {
             return;
         }
+        self.unanswered += 1;
         self.shared
             .line
             .lock()
@@ -140,10 +144,18 @@ impl Crops {
     /// The crops made since this was last asked, of this opening of the page.
     pub fn answers(&mut self) -> Vec<(CropOf, Made)> {
         let opening = self.opening;
-        (self.answers.try_iter())
+        let made: Vec<(CropOf, Made)> = (self.answers.try_iter())
             .filter(|(from, _, _)| *from == opening)
             .map(|(_, of, made)| (of, made))
-            .collect()
+            .collect();
+        self.unanswered = self.unanswered.saturating_sub(made.len());
+        made
+    }
+
+    /// How many crops asked for in this opening of the page have not been answered yet:
+    /// for a test, which waits for them by this and not by how long they take.
+    pub fn waiting(&self) -> usize {
+        self.unanswered
     }
 
     /// The page is closed: what waits is not cut, what is being cut is dropped as it
@@ -151,6 +163,7 @@ impl Crops {
     pub fn clear(&mut self) {
         self.opening += 1;
         self.asked.clear();
+        self.unanswered = 0;
         {
             let mut line = self.shared.line.lock();
             line.waiting.clear();
