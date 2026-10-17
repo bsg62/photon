@@ -485,7 +485,7 @@ fn the_tools_picture_has_no_level_larger_than_it_is_drawn() {
     rest(&mut driver, &mut harness, 0.5);
     assert_eq!(
         wide(harness.state()),
-        Some(2200),
+        Some(1100),
         "the photo's own, its crop"
     );
     key(&mut driver, &mut harness, Key::C);

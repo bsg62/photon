@@ -3,7 +3,7 @@
 use crate::{
     animate::Slide,
     compare::{self, Compare},
-    compare_view::{CompareAction, CompareData, CompareView, PaneData},
+    compare_view::{self, CompareAction, CompareData, CompareView, PaneData},
     copies::{self, CopiesOf},
     crop_tool::CropTool,
     dialog_view::{DialogView, Done},
@@ -2632,7 +2632,7 @@ impl App {
                     .position(|pane| pane.id == asked.want.id && pane.key == asked.want.key);
                 if let Some(n) = pane {
                     match made {
-                        Made::Levels { levels, .. } => {
+                        Made::Levels { levels, cut, .. } => {
                             let options = egui::TextureOptions::LINEAR;
                             let levels = (levels.into_iter().enumerate())
                                 .map(|(level, image)| {
@@ -2644,6 +2644,8 @@ impl App {
                             open.full[n] = Some(FullPicture {
                                 want: asked.want,
                                 fit: asked.fit,
+                                max_side: asked.max_side,
+                                cut,
                                 levels,
                                 fitted: None,
                             });
@@ -2670,7 +2672,11 @@ impl App {
                 let want = asked.want;
                 let options = egui::TextureOptions::LINEAR;
                 match made {
-                    Made::Levels { levels, fitted } => {
+                    Made::Levels {
+                        levels,
+                        fitted,
+                        cut,
+                    } => {
                         let of = if asked.uncropped {
                             "uncropped"
                         } else {
@@ -2689,6 +2695,8 @@ impl App {
                         let picture = FullPicture {
                             want,
                             fit: asked.fit,
+                            max_side: asked.max_side,
+                            cut,
                             levels,
                             fitted,
                         };
@@ -2856,34 +2864,44 @@ impl App {
         // question at a time, as ever, and it is this one while the tool is open. (A
         // photo with no crop has that picture already.)
         let uncropped = (open.crop.as_ref()).is_some_and(|crop| crop.had.is_some());
-        let device = ctx.input(|input| input.max_texture_side) as u32;
-        let ask = PictureAsk {
-            want,
-            uncropped,
-            // The tool does not zoom, and is drawn in a box no larger than `within`: of
-            // the levels it needs none past twice that, the largest kept then still at
-            // least as large as what is drawn. Its picture is held beside the photo's own,
-            // and all its levels were a second camera's photo in textures.
-            max_side: if uncropped {
-                device.min(within.0.max(within.1).saturating_mul(2))
-            } else {
-                device
-            },
-            fit: within,
-        };
         // Whether to ask is decided from what is held and what is on its way, never
         // from what was once asked: a picture let go of is asked for again - one photo
         // on and straight back inside the rest, a photo that was gone and is here
         // again - where "asked for once" left the photo at its preview for good.
         let coming =
             (self.asking).filter(|asked| asked.want == want && asked.uncropped == uncropped);
-        let (held, refused) = match open.crop.as_ref().filter(|_| uncropped) {
-            Some(crop) => (crop.picture().map(|full| full.fit), crop.failed),
+        let (full, refused) = match open.crop.as_ref().filter(|_| uncropped) {
+            Some(crop) => (crop.picture(), crop.failed),
             None => (
-                open.picture().map(|full| full.fit),
+                open.picture(),
                 (open.failed.as_ref()).is_some_and(|(of, _)| *of == want),
             ),
         };
+        let held = full.map(|full| full.fit);
+        // How deep the levels go. Fitted, or a little closer, a photo is drawn from levels
+        // no larger than twice the photo's area, the largest kept then still at least as
+        // large as the photo drawn at fit: a camera's whole picture is a fifth of a GB of
+        // textures, for a zoom most photos are never looked at in. A zoom past what is
+        // held has the whole picture made again, and the largest level held is drawn
+        // until it lands. The crop tool does not zoom.
+        let device = ctx.input(|input| input.max_texture_side) as u32;
+        let shallow = device.min(within.0.max(within.1).saturating_mul(2));
+        let zoom = *open.viewer.zoom();
+        let deep = !uncropped
+            && !zoom.is_fit()
+            && full
+                .is_none_or(|full| full.short_of(within, zoom.zoom()) || full.max_side == device);
+        let ask = PictureAsk {
+            want,
+            uncropped,
+            max_side: if deep { device } else { shallow },
+            fit: within,
+        };
+        // A zoom past the levels on hand, and nothing deeper on its way.
+        let deeper = deep
+            && (coming.map(|asked| asked.max_side))
+                .or(full.map(|full| full.max_side))
+                .is_some_and(|side| side < device);
         // There is none of it, held or on its way, and nothing says there cannot be:
         // not a photo that is gone or cannot be shown, not one whose picture could not
         // be made, not one the library is being asked about again first.
@@ -2896,7 +2914,7 @@ impl App {
         // The newest of it, on its way or held, is for a window of another size.
         let other_size = (coming.map(|asked| asked.fit).or(held)).is_some_and(|fit| fit != within);
         let fit_due = stood + FIT_REST_MS;
-        if (none && rested) || (other_size && now >= fit_due) {
+        if (none && rested) || (other_size && now >= fit_due) || deeper {
             self.pictures.ask(ask);
             self.asking = Some(ask);
             self.asked_pictures += 1;
@@ -3531,16 +3549,35 @@ impl App {
             .collect();
         self.previews.frame(&ctx, &previews, false, false);
         // Once zoomed, the full pictures, one after another, the pane with the keys first:
-        // fitted, a pane is drawn from its preview, which a zoom soon outgrows.
+        // fitted, a pane is drawn from its preview, which a zoom soon outgrows. Each with
+        // levels no larger than twice a pane, as the viewer's are fitted; a zoom past the
+        // largest has the whole picture made again (`FullPicture::short_of`). Four
+        // cameras' whole pictures were most of a GB of textures.
         if open.compare.wants_full() && open.asking.is_none() {
+            let scale = ctx.pixels_per_point();
+            let place = compare_view::places(ctx.content_rect(), wants.len())[0];
+            let pane = (
+                (place.width() * scale).round() as u32,
+                (place.height() * scale).round() as u32,
+            );
+            let device = ctx.input(|input| input.max_texture_side) as u32;
+            let zoom = open.compare.zoom().zoom();
+            let short = |full: &Option<FullPicture>| {
+                full.as_ref()
+                    .is_some_and(|full| full.max_side < device && full.short_of(pane, zoom))
+            };
             let focus = open.compare.focus();
             let next = (std::iter::once(focus).chain(0..wants.len()))
-                .find(|n| open.full[*n].is_none() && !open.failed[*n]);
+                .find(|n| !open.failed[*n] && (open.full[*n].is_none() || short(&open.full[*n])));
             if let Some(n) = next {
                 let ask = PictureAsk {
                     want: wants[n],
                     uncropped: false,
-                    max_side: ctx.input(|input| input.max_texture_side) as u32,
+                    max_side: if short(&open.full[n]) {
+                        device
+                    } else {
+                        device.min(pane.0.max(pane.1).saturating_mul(2))
+                    },
                     // A box of nought: no copy is fitted to it (`fitted_copy`), a pane
                     // wanting its full picture only once it is zoomed.
                     fit: (0, 0),
@@ -5367,6 +5404,25 @@ impl Cropping {
     }
 }
 
+impl FullPicture {
+    /// Whether the photo drawn `zoom` times its fit into `within` is larger than the
+    /// largest level held, where a larger one was left out.
+    fn short_of(&self, within: (u32, u32), zoom: f32) -> bool {
+        let Some((texture, width)) = self.levels.first() else {
+            return false;
+        };
+        let [w, h] = texture.size();
+        let area = viewer_layout::Frame {
+            left: 0.0,
+            top: 0.0,
+            width: within.0 as f32,
+            height: within.1 as f32,
+        };
+        let drawn = viewer_layout::contained(w as f32, h as f32, area).width * zoom;
+        self.cut && drawn > *width as f32 + 0.5
+    }
+}
+
 impl Viewing {
     /// How far one step of the show moves through a view of `len` photos. A view that
     /// grew or shrank under a shuffled show is asked again, and keeps the stride in use
@@ -5413,6 +5469,10 @@ struct FullPicture {
     want: Want,
     /// The box its fitted copy was made for.
     fit: (u32, u32),
+    /// The largest side a level of it could have: what was asked (`PictureAsk::max_side`).
+    max_side: u32,
+    /// Its larger levels were left out for that: the largest held is not the whole picture.
+    cut: bool,
     levels: Vec<(egui::TextureHandle, u32)>,
     fitted: Option<egui::TextureHandle>,
 }
@@ -5423,6 +5483,8 @@ enum Made {
     Levels {
         levels: Vec<egui::ColorImage>,
         fitted: Option<egui::ColorImage>,
+        /// Its larger levels were left out (`FullPicture::cut`).
+        cut: bool,
     },
     /// It could not be made, and why.
     Failed(String),
@@ -5478,11 +5540,19 @@ fn make_picture(engine: &Engine, asked: PictureAsk) -> Made {
         height: picture.full.height,
         rgba: picture.full.rgba,
     };
-    let levels = viewer_levels::levels(full, asked.max_side)
+    let width = full.width;
+    let levels: Vec<_> = viewer_levels::levels(full, asked.max_side)
         .into_iter()
         .map(|level| image(level.width, level.height, &level.rgba))
         .collect();
-    Made::Levels { levels, fitted }
+    let cut = levels
+        .first()
+        .is_some_and(|level| level.size[0] as u32 != width);
+    Made::Levels {
+        levels,
+        fitted,
+        cut,
+    }
 }
 
 /// What a notch of the wheel moves on this system (`scroll::wheel_notch`).

@@ -143,8 +143,9 @@ fn caption_line(harness: &Harness<'_>) -> String {
 }
 
 // The whole of it: a double click opens the photo over the whole window, its preview is
-// there at once and its full picture a moment later, in the levels photon makes itself;
-// the caption says what it is and where it stands.
+// there at once and its full picture a moment later, in the levels photon makes itself -
+// fitted, none past twice the window, a thousand pixels wide; the caption says what it is
+// and where it stands.
 #[test]
 fn a_double_click_opens_the_photo_with_its_preview_and_then_its_full_picture() {
     let dir = tempfile::tempdir().unwrap();
@@ -160,10 +161,7 @@ fn a_double_click_opens_the_photo_with_its_preview_and_then_its_full_picture() {
     driver.until(&mut harness, "the full picture", |app| {
         app.viewer_levels().is_some()
     });
-    assert_eq!(
-        harness.state().viewer_levels(),
-        Some(vec![4200, 2100, 1050, 525, 262])
-    );
+    assert_eq!(harness.state().viewer_levels(), Some(vec![1050, 525, 262]));
     // And the copy that is drawn while it is fitted: scaled for this window, a
     // thousand pixels wide.
     assert_eq!(harness.state().viewer_fitted(), Some([1000, 14]));
@@ -191,10 +189,101 @@ fn a_level_the_device_cannot_hold_is_not_made_into_a_texture() {
     driver.until(&mut harness, "the full picture", |app| {
         app.viewer_levels().is_some()
     });
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.until(&mut harness, "the deeper picture", |app| {
+        app.viewer_levels().is_some_and(|levels| levels[0] != 1050)
+    });
     assert_eq!(
         harness.state().viewer_levels(),
         Some(vec![2100, 1050, 525, 262])
     );
+    // Which is as deep as there is: a closer zoom asks for nothing more.
+    let asked = harness.state().pictures_asked();
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.frames_in(&mut harness, 0.5);
+    assert_eq!(harness.state().pictures_asked(), asked);
+}
+
+// Fitted, a photo is drawn from levels no larger than twice the window. A zoom past the
+// largest held has the whole picture made again, the largest held drawn until it lands;
+// and back at the fit, the photo keeps the picture it has.
+#[test]
+fn a_zoom_past_the_levels_held_has_the_whole_picture_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    driver.frames_in(&mut harness, 0.5);
+    let asked = harness.state().pictures_asked();
+    let rendering = RENDERING.lock();
+    // 1,250 pixels drawn, of a level 1,050 wide.
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.until(&mut harness, "the whole picture asked for", |app| {
+        app.pictures_asked() == asked + 1
+    });
+    assert_eq!(harness.state().viewer_levels(), Some(vec![1050, 525, 262]));
+    drop(rendering);
+    driver.until(&mut harness, "the whole picture", |app| {
+        app.viewer_levels().is_some_and(|levels| levels[0] == 4200)
+    });
+    assert_eq!(
+        harness.state().viewer_levels(),
+        Some(vec![4200, 2100, 1050, 525, 262])
+    );
+    key(&mut driver, &mut harness, Key::Num0);
+    driver.frames_in(&mut harness, 0.5);
+    assert_eq!(harness.state().pictures_asked(), asked + 1);
+}
+
+// Zoomed in, a window of another size has the copy made again for it as deep as the
+// picture held: made shallow, the zoom would ask for the whole picture once more.
+#[test]
+fn a_zoomed_photo_keeps_its_depth_in_a_window_of_another_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.until(&mut harness, "the whole picture", |app| {
+        app.viewer_levels().is_some_and(|levels| levels[0] == 4200)
+    });
+    driver.settle(&mut harness);
+    let asked = harness.state().pictures_asked();
+    harness.set_size(egui::vec2(900.0, 700.0));
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the copy for the new size", |app| {
+        app.viewer_fitted() == Some([900, 13])
+    });
+    rest(&mut driver, &mut harness, 1.0);
+    assert_eq!(harness.state().pictures_asked(), asked + 1);
+    assert_eq!(
+        harness.state().viewer_levels(),
+        Some(vec![4200, 2100, 1050, 525, 262])
+    );
+}
+
+// A photo no larger than twice the window has every level at the fit, and its zoom asks
+// for nothing more.
+#[test]
+fn a_zoom_into_a_photo_held_whole_asks_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 1);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    driver.frames_in(&mut harness, 0.5);
+    assert_eq!(harness.state().viewer_levels(), Some(vec![64]));
+    let asked = harness.state().pictures_asked();
+    key(&mut driver, &mut harness, Key::Plus);
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.frames_in(&mut harness, 0.5);
+    assert_eq!(harness.state().pictures_asked(), asked);
 }
 
 // The copy a fitted photo is drawn from is made for the window's size. In a window made
@@ -614,10 +703,7 @@ fn a_picture_of_the_photo_as_it_was_is_not_drawn_once_it_is_another() {
     driver.until(&mut harness, "the picture of the photo turned", |app| {
         app.viewer_levels().is_some()
     });
-    assert_eq!(
-        harness.state().viewer_levels(),
-        Some(vec![60, 30, 15, 7, 3])
-    );
+    assert_eq!(harness.state().viewer_levels(), Some(vec![15, 7, 3]));
 }
 
 // A photo whose file goes while it is on screen: the scan that misses it marks it, the
@@ -829,7 +915,7 @@ fn a_picture_made_from_a_state_the_window_never_saw_is_made_again() {
     assert_eq!(harness.state().viewer().unwrap().key(), was);
     assert_eq!(
         harness.state().viewer_levels(),
-        Some(vec![4200, 2100, 1050, 525, 262]),
+        Some(vec![1050, 525, 262]),
         "not the photo turned"
     );
 }
@@ -861,10 +947,7 @@ fn a_stale_picture_is_asked_for_again_under_the_key_the_library_has() {
         app.viewer_levels().is_some()
     });
     assert_ne!(harness.state().viewer().unwrap().key(), was);
-    assert_eq!(
-        harness.state().viewer_levels(),
-        Some(vec![60, 30, 15, 7, 3])
-    );
+    assert_eq!(harness.state().viewer_levels(), Some(vec![15, 7, 3]));
     rest(&mut driver, &mut harness, 1.0);
     // `b.jpg` at the opening, `a.jpg` after the rest, and `a.jpg` as the library has it.
     assert_eq!(harness.state().pictures_asked(), 3);
@@ -1607,7 +1690,8 @@ fn the_wheel_turned_in_and_back_out_leaves_the_photo_fitted() {
 
 // A double click goes to the photo's own pixels whether or not its full picture has
 // landed: the library has said how large the photo is by then, and a moment after a
-// step is not another answer than a second later.
+// step is not another answer than a second later. The picture asked for at the opening,
+// fitted, is asked for again whole: the first to land is the one the zoom needs.
 #[test]
 fn a_double_click_goes_to_the_photos_own_pixels_before_the_full_picture_is_made() {
     let dir = tempfile::tempdir().unwrap();
@@ -1625,6 +1709,10 @@ fn a_double_click_goes_to_the_photos_own_pixels_before_the_full_picture_is_made(
     driver.until(&mut harness, "the full picture", |app| {
         app.viewer_levels().is_some()
     });
+    assert_eq!(
+        harness.state().viewer_levels(),
+        Some(vec![4200, 2100, 1050, 525, 262])
+    );
     rest(&mut driver, &mut harness, 1.0);
     assert_eq!(zoom(&harness), 4.0);
 }

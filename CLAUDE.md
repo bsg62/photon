@@ -1987,7 +1987,15 @@ the same. A window of another size is another copy, asked for once the size has 
 for 200 ms, and the levels are drawn meanwhile. A level larger than the device's limit
 is not made into a texture (`max_texture_side`; **`egui_kittest` says nothing of it and
 egui then takes 2,048**, so a test that wants a large level says
-`harness.input_mut().max_texture_side`). The picture is handed over as `ColorImage`s
+`harness.input_mut().max_texture_side`). **Nor is a level larger than twice the photo's
+area, until a zoom outgrows the largest held** (`PictureAsk::max_side`,
+`FullPicture::short_of`): the whole picture is then made again, the largest level held
+drawn until it lands, and kept for that photo - a resize while zoomed makes the copy as
+deep as what is held. A camera's every level was a fifth of a GB of textures for a zoom
+most photos never get; the price is a soft picture for a decode on the first deep zoom. Not
+kept in memory beside the textures instead: egui keeps no copy once a texture is uploaded,
+so that would only move the levels from the GPU's memory to photon's, which on an
+integrated GPU are the same. The picture is handed over as `ColorImage`s
 made on the worker: the frame that uploads a 10 MP photo and its half took 8 ms in an
 unoptimised build, so it is one frame's work and is not spread over several (that is
 egui's pass and the write of the textures, off screen; what the GPU does with them
@@ -2545,7 +2553,8 @@ pane's. Panes stand in two columns, three leaving the fourth place empty so ever
 one size. Fitted, a pane is drawn from its preview - twice or three times a pane in a window
 of ordinary size, from one level; **once the zoom has left the fit every pane's full picture
 is made, one after another, the pane with the keys first** (`compare_pictures`, no fitted
-copy: a box of nought makes none). **A pane follows its photo**: its star and its key from
+copy: a box of nought makes none), with no level past twice a pane until a zoom outgrows
+them, as the viewer's are fitted. **A pane follows its photo**: its star and its key from
 the grid on screen where that holds it - a photo turned elsewhere has its full picture made
 again under its new key - and its star from what was written (`Wrote::Stars`' ids), since in
 Starred a photo unstarred from compare leaves the grid and its pane would say "starred" for
