@@ -39,6 +39,23 @@ fn middle(harness: &Harness<'_>, offset: usize) -> Pos2 {
         .center()
 }
 
+/// For the flake probe: what is selected, by file name, and the lead.
+fn trace(harness: &Harness<'_>, what: &str) {
+    let app = harness.state();
+    let lib = Library::open(app.engine().lib.path()).unwrap();
+    let name = |id: i64| {
+        let path = PathBuf::from(lib.item(id).unwrap().unwrap().path);
+        path.file_name().unwrap().to_string_lossy().into_owned()
+    };
+    let selected: Vec<String> = app.selected().iter().map(|id| name(*id)).collect();
+    let starred: Vec<String> = app.starred().iter().map(|id| name(*id)).collect();
+    eprintln!(
+        "[star-trace] test {what}: selected {selected:?} lead {:?} starred {starred:?} menu {}",
+        app.lead().map(name),
+        app.menu_open()
+    );
+}
+
 /// A click on the photo at `offset`, with `held` down.
 fn pick(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize, held: Modifiers) {
     let at = middle(harness, offset);
@@ -221,14 +238,18 @@ fn the_star_key_takes_several_photos_the_way_of_the_deciding_one() {
     pick(&mut driver, &mut harness, 1, Modifiers::NONE);
     pick(&mut driver, &mut harness, 3, Modifiers::SHIFT);
     assert_eq!(harness.state().lead(), Some(harness.state().shown()[3]));
+    trace(&harness, "before .");
     key(&mut driver, &mut harness, Key::Period, Modifiers::NONE);
+    trace(&harness, "after .");
     until_starred(&mut driver, &mut harness, &[1, 2, 3]);
     // Back to `a` alone starred, by the menu's own item for one photo.
     for offset in [1, 3] {
         pick(&mut driver, &mut harness, offset, Modifiers::NONE);
         right_click(&mut driver, &mut harness, offset);
+        trace(&harness, "before Unstar photo");
         harness.get_by_label("Unstar photo").click();
         driver.act(&mut harness);
+        trace(&harness, "after Unstar photo");
     }
     until_starred(&mut driver, &mut harness, &[2]);
 
@@ -244,8 +265,12 @@ fn the_star_key_takes_several_photos_the_way_of_the_deciding_one() {
     right_click(&mut driver, &mut harness, 2);
     assert!(harness.query_by_label("Star 3 photos").is_some());
     assert!(harness.query_by_label("Unstar 3 photos").is_some());
+    trace(&harness, "before Escape");
     key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    trace(&harness, "after Escape");
+    trace(&harness, "before .");
     key(&mut driver, &mut harness, Key::Period, Modifiers::NONE);
+    trace(&harness, "after .");
     until_starred(&mut driver, &mut harness, &[]);
     let coast = ini(&root.join("coast"));
     assert!(!stars(&coast, "a.jpg"), "{coast:?}");
@@ -254,8 +279,11 @@ fn the_star_key_takes_several_photos_the_way_of_the_deciding_one() {
 
     // Now the deciding photo has none, and the same key stars all three, in both
     // folders' files.
+    trace(&harness, "before .");
     key(&mut driver, &mut harness, Key::Period, Modifiers::NONE);
+    trace(&harness, "after .");
     until_starred(&mut driver, &mut harness, &[1, 2, 3]);
+    trace(&harness, "end");
     let (coast, hills) = (ini(&root.join("coast")), ini(&root.join("hills")));
     assert!(
         stars(&coast, "a.jpg") && stars(&coast, "b.jpg"),

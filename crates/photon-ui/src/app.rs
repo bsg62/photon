@@ -3834,6 +3834,11 @@ impl App {
 
     /// Queues what `action` writes, for the photos `ids`.
     fn write_tile(&mut self, action: TileAction, ids: Vec<i64>) {
+        eprintln!(
+            "[star-trace] write_tile {action:?} ids={ids:?} selected={:?} lead={:?}",
+            self.selection.ids(&self.index),
+            self.selection.lead()
+        );
         let write = match action {
             TileAction::Star(starred) => Write::Stars { ids, starred },
             TileAction::Hide(hidden) => Write::Hidden { ids, hidden },
@@ -3865,6 +3870,7 @@ impl App {
     /// photos that were selected at the key, which the ask carries. The frame's later
     /// keys and clicks have been answered by now, and the selection is theirs.
     fn ask(&mut self, asked: Asked) {
+        eprintln!("[star-trace] ask {asked:?}");
         if asked.ask == Ask::Compare {
             self.open_compare(asked.ids);
             return;

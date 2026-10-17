@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -79,42 +79,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      # nextest runs every test binary's tests in one pool, where `cargo test` runs the
-      # binaries one after another, each ending on its slowest few tests with the other
-      # cores idle. The workspace has no doctests, which nextest does not run.
+      # THROWAWAY: the star-key flake probe. Never to be merged.
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - run: cargo nextest run --workspace --profile ci
-        # What each runner's own framework decodes (the spike, 2026-10-14): a video test
-        # that passes over a codec named here fails instead - else a runner that lost its
-        # decoders would pass every test of them, with nothing in the log to say so.
-        env:
-          PHOTON_VIDEO_EXPECTS: ${{ runner.os == 'Windows' && 'h264' || 'h264 hevc' }}
-      # rav1d's x86-64 assembly (`avif-asm`) is off above, as in a local build without nasm,
-      # and on in every x86-64 installer the release workflow builds: this runs photon-core's
-      # tests that decode an AVIF through it - the four modules whose tests hand rav1d a
-      # picture (`metadata` and `scanner` read AVIFs too, but only their containers). All of
-      # photon-core's tests a second time was two minutes on Windows for the same answer.
-      # The macOS runners are arm64, where it does not build (photon-core's Cargo.toml), so
-      # there it is only built, for the x86-64 dmg release.yml cross-compiles.
-      - if: runner.os != 'macOS'
-        run: "cargo test -p photon-core --features avif-asm --lib -- avif:: colour:: decode:: edit::"
-      - if: runner.os == 'macOS'
+      - run: cargo nextest run -p photon-ui --test all --no-run
+      - name: Stress the star-key test, three loops at once
+        shell: bash
         run: |
-          rustup target add x86_64-apple-darwin
-          cargo build -p photon-core --features avif-asm --target x86_64-apple-darwin
-      # Reads the real Cargo.toml (xtask's unit tests only cover string literals), so a
-      # broken version or missing metadata fails on the pull request rather than after a
-      # release tag already exists.
-      - if: runner.os == 'Linux'
-        run: |
-          cargo run -p xtask -- versions
-          cargo run -p xtask -- metadata
-      # That the benchmark still compiles. Its code is the same on every platform, and a
-      # release build of photon-core and everything under it is a minute and a half on
-      # Windows and a large part of each platform's cache: one platform is enough.
-      - if: runner.os == 'Linux'
-        run: cargo bench -p photon-core --bench grid --no-run
+          T=menu::the_star_key_takes_several_photos_the_way_of_the_deciding_one
+          for w in 1 2 3; do
+            ( cargo nextest run -p photon-ui --test all "$T" --stress-count 60 > "loop$w.log" 2>&1; echo "loop $w exit $?" >> "loop$w.log" ) &
+          done
+          wait
+          for w in 1 2 3; do echo "=== loop $w"; grep -E "Summary|exit|FAIL" "loop$w.log"; done
+          if grep -q "FAIL \[" loop*.log; then
+            for f in loop*.log; do grep -q "FAIL \[" "$f" && cat "$f" | grep -vE "^\s+PASS"; done
+            exit 1
+          fi

@@ -1205,6 +1205,14 @@ impl Engine {
                 .push((id, file_name.to_string_lossy().into_owned()));
         }
 
+        eprintln!(
+            "[star-trace] engine set_stars starred={starred} {:?}",
+            by_dir
+                .values()
+                .flatten()
+                .map(|(_, n)| n.as_str())
+                .collect::<Vec<_>>()
+        );
         let mut ratings: Vec<(i64, u8)> = Vec::new();
         let mut first_error: Option<Error> = None;
         for (dir, files) in &by_dir {
