@@ -5,6 +5,7 @@
 //! its bookkeeping, the tokens, the labels. *Views* draw a state module and turn input
 //! into calls on it. `state_modules_name_no_egui_type` holds the line.
 
+pub mod animate;
 pub mod app;
 pub mod args;
 pub mod compare;
@@ -29,6 +30,7 @@ pub mod fixture;
 pub mod folder_drop;
 pub mod gpu;
 pub mod grid {
+    pub mod glide;
     pub mod header;
     pub mod labels;
     pub mod layout;
@@ -113,7 +115,8 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 62] = [
+    const STATE_MODULES: [(&str, &str); 64] = [
+        ("animate.rs", include_str!("animate.rs")),
         ("face_crops.rs", include_str!("face_crops.rs")),
         ("people_page.rs", include_str!("people_page.rs")),
         ("copies.rs", include_str!("copies.rs")),
@@ -158,6 +161,7 @@ mod tests {
         ("grid/layout.rs", include_str!("grid/layout.rs")),
         ("grid/timeline.rs", include_str!("grid/timeline.rs")),
         ("grid/motion.rs", include_str!("grid/motion.rs")),
+        ("grid/glide.rs", include_str!("grid/glide.rs")),
         ("grid/scroll.rs", include_str!("grid/scroll.rs")),
         ("grid/visible.rs", include_str!("grid/visible.rs")),
         ("probe.rs", include_str!("probe.rs")),

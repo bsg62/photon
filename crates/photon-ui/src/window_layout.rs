@@ -158,13 +158,22 @@ impl Area {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Areas {
     pub top_bar: Area,
+    /// What is drawn of the sidebar: all of it, or the part a slide has uncovered.
     pub sidebar: Option<Area>,
+    /// The whole sidebar at the window's left edge, which its list is laid out in and
+    /// cut off at `sidebar`'s right: a list laid out in the part drawn would wrap its
+    /// names again at every point of a slide.
+    pub sidebar_full: Option<Area>,
     pub splitter: Option<Area>,
     pub content: Area,
     pub status_bar: Area,
 }
 
-pub fn areas(width: f32, height: f32, layout: &Layout) -> Areas {
+/// The areas of a window `width` by `height`, with `shown` of the sidebar drawn: 1 open,
+/// 0 hidden, and between the two while it slides. What is stored - `sidebar_hidden` - is
+/// not read here: it flips at the press, and the slide is how far the drawing has got
+/// towards it.
+pub fn areas(width: f32, height: f32, layout: &Layout, shown: f32) -> Areas {
     let across = |top: f32, bottom: f32| Area {
         left: 0.0,
         top,
@@ -173,11 +182,8 @@ pub fn areas(width: f32, height: f32, layout: &Layout) -> Areas {
     };
     let top = TOP_BAR.min(height);
     let bottom = (height - STATUS_BAR).max(top);
-    let side = if layout.sidebar_hidden {
-        0.0
-    } else {
-        layout.shown_width(width)
-    };
+    let shown = shown.clamp(0.0, 1.0);
+    let side = layout.shown_width(width);
     // Held to the window: the sidebar's minimum wins over half a narrow window, and in
     // one narrower than the minimum itself the content has no room, not less than none.
     let column = |left: f32, right: f32| Area {
@@ -186,12 +192,16 @@ pub fn areas(width: f32, height: f32, layout: &Layout) -> Areas {
         right: right.min(width),
         bottom,
     };
-    let shown = !layout.sidebar_hidden;
+    // The splitter moves with the sidebar's edge and narrows with it, so that the content
+    // begins at the same share of the whole room as the sidebar has of its own.
+    let edge = side * shown;
+    let open = shown > 0.0;
     Areas {
         top_bar: across(0.0, top),
-        sidebar: shown.then(|| column(0.0, side)),
-        splitter: shown.then(|| column(side, side + SPLITTER)),
-        content: column(if shown { side + SPLITTER } else { 0.0 }, width),
+        sidebar: open.then(|| column(0.0, edge)),
+        sidebar_full: open.then(|| column(0.0, side)),
+        splitter: open.then(|| column(edge, (side + SPLITTER) * shown)),
+        content: column((side + SPLITTER) * shown, width),
         status_bar: across(bottom, height),
     }
 }
@@ -305,7 +315,7 @@ mod tests {
 
     #[test]
     fn the_four_areas_fill_the_window() {
-        let found = areas(1280.0, 800.0, &Layout::default());
+        let found = areas(1280.0, 800.0, &Layout::default(), 1.0);
         assert_eq!(
             found.top_bar,
             Area {
@@ -333,11 +343,35 @@ mod tests {
             sidebar_hidden: true,
             ..Layout::default()
         };
-        let found = areas(1280.0, 800.0, &hidden);
+        let found = areas(1280.0, 800.0, &hidden, 0.0);
         assert_eq!(found.sidebar, None);
         assert_eq!(found.splitter, None);
         assert_eq!(found.content.left, 0.0);
         assert_eq!(found.content.width(), 1280.0);
+    }
+
+    // Part way through a slide the list keeps the whole width it is laid out in, and the
+    // content begins where the drawn part and its splitter end.
+    #[test]
+    fn a_sidebar_part_way_gives_the_content_the_rest() {
+        let found = areas(1280.0, 800.0, &Layout::default(), 0.5);
+        let sidebar = found.sidebar.unwrap();
+        assert_eq!((sidebar.left, sidebar.right), (0.0, SIDEBAR_DEFAULT * 0.5));
+        let full = found.sidebar_full.unwrap();
+        assert_eq!((full.left, full.right), (0.0, SIDEBAR_DEFAULT));
+        let splitter = found.splitter.unwrap();
+        assert_eq!(splitter.left, sidebar.right);
+        assert_eq!(splitter.right, found.content.left);
+        assert_eq!(found.content.left, 0.5 * (SIDEBAR_DEFAULT + SPLITTER));
+        assert_eq!(found.content.right, 1280.0);
+        // At nought it is the hidden layout, whatever is stored.
+        let none = areas(1280.0, 800.0, &Layout::default(), 0.0);
+        assert_eq!(
+            (none.sidebar, none.sidebar_full, none.splitter),
+            (None, None, None)
+        );
+        assert_eq!(none.content.left, 0.0);
+        assert_eq!(none.content.width(), 1280.0);
     }
 
     // A window being dragged very small must not hand out an area that ends before it
@@ -345,7 +379,7 @@ mod tests {
     #[test]
     fn no_area_is_inside_out_in_a_window_too_small_for_the_bars() {
         for (width, height) in [(200.0, 40.0), (0.0, 0.0), (120.0, 60.0)] {
-            let found = areas(width, height, &Layout::default());
+            let found = areas(width, height, &Layout::default(), 1.0);
             let all = [
                 Some(found.top_bar),
                 found.sidebar,

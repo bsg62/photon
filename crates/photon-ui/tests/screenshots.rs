@@ -335,7 +335,9 @@ fn shot_of(theme: ThemeChoice, name: &str, setup: Setup, then: impl Fn(&mut Harn
     let db = dirs.db_path.clone();
 
     let mut harness = window(Some(harness_theme), setup.size).build_eframe(|cc| {
-        let app = App::new(cc, dirs, Some(pictures)).unwrap();
+        let app = App::new(cc, dirs, Some(pictures))
+            .unwrap()
+            .without_animations();
         if setup.videos {
             app.with_videos(Films::new())
         } else {
@@ -903,7 +905,7 @@ fn native_empty_library_light() {
         .set_theme(ThemeChoice::Light)
         .unwrap();
     let mut harness = window(Some(egui::Theme::Light), WINDOW.size)
-        .build_eframe(|cc| App::new(cc, dirs, None).unwrap());
+        .build_eframe(|cc| App::new(cc, dirs, None).unwrap().without_animations());
     until(&mut harness, "the empty library's panel", |app| {
         app.panel().is_some()
     });
@@ -1402,8 +1404,11 @@ fn native_viewer_quality() {
     std::fs::create_dir_all(&pictures).unwrap();
     plate.save(pictures.join("plate.png")).unwrap();
     let dirs = dirs::within(&dir.path().join("data"), &dir.path().join("cache"));
-    let mut harness =
-        window(None, WINDOW.size).build_eframe(|cc| App::new(cc, dirs, Some(pictures)).unwrap());
+    let mut harness = window(None, WINDOW.size).build_eframe(|cc| {
+        App::new(cc, dirs, Some(pictures))
+            .unwrap()
+            .without_animations()
+    });
     harness.input_mut().max_texture_side = Some(8192);
     until(&mut harness, "the photo shown", |app| {
         app.photos() == 1 && app.last_frame().is_some_and(|frame| frame.settled)

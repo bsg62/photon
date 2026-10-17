@@ -2,7 +2,7 @@
 //! each of its sections that stores something - into a library the test made, in a
 //! temporary directory. Nothing here writes outside `library.db`.
 
-use crate::common::{Driver, Harness, launch, library, opened};
+use crate::common::{Driver, Harness, launch, library, opened, opened_animated};
 use eframe::egui::{self, Key, Modifiers, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use photon_core::{
@@ -376,5 +376,50 @@ fn the_memory_is_read_again_only_while_about_is_shown() {
     assert!(
         (2..=30).contains(&frames),
         "{frames} frames in five seconds"
+    );
+}
+
+/// Ctrl+B, and whether the sidebar is wholly gone in the frames of the key - where it
+/// slides, it is still all there at the press - with nothing left sliding.
+fn hidden_at_once(driver: &mut Driver, harness: &mut Harness<'_>) -> bool {
+    key_with(driver, harness, Key::B, Modifiers::COMMAND);
+    let content = harness.state().content_rect().expect("the shell drawn");
+    content.left() == 0.0 && !harness.state().sidebar_sliding(driver.now * 1000.0)
+}
+
+// The switch stored off is read at launch: nothing slides from the first frame on.
+#[test]
+fn animations_stored_off_are_off_from_the_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    stored(&library).set_animations(false).unwrap();
+    let (mut harness, mut driver) = opened_animated(&library, 6);
+    driver.settle(&mut harness);
+    assert!(
+        hidden_at_once(&mut driver, &mut harness),
+        "the sidebar slides"
+    );
+}
+
+// The box ticked off in Settings ends the window's motion at once, not at the next launch.
+#[test]
+fn animations_ticked_off_in_settings_are_off_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 6);
+    gear(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "Appearance");
+    harness
+        .get_by_role_and_label(Role::CheckBox, photon_ui::settings::ANIMATIONS)
+        .click();
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    assert!(!stored(&library).animations().unwrap());
+    key(&mut driver, &mut harness, Key::Escape);
+    assert!(harness.state().dialog().is_none());
+    driver.settle(&mut harness);
+    assert!(
+        hidden_at_once(&mut driver, &mut harness),
+        "the sidebar slides"
     );
 }

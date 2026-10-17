@@ -253,10 +253,35 @@ pub fn launch_with<'a>(
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            (App::new(cc, dirs, None).unwrap())
+            (App::new(cc, dirs, None).unwrap().without_animations())
                 .with_videos(no_videos())
                 .with_platform(platform)
         })
+}
+
+/// The application over `library` with its animations on, as a user who has not switched
+/// them off has it: for the tests of what moves. Every other test launches without them,
+/// since a row pressed straight after a toggle would be pressed where it is sliding from.
+pub fn launch_animated<'a>(library: &fixture::Fixture) -> Harness<'a> {
+    let dirs = library.dirs();
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .with_step_dt(REFRESH as f32)
+        .build_eframe(move |cc| {
+            (App::new(cc, dirs, None).unwrap())
+                .with_videos(no_videos())
+                .with_platform(no_platform())
+        })
+}
+
+/// `opened`, with the animations on (`launch_animated`).
+pub fn opened_animated<'a>(library: &fixture::Fixture, photos: usize) -> (Harness<'a>, Driver) {
+    let mut harness = launch_animated(library);
+    let mut driver = Driver::new(&harness);
+    driver.until(&mut harness, "the library shown", |app| {
+        app.photos() == photos && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    (harness, driver)
 }
 
 /// Clicks the sidebar row called `label`, once it is drawn, and draws the frame the
@@ -327,16 +352,36 @@ pub fn over_with<'a>(
     pictures: Option<&Path>,
     platform: std::sync::Arc<Picker>,
 ) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    over_built(dir, pictures, platform, false)
+}
+
+/// `over`, with the animations on (`launch_animated`).
+pub fn over_animated<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    over_built(dir, pictures, no_platform(), true)
+}
+
+fn over_built<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+    platform: std::sync::Arc<Picker>,
+    animations: bool,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
     let made = photon_ui::dirs::within(&dir.join("data"), &dir.join("cache"));
     let (dirs, pictures) = (made.clone(), pictures.map(Path::to_owned));
     let harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            App::new(cc, dirs, pictures)
-                .unwrap()
-                .with_videos(no_videos())
-                .with_platform(platform)
+            let app = App::new(cc, dirs, pictures).unwrap();
+            let app = if animations {
+                app
+            } else {
+                app.without_animations()
+            };
+            app.with_videos(no_videos()).with_platform(platform)
         });
     let driver = Driver::new(&harness);
     (harness, driver, made)

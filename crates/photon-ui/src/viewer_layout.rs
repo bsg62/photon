@@ -29,31 +29,32 @@ pub const INFO_GAP: f32 = 12.0;
 /// How far the panel's foot stands from the window's: clear of the bar and the slider.
 pub const INFO_BOTTOM: f32 = 56.0;
 
-/// How much of the window's right side the info panel takes from the photo while it is
-/// open. The photo is fitted beside the panel, not under it: under it the panel covered a
-/// third of a landscape photo, and the faces it lists were among what it covered.
-pub fn info_room(open: bool) -> f32 {
-    if open {
-        INFO_WIDTH + INFO_RIGHT + INFO_GAP
-    } else {
-        0.0
-    }
+/// How much of the window's right side the info panel takes from the photo, `shown` of
+/// the way open: nought shut, one open, and between while it slides. The photo is fitted
+/// beside the panel, not under it: under it the panel covered a third of a landscape
+/// photo, and the faces it lists were among what it covered.
+pub fn info_room(shown: f32) -> f32 {
+    shown * (INFO_WIDTH + INFO_RIGHT + INFO_GAP)
 }
 
 /// The area the photo is fitted into, in a window of this frame: all of it, less the
-/// info panel's room. What the zoom and the pan are measured in, and from whose middle.
-pub fn photo_area(window: Frame, info: bool) -> Frame {
+/// info panel's room as far as the panel is `shown`. What the zoom and the pan are
+/// measured in, and from whose middle - in every frame of a slide, so the photo shrinks
+/// and grows with the panel instead of jumping at either end of it.
+pub fn photo_area(window: Frame, shown: f32) -> Frame {
     Frame {
-        width: (window.width - info_room(info)).max(0.0),
+        width: (window.width - info_room(shown)).max(0.0),
         height: window.height.max(0.0),
         ..window
     }
 }
 
-/// Where the info panel stands in the window.
-pub fn info_place(window: Frame) -> Frame {
+/// Where the info panel stands in the window, `shown` of the way in: from just past the
+/// window's right edge to its place clear of the corner. It comes in whole, at its own
+/// width, so what it says is not squashed and wrapped again as it slides.
+pub fn info_place(window: Frame, shown: f32) -> Frame {
     Frame {
-        left: window.left + window.width - INFO_RIGHT - INFO_WIDTH,
+        left: window.left + window.width - shown * (INFO_RIGHT + INFO_WIDTH),
         top: window.top + EDGE,
         width: INFO_WIDTH,
         height: (window.height - EDGE - INFO_BOTTOM).max(0.0),
@@ -123,8 +124,8 @@ mod tests {
 
     #[test]
     fn the_info_panel_takes_its_room_from_the_photo_only_while_it_is_open() {
-        assert_eq!(info_room(false), 0.0);
-        assert_eq!(info_room(true), INFO_WIDTH + INFO_RIGHT + INFO_GAP);
+        assert_eq!(info_room(0.0), 0.0);
+        assert_eq!(info_room(1.0), INFO_WIDTH + INFO_RIGHT + INFO_GAP);
         let window = Frame {
             left: 10.0,
             top: 20.0,
@@ -133,9 +134,9 @@ mod tests {
         };
         // The whole window with the panel closed; what the panel leaves, at the
         // window's full height and from its own corner, while it is open.
-        assert_eq!(photo_area(window, false), window);
+        assert_eq!(photo_area(window, 0.0), window);
         assert_eq!(
-            photo_area(window, true),
+            photo_area(window, 1.0),
             Frame {
                 width: 1280.0 - 348.0,
                 ..window
@@ -147,7 +148,7 @@ mod tests {
             height: -5.0,
             ..window
         };
-        let area = photo_area(narrow, true);
+        let area = photo_area(narrow, 1.0);
         assert_eq!((area.width, area.height), (0.0, 0.0));
     }
 
@@ -159,7 +160,7 @@ mod tests {
             width: 1280.0,
             height: 800.0,
         };
-        let panel = info_place(window);
+        let panel = info_place(window, 1.0);
         assert_eq!(
             panel,
             Frame {
@@ -170,17 +171,55 @@ mod tests {
             }
         );
         // The gap between the photo's area and the panel is black.
-        let area = photo_area(window, true);
+        let area = photo_area(window, 1.0);
         assert_eq!(panel.left - (area.left + area.width), INFO_GAP);
         // A window too low for it has a panel of no height, not of less.
         assert_eq!(
-            info_place(Frame {
-                height: 40.0,
-                ..window
-            })
+            info_place(
+                Frame {
+                    height: 40.0,
+                    ..window
+                },
+                1.0
+            )
             .height,
             0.0
         );
+    }
+
+    // Part of the way open, the panel takes as much of its room from the photo, and
+    // stands as far in from the window's right edge: shut it is just past that edge, and
+    // open where it has always stood.
+    #[test]
+    fn a_panel_part_way_takes_part_of_its_room() {
+        let window = Frame {
+            left: 10.0,
+            top: 20.0,
+            width: 1280.0,
+            height: 800.0,
+        };
+        assert_eq!(
+            photo_area(window, 0.5).width,
+            window.width - 0.5 * info_room(1.0)
+        );
+        let shut = info_place(window, 0.0);
+        assert_eq!(shut.left, window.left + window.width);
+        assert_eq!(shut.width, INFO_WIDTH);
+        assert_eq!(
+            info_place(window, 1.0),
+            Frame {
+                left: 10.0 + 1280.0 - 56.0 - 280.0,
+                top: 32.0,
+                width: 280.0,
+                height: 800.0 - 12.0 - 56.0,
+            }
+        );
+        // Half way, half way in, at its own width; and never over the photo's area.
+        let half = info_place(window, 0.5);
+        assert_eq!(half.left, 10.0 + 1280.0 - 0.5 * (56.0 + 280.0));
+        assert_eq!(half.width, INFO_WIDTH);
+        let area = photo_area(window, 0.5);
+        assert!(half.left > area.left + area.width);
     }
 
     #[test]

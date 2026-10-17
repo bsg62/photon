@@ -113,7 +113,11 @@ fn over_files<'a>(dir: &Path, pictures: &Path) -> (Harness<'a>, Driver, Dirs) {
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, Some(pictures)).unwrap());
+        .build_eframe(move |cc| {
+            App::new(cc, dirs, Some(pictures))
+                .unwrap()
+                .without_animations()
+        });
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the five photos shown", |app| {
         app.photos() == 5 && app.last_frame().is_some_and(|frame| frame.settled)

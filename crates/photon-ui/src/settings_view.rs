@@ -17,7 +17,7 @@ use crate::{
     dialog_view::{CONTROL, Done, Look, button, button_width, close_labelled},
     icons::Icon,
     settings::{
-        APPEARANCE_HINT, Asked, CANCEL, CLOSE, DISTANCES, FIND_FACES, FIND_FACES_BOX,
+        ANIMATIONS, APPEARANCE_HINT, Asked, CANCEL, CLOSE, DISTANCES, FIND_FACES, FIND_FACES_BOX,
         FIND_FACES_HINT, FIND_FACES_PRIVATE, FOLDERS_HINT, INTERVAL_AFTER, INTERVAL_BEFORE,
         LIBRARY, LICENCE, LOOK_ALIKES, LOOK_ALIKES_HINT, MEMORY, PHOTO_SIZE, PHOTO_SIZE_HINT,
         Question, REVEAL, SECTIONS, SHUFFLE, SLIDESHOW_HINT, Section, Settings, TAGS_HINT, THEMES,
@@ -779,6 +779,11 @@ impl SettingsView {
                     && Some(index) != chosen
                 {
                     page.asked.push(Asked::Theme(THEMES[index].0));
+                }
+                page.gap(S[2]);
+                let on = settings.seen.animations;
+                if checkbox(ui, page, ANIMATIONS, on, true, palette, None) {
+                    page.asked.push(Asked::Animations(!on));
                 }
                 page.heading(ui, PHOTO_SIZE, palette);
                 page.hint(ui, PHOTO_SIZE_HINT, palette);
@@ -1933,10 +1938,19 @@ mod tests {
         assert_eq!(click(&mut f, "Medium"), []);
         // The second heading stands its own room under the control above it, the
         // control's own room taken into it, as one CSS margin collapses into the next.
-        let tray = f.drew("Dark").unwrap().center().y + SEGMENT / 2.0 + TRAY;
+        // The animations box stands between the two, so the heading's room is measured
+        // from the box's row.
+        let row = f.drew(ANIMATIONS).unwrap().center().y + CONTROL / 2.0;
         let heading = f.drew(PHOTO_SIZE).unwrap().top();
-        let gap = heading - tray;
+        let gap = heading - row;
         assert!((S[4]..S[4] + 6.0).contains(&gap), "{gap}");
+    }
+
+    #[test]
+    fn the_animations_box_asks_for_the_other_value() {
+        let mut f = settings(Section::Appearance, true);
+        the(&mut f).seen.animations = true;
+        assert_eq!(click(&mut f, ANIMATIONS), [Asked::Animations(false)]);
     }
 
     // Nothing that shows a stored value takes a press before it has been read: what it

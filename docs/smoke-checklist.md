@@ -828,3 +828,12 @@ library, a file changed in the file manager, or Picasa will do.
 - [ ] Tab through the sidebar: a ring shows the row the keyboard is on, the list scrolls to keep it in sight, and Tab goes on below the edge. The empty library's buttons and the top bar's size buttons show the ring too.
 - [ ] Rename an album in the sidebar and press Enter or Escape: the keyboard is back on its row (Tab goes on from it). Rename a folder from its header in the grid: the arrows move the photos after.
 - [ ] With the system set to German (or any language not English), start photon: month and day headers ("Oktober 2026", "Sonntag, 4. Oktober 2026"), a folder's month, the viewer's caption and the info panel's dates, the "On this day" hint and every count ("1.234 photos") are in German order and words. Set it back to English: as before.
+
+### Animations
+
+- [ ] The feel: the sidebar's slide (Ctrl+B) and the info panel's (`I`) ease out and take about 200 ms - quick, not abrupt, and nothing stops short or overshoots.
+- [ ] Drag the sidebar's splitter fast across several column counts: the photos glide to their new places each time, none jump, none flicker, and the grid keeps the photo it was at.
+- [ ] Press Ctrl+B twice quickly: the sidebar turns round from where it was and ends in the state of the last press; nothing under it is pressable while it closes.
+- [ ] Open the viewer on a zoomed photo and press `I`: the panel slides in, the photo is refitted beside it, the panel never crosses the close button.
+- [ ] `H` in a long folder (and unstar in Starred): the photos close the gap by gliding, the one that left fades where it stood.
+- [ ] Settings → animations off: the sidebar and panel change at once, the grid does not glide, and a thumbnail arriving late does not fade. Back on: all of it moves again.

@@ -743,6 +743,15 @@ pub fn set_theme(engine: &Engine, choice: ThemeChoice) -> CmdResult<()> {
     Ok(engine.lib.set_theme(choice)?)
 }
 
+/// Whether the window moves things smoothly.
+pub fn animations(engine: &Engine) -> CmdResult<bool> {
+    Ok(engine.lib.animations()?)
+}
+
+pub fn set_animations(engine: &Engine, on: bool) -> CmdResult<()> {
+    Ok(engine.lib.set_animations(on)?)
+}
+
 /// How large the grid draws its tiles.
 pub fn grid_tile(engine: &Engine) -> CmdResult<GridTile> {
     Ok(engine.lib.grid_tile()?)

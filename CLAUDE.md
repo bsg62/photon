@@ -992,6 +992,35 @@ scrolled past (`pin_at`, `pin_top`) - and found again in the new rows whenever t
 the column count changes, not only on a new size. Across a rebuilt index alone it is kept as
 the number it was (below, the year strip).
 
+**The window's motion is drawing only, and the user's switch can end it** (spec
+`2026-10-17-photon-native-animations-design.md`; `animate.rs`, `grid/glide.rs`). A `Slide`
+is a number moved from one value to another over `DURATION_MS` (200) by `ease_out`, for the
+sidebar (`Shell`, `window_layout::areas(.., shown)`) and the info panel
+(`viewer_layout::{info_room, photo_area, info_place}(.., shown)`). **The stored state flips
+at the press and the slide only draws it**: a hidden sidebar is hidden, and a closing one is
+drawn in a disabled child that takes no press and no key, so nothing waits for a clock;
+"Rename in photon…" shows the sidebar at once (`Shell::sidebar_at_once`), since its field
+needs a row in sight. The panel is clipped at its open right edge, or it would cross the
+close button. **The grid's photos glide** (`Glides`, begun by `begin`) when the columns or
+the nominal size change under the same `layout_gen` (`GridView::lay_out`), and after the
+user's own writes: `App::write` is the one place that pushes a write, `moving` holds the
+ones on their way that change a view's rows (`grid::glide::Moving`), and a grid adopted
+while any is, or after one's answer was read *while a grid the engine had published was
+still to be adopted*, is the user's and is handed over with `GridData::glide_from`. The
+engine publishes inside the command, before the answer is pushed, so the grid lands before
+the answer is read or after; an answer read once its grid was on screen, or a refusal,
+used to arm the next grid adopted however late - a scan's, minutes on. A scan's grid arriving in that moment glides too, which is
+accepted; any other does not. **A new write that changes a view's rows belongs in
+`Write::moves_grid`**, or its photos jump. Rows the view did not lay out are no place to
+glide from (`laid_from`), nor are rows the grid was not drawn in the pass before
+(`drawn_pass`): laid out before the viewer, compare or the People page took its place, they
+were last seen a window size ago, and the grid coming back in other columns glided from
+there. A pin that moves the position under a running glide is
+`Glides::repositioned`'s to keep steady. **The switch is the `animations` setting**, on by
+default; off, nothing here moves and the grid's late-thumbnail fade stops too. Every test
+launches `without_animations` (all but `probe.rs` and `app.rs`), and a test of a motion says
+so (`launch_animated`, `opened_animated`, `over_animated`).
+
 **A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one
 thread polls every pending `request_async`. Three rules a
 review added, each with its test. A built thumbnail is handed back only under its own key
@@ -1456,7 +1485,7 @@ code. A band begun with Shift adds, as one begun with Ctrl does, though a Shift+
 ranges. No band begins in a grid with no photos, where the shell draws what an empty
 library says.
 
-**The native window writes through one queue, and tells the grid nothing**
+**The native window writes through one queue, and tells the grid only which rebuild is the user's**
 (`App::writes`: `Write::Stars`, `Hidden`, `AlbumAdd`, `AlbumRemove`, `PersonRemove`, and
 those of the pull requests after it). Each
 is one of the engine's own commands, made in its turn off the UI thread, and the only one
@@ -1466,7 +1495,8 @@ in the grid's order, not when a menu opened. What comes after a write is the eng
 rebuild, arriving like a scan's: `Selection::follow` takes out what left and lands the
 lead, which is all of the Svelte store's `setHidden` (the landing after a hide, `H` again
 going on from there, the last photo's neighbour) with no line here that knows a hide
-happened. What a write's answer adds is only what a rebuild cannot say: a message when
+happened - except that the window does say which rebuild is the user's, so
+the grid can glide to it (above, "The window's motion"). What a write's answer adds is only what a rebuild cannot say: a message when
 fewer stars were written than asked (`stars_missed`: a folder whose INI cannot be written
 costs that and not the photos beside it), the engine's own words for a refusal, what came
 of taking photos off a person (`removed_message`), and a read of the lists after an album

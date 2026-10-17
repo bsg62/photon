@@ -279,7 +279,7 @@ impl App {
         match action {
             PeopleAction::Name { group, name } => {
                 model.naming(group);
-                self.writes.push(Write::NameGroup { group, name });
+                self.write(Write::NameGroup { group, name });
             }
             PeopleAction::Open(id) => self.open_face(id),
             PeopleAction::OpenSettings => self.open_settings(Section::People),
@@ -287,17 +287,17 @@ impl App {
             PeopleAction::Clear => model.clear_selection(),
             PeopleAction::Act { strip, action } => {
                 if let Some(write) = model.act(strip, action) {
-                    self.writes.push(Write::Faces(write));
+                    self.write(Write::Faces(write));
                 }
             }
             PeopleAction::NameSingles(typed) => {
                 if let Some(write) = model.name_singles(&typed) {
-                    self.writes.push(Write::Faces(write));
+                    self.write(Write::Faces(write));
                 }
             }
             PeopleAction::ConfirmAll(person) => {
                 if let Some(write) = model.confirm_all(person) {
-                    self.writes.push(Write::Faces(write));
+                    self.write(Write::Faces(write));
                 }
             }
             PeopleAction::ShowMore(strip) => {
@@ -308,7 +308,7 @@ impl App {
             PeopleAction::ShowFewer(strip) => model.show_fewer(strip),
             PeopleAction::Rename { person, name } => {
                 if let Some(name) = model.rename(person, &name) {
-                    self.writes.push(Write::Rename { person, name });
+                    self.write(Write::Rename { person, name });
                 }
             }
             PeopleAction::Merge { from, at } => self.open_menu(ctx, at, MenuOf::Merge(from)),
@@ -323,7 +323,7 @@ impl App {
             }
             PeopleAction::Ignore { group, ignored } => {
                 model.naming(group);
-                self.writes.push(Write::GroupIgnored { group, ignored });
+                self.write(Write::GroupIgnored { group, ignored });
             }
         }
     }
