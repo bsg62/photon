@@ -443,8 +443,10 @@ impl SidebarView {
 
         // The other button on an entry that has a menu asks for it, where it goes
         // down - as on a photo - and not through anything lying over the list.
+        // Inside what is drawn of the list: sliding open, it is cut off short of its
+        // whole width, and the photos are beside the cut.
         if let Some(at) = menu_press(ui)
-            && rect.contains(at)
+            && rect.intersect(ui.clip_rect()).contains(at)
             && at.x < bar.left()
             && ui.ctx().layer_id_at(at) == Some(ui.layer_id())
         {
@@ -1268,6 +1270,9 @@ mod tests {
         beside: f32,
         /// Room under the sidebar, as the status bar takes it.
         below: f32,
+        /// How much of the sidebar's width is drawn, as the shell cuts it off while it
+        /// slides open; all of it when none.
+        drawn_to: Option<f32>,
         /// Every text the last frame drew, with where and in which colour.
         texts: Vec<(String, Rect, Color32)>,
         /// Every filled rectangle the last frame drew, and every picture - an icon is
@@ -1306,6 +1311,7 @@ mod tests {
                 above: 0.0,
                 beside: 0.0,
                 below: 0.0,
+                drawn_to: None,
                 texts: Vec::new(),
                 fills: Vec::new(),
                 icons: Vec::new(),
@@ -1343,7 +1349,7 @@ mod tests {
                 }),
             };
             let (view, above, beside) = (&mut self.view, self.above, self.beside);
-            let below = self.below;
+            let (below, drawn_to) = (self.below, self.drawn_to);
             let over = self.over;
             let mut shown = Shown::default();
             let mut left_over = Vec::new();
@@ -1366,7 +1372,13 @@ mod tests {
                             pos2(window.left(), window.top() + above),
                             pos2(window.right() - beside, window.bottom() - below),
                         );
+                        let clip = ui.clip_rect();
+                        if let Some(width) = drawn_to {
+                            let drawn = Rect::from_min_size(rect.min, vec2(width, rect.height()));
+                            ui.set_clip_rect(drawn.intersect(clip));
+                        }
                         shown = view.show(ui, rect, &data);
+                        ui.set_clip_rect(clip);
                         ui.input(|input| {
                             for event in &input.events {
                                 match event {
@@ -2343,6 +2355,20 @@ mod tests {
         );
         let below = pos2(100.0, 46.0 + 7.0);
         assert_eq!(f.other_down(below), Some((folder(3), below)), "below it");
+    }
+
+    // Sliding open, the sidebar is laid out at its whole width and cut off where it is
+    // drawn to: right of that edge are the photos, and the other button there is theirs,
+    // not the row's that is laid out under it.
+    #[test]
+    fn the_other_button_past_a_sliding_sidebars_edge_asks_for_no_rows_menu() {
+        let mut f = Fixture::new(3);
+        f.drawn_to = Some(120.0);
+        f.frame(Vec::new());
+        let row = f.middle(&folder(2)).y;
+        assert_eq!(f.other_down(pos2(160.0, row)), None, "past the edge");
+        let inside = pos2(100.0, row);
+        assert_eq!(f.other_down(inside), Some((folder(2), inside)), "inside it");
     }
 
     // On a Mac the first button with Control held asks for the row's menu, and the click
