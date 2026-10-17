@@ -2,7 +2,9 @@
 //! photos made for the test, in a temporary directory. A star written here goes into
 //! that directory's own `.picasa.ini`, and nowhere else.
 
-use crate::common::{Driver, Harness, hold_over, library, opened, over, photo_ids, said};
+use crate::common::{
+    Driver, Harness, hold_over, library, opened, over, over_animated, photo_ids, said,
+};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{
@@ -56,8 +58,20 @@ fn pictures(dir: &Path) -> PathBuf {
 /// The application over a library that watches `pictures(dir)`, once its three photos
 /// are shown; and their ids, in the grid's order.
 fn three<'a>(dir: &Path) -> (Harness<'a>, Driver, Vec<i64>, PathBuf) {
+    three_by(dir, over)
+}
+
+/// `three`, with the animations on.
+fn three_animated<'a>(dir: &Path) -> (Harness<'a>, Driver, Vec<i64>, PathBuf) {
+    three_by(dir, over_animated)
+}
+
+fn three_by<'a>(
+    dir: &Path,
+    launch: impl FnOnce(&Path, Option<&Path>) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs),
+) -> (Harness<'a>, Driver, Vec<i64>, PathBuf) {
     let folder = pictures(dir);
-    let (mut harness, mut driver, _) = over(dir, Some(&folder));
+    let (mut harness, mut driver, _) = launch(dir, Some(&folder));
     driver.until(&mut harness, "the three photos shown", |app| {
         app.photos() == 3 && app.last_frame().is_some_and(|frame| frame.settled)
     });
@@ -1771,6 +1785,104 @@ fn the_info_panel_opens_by_its_key_and_its_button_and_the_photo_moves_over() {
     assert!(!harness.state().viewer_info(), "closed at every opening");
 }
 
+/// A key going down alone, in a frame of its own: `key_press` would draw a second frame
+/// at the same moment for the key coming up. What it begins is timed from this frame.
+fn key_down(driver: &mut Driver, harness: &mut Harness<'_>, key: Key) -> f64 {
+    harness.event(egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(harness);
+    driver.now
+}
+
+/// The width of the photo's area in the viewer's last frame, in pixels.
+fn area_width(harness: &Harness<'_>) -> u32 {
+    harness.state().viewer_box().expect("the viewer drawn").0
+}
+
+// `I` slides the panel in over its time, from the press, and the photo's area shrinks with
+// it in every frame; once it is in, the window is still again. A thousand points wide, the
+// area is 652 beside the open panel.
+#[test]
+fn the_panel_slides_and_then_asks_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    driver.settle(&mut harness);
+    assert_eq!(area_width(&harness), 1000);
+    let pressed = key_down(&mut driver, &mut harness, Key::I);
+    assert!(harness.state().viewer_info(), "open at the press");
+    driver.frame(&mut harness, pressed + 0.1);
+    let part = area_width(&harness);
+    assert!(
+        652 < part && part < 1000,
+        "{part} at a hundred milliseconds"
+    );
+    driver.frame(&mut harness, pressed + 0.2);
+    assert_eq!(area_width(&harness), 652);
+    // The copy for the narrower area is asked for once it has stood, and lands.
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0);
+}
+
+// The crop tool shuts the panel at once, not by a slide: in the frame after `C` the photo's
+// area is the whole window, and with the tool cancelled straight away the panel is not
+// there to be seen sliding out.
+#[test]
+fn the_crop_tool_shuts_the_panel_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.until(&mut harness, "the full picture", |app| {
+        app.viewer_levels().is_some()
+    });
+    key(&mut driver, &mut harness, Key::I);
+    driver.frames_in(&mut harness, 0.3);
+    driver.settle(&mut harness);
+    assert_eq!(area_width(&harness), 652);
+    let field =
+        |harness: &Harness<'_>| (harness.query_by_role(egui::accesskit::Role::TextInput)).is_some();
+    assert!(field(&harness), "the panel's keyword field");
+    key_down(&mut driver, &mut harness, Key::C);
+    assert!(!harness.state().viewer_info());
+    driver.act(&mut harness);
+    assert_eq!(area_width(&harness), 1000);
+    key(&mut driver, &mut harness, Key::Escape);
+    driver.act(&mut harness);
+    assert!(
+        harness.state().viewer().is_some(),
+        "the tool cancelled, the viewer open"
+    );
+    assert_eq!(area_width(&harness), 1000);
+    assert!(!field(&harness), "no panel drawn");
+}
+
+// A slideshow shuts the panel at once too: in the frame after `S` the photo has the whole
+// window.
+#[test]
+fn a_slideshow_shuts_the_panel_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    open(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::I);
+    driver.frames_in(&mut harness, 0.3);
+    driver.settle(&mut harness);
+    assert_eq!(area_width(&harness), 652);
+    key_down(&mut driver, &mut harness, Key::S);
+    assert!(!harness.state().viewer_info());
+    driver.act(&mut harness);
+    assert_eq!(area_width(&harness), 1000);
+}
+
 /// Opens the viewer on the photo at `offset` with its info panel, drawn with what the
 /// library says of the photo.
 fn informed(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize) {
@@ -2699,12 +2811,15 @@ fn a_panel_the_wheel_does_not_move_is_taken_down_by_its_scrollbar() {
     assert_eq!(a_notch_over_the_panel(|| Notch::Points(0.0)), 0.0);
     let (_dir, mut harness, mut driver, before) = a_low_panel(|| Notch::Points(0.0));
     let size = harness.ctx.content_rect();
-    let panel = photon_ui::viewer_layout::info_place(photon_ui::viewer_layout::Frame {
-        left: size.left(),
-        top: size.top(),
-        width: size.width(),
-        height: size.height(),
-    });
+    let panel = photon_ui::viewer_layout::info_place(
+        photon_ui::viewer_layout::Frame {
+            left: size.left(),
+            top: size.top(),
+            width: size.width(),
+            height: size.height(),
+        },
+        1.0,
+    );
     let foot = Pos2::new(
         panel.left + panel.width - 4.0,
         panel.top + panel.height - 2.0,

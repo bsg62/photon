@@ -38,7 +38,7 @@ use crate::{
 };
 use eframe::egui::{
     self, Color32, CursorIcon, Event, Id, Key, PointerButton, Pos2, Rect, Sense, Stroke,
-    StrokeKind, TextureHandle, WidgetInfo, WidgetType, pos2, vec2,
+    StrokeKind, TextureHandle, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// A tool in the bar, and the room between two.
@@ -170,9 +170,14 @@ pub struct ViewerData<'a> {
     pub copyable: bool,
     /// Whether it has been turned or cropped: "Original" is offered.
     pub edited: bool,
-    /// Whether the info panel is open: the photo is then fitted beside it, and its
-    /// button in the bar is shown pressed.
+    /// Whether the info panel is open: its button in the bar is shown pressed, what is
+    /// in it takes a press, and the faces are outlined. What is stored, and flipped at
+    /// the press.
     pub info_open: bool,
+    /// How far the panel is drawn towards that, from nought to one: the photo is fitted
+    /// beside it as far as it is in, in every frame of its slide. Shut while `info_open`
+    /// is, open while it is open, but for the slide's time.
+    pub info_shown: f32,
     /// What the panel says, once the library has said it of this photo.
     pub info: Option<InfoData<'a>>,
     /// The photo's faces, named and not, as the library says they are: outlined while
@@ -298,7 +303,7 @@ struct Controls {
     /// The photo's own caption, where it has one: no control, but a press on it is not
     /// the photo's either - a double click on a line of text is not "closer".
     caption: Option<Rect>,
-    /// The info panel, while it is open.
+    /// The info panel, wherever it is drawn: open, or on its way in or out.
     panel: Option<Rect>,
     /// The faces as the last frame drew them: what a press in this one was aimed at.
     /// One that takes a press - an unnamed face, while the outlines show - is a
@@ -385,18 +390,20 @@ impl ViewerView {
         }
         let edited = self.edited;
 
-        // The photo's area: the window, less the info panel's room while it is open.
-        // The fit, the zoom's bounds, the point a zoom holds still and the pan are all
-        // measured in it, and the picture is cut off at its edge.
+        // The photo's area: the window, less the info panel's room as far as the panel
+        // is drawn. The fit, the zoom's bounds, the point a zoom holds still and the pan
+        // are all measured in it, and the picture is cut off at its edge.
         let whole = Frame {
             left: window.left(),
             top: window.top(),
             width: window.width(),
             height: window.height(),
         };
-        let area = photo_area(whole, data.info_open);
-        let panel = data.info_open.then(|| {
-            let place = info_place(whole);
+        let area = photo_area(whole, data.info_shown);
+        // Where the panel is drawn, open or on its way in or out: a press there is
+        // nobody's while it slides away, but it is not the photo's either.
+        let panel = (data.info_shown > 0.0).then(|| {
+            let place = info_place(whole, data.info_shown);
             Rect::from_min_size(pos2(place.left, place.top), vec2(place.width, place.height))
         });
         let within = Rect::from_min_size(pos2(area.left, area.top), vec2(area.width, area.height));
@@ -594,9 +601,22 @@ impl ViewerView {
                 !self.let_go,
             );
         }
-        if let Some(place) = panel {
-            let pressed = self.info.show(ui, place, data.info.as_ref());
-            actions.extend(pressed.into_iter().map(ViewerAction::Panel));
+        match panel {
+            Some(place) if data.info_open => {
+                let pressed = self.info.show(ui, place, data.info.as_ref());
+                actions.extend(pressed.into_iter().map(ViewerAction::Panel));
+            }
+            // Sliding away: drawn as it was, and nobody's, as the sidebar is - its field
+            // let go of the keyboard at the press that shut it, and no link, tick or
+            // cross in it is pressed on its way out. Disabled, and not dimmed for it.
+            Some(place) => {
+                let mut style = (**ui.style()).clone();
+                style.visuals.disabled_alpha = 1.0;
+                let mut closing =
+                    ui.new_child(UiBuilder::new().max_rect(window).style(style).disabled());
+                let _ = self.info.show(&mut closing, place, data.info.as_ref());
+            }
+            None => {}
         }
         actions
     }
@@ -2110,6 +2130,8 @@ mod tests {
         can_prev: bool,
         can_next: bool,
         info_open: bool,
+        /// How far the panel is drawn; as `info_open` says, unless a test says otherwise.
+        info_shown: Option<f32>,
         editable: bool,
         copyable: bool,
         edited: bool,
@@ -2172,6 +2194,7 @@ mod tests {
                 can_prev: true,
                 can_next: true,
                 info_open: false,
+                info_shown: None,
                 editable: true,
                 copyable: true,
                 edited: false,
@@ -2251,6 +2274,7 @@ mod tests {
                 can_prev: self.can_prev,
                 can_next: self.can_next,
                 info_open: self.info_open,
+                info_shown: (self.info_shown).unwrap_or(if self.info_open { 1.0 } else { 0.0 }),
                 editable: self.editable,
                 copyable: self.copyable,
                 edited: self.edited,
@@ -4128,6 +4152,46 @@ mod tests {
         f.press(gap);
         f.point(gap + vec2(-30.0, 0.0));
         assert_eq!(f.zoomed().1, (-30.0, 0.0));
+    }
+
+    // Sliding shut, the panel is drawn as it was and takes no press: a press and a drag on
+    // what is still drawn of it pan nothing, two quick ones are no double click, and a
+    // link in it is no link. Nobody's - not the photo's either, which is fitted beside it
+    // as far as it is still in.
+    #[test]
+    fn a_closing_panel_takes_no_press_and_is_not_the_photos() {
+        let mut f = photo();
+        f.info_open = false;
+        f.info_shown = Some(0.5);
+        f.item = Some(crate::viewer_info_view::testing::full());
+        f.frame(Vec::new());
+        // Half its room: 168 of its 336 points in from the edge, the photo 174 short.
+        let place = Rect::from_min_max(
+            pos2(1000.0 - 168.0, 12.0),
+            pos2(1000.0 - 168.0 + 280.0, 644.0),
+        );
+        assert!(
+            f.fills.iter().any(|(rect, _)| *rect == place),
+            "{:?}",
+            f.fills
+        );
+        let area = 1000.0 - 174.0;
+        assert_eq!(f.photo().unwrap().1.width(), area);
+        f.zoom.to(2.0, Pan::default(), (area, 700.0));
+        let at = pos2(900.0, 600.0);
+        f.press(at);
+        f.point(at + vec2(-200.0, -100.0));
+        assert_eq!(f.frame(vec![primary(at + vec2(-200.0, -100.0), false)]), []);
+        assert_eq!(f.zoomed(), (2.0, (0.0, 0.0)));
+        f.time += 1.0;
+        assert_eq!(f.click(at), []);
+        assert_eq!(f.click(at), []);
+        assert_eq!(f.zoom.zoom(), 2.0);
+        let lens = f
+            .drew("EF50mm f/1.8 STM")
+            .expect("what it says is still drawn");
+        assert!(lens.left() > place.left());
+        assert_eq!(f.click(lens.center()), []);
     }
 
     // A trackpad's points move the panel by themselves, and not by a notch each.

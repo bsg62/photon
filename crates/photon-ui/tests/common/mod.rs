@@ -352,17 +352,36 @@ pub fn over_with<'a>(
     pictures: Option<&Path>,
     platform: std::sync::Arc<Picker>,
 ) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    over_built(dir, pictures, platform, false)
+}
+
+/// `over`, with the animations on (`launch_animated`).
+pub fn over_animated<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
+    over_built(dir, pictures, no_platform(), true)
+}
+
+fn over_built<'a>(
+    dir: &Path,
+    pictures: Option<&Path>,
+    platform: std::sync::Arc<Picker>,
+    animations: bool,
+) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs) {
     let made = photon_ui::dirs::within(&dir.join("data"), &dir.join("cache"));
     let (dirs, pictures) = (made.clone(), pictures.map(Path::to_owned));
     let harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            App::new(cc, dirs, pictures)
-                .unwrap()
-                .without_animations()
-                .with_videos(no_videos())
-                .with_platform(platform)
+            let app = App::new(cc, dirs, pictures).unwrap();
+            let app = if animations {
+                app
+            } else {
+                app.without_animations()
+            };
+            app.with_videos(no_videos()).with_platform(platform)
         });
     let driver = Driver::new(&harness);
     (harness, driver, made)

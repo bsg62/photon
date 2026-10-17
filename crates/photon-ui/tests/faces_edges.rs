@@ -504,7 +504,7 @@ fn an_outline_is_where_the_library_says_the_face_is() {
                 width: window.width(),
                 height: window.height(),
             },
-            true,
+            1.0,
         );
         let picture = contained(item.width as f32, item.height as f32, area);
         egui::Rect::from_min_max(

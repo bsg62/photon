@@ -1,6 +1,7 @@
 //! The application: the engine, the shell around the grid, and the order of a frame.
 
 use crate::{
+    animate::Slide,
     compare::{self, Compare},
     compare_view::{CompareAction, CompareData, CompareView, PaneData},
     copies::{self, CopiesOf},
@@ -1870,6 +1871,13 @@ impl App {
         self.viewer.as_ref().is_some_and(|open| open.info)
     }
 
+    /// The photo's area in the viewer's last frame, in pixels: the box the photo was
+    /// fitted into, which the info panel takes its room from as far as it is drawn.
+    pub fn viewer_box(&self) -> Option<(u32, u32)> {
+        let open = self.viewer.as_ref()?;
+        open.within.map(|(within, _)| within)
+    }
+
     /// The size, in pixels, of the copy of the full picture that was scaled to fit the
     /// window: none until it is made, or for a photo no larger than the window.
     pub fn viewer_fitted(&self) -> Option<[usize; 2]> {
@@ -2279,6 +2287,7 @@ impl App {
             stale: None,
             within: None,
             info: false,
+            info_slide: Slide::at(0.0),
             crop: None,
             show: Slideshow::default(),
             shuffle: None,
@@ -2751,8 +2760,15 @@ impl App {
         // once the size has stood for a moment - a window being dragged wider is a new
         // size in every frame, and each asking is a whole decode.
         // (The box is the photo's area, which the open info panel takes its room from:
-        // the copy is of the size the photo is drawn at beside it.)
+        // the copy is of the size the photo is drawn at beside it. While the panel slides
+        // that is another size in every frame, as when the window is dragged wider, and
+        // the levels are drawn until it has stood.)
         let window = ctx.content_rect();
+        let info_shown = open.info_slide.value(now) as f32;
+        // A still window draws nothing: frames while the panel moves, none once it is in.
+        if open.info_slide.running(now) {
+            ctx.request_repaint();
+        }
         let area = viewer_layout::photo_area(
             viewer_layout::Frame {
                 left: window.left(),
@@ -2760,7 +2776,7 @@ impl App {
                 width: window.width(),
                 height: window.height(),
             },
-            open.info,
+            info_shown,
         );
         let scale = ctx.pixels_per_point();
         let within = (
@@ -2979,6 +2995,7 @@ impl App {
             copyable,
             edited: (open.item.as_ref()).is_some_and(|item| item.edit.is_some()),
             info_open: open.info,
+            info_shown,
             info: (open.item.as_ref()).map(|item| InfoData {
                 item,
                 albums: &collections.albums,
@@ -3160,8 +3177,15 @@ impl App {
                     }
                     false
                 }
+                // The stored state flips at the press, and the slide begins at it: begun
+                // in the next frame, it would end a frame after the time it is given.
                 ViewerAction::Info => {
                     open.info = !open.info;
+                    let to = if open.info { 1.0 } else { 0.0 };
+                    open.info_slide.to(to, now, self.animations);
+                    if open.info_slide.running(now) {
+                        ctx.request_repaint();
+                    }
                     false
                 }
                 // A turn, and every turn and the crop taken off: of the photo on
@@ -3204,7 +3228,9 @@ impl App {
                             uncropped: None,
                             failed: false,
                         });
+                        // At once: the tool takes the whole window in the frame it opens.
                         open.info = false;
+                        open.info_slide.to(0.0, now, false);
                         *open.viewer.zoom_mut() = Zoom::default();
                     }
                     false
@@ -3380,6 +3406,7 @@ impl App {
             }
         }
         open.info = false;
+        open.info_slide.to(0.0, now, false);
         open.shuffle = None;
         self.show_settings.ask(());
         // Shown: the frame's word for the photo it drew, which is the photo the show
@@ -5162,6 +5189,9 @@ struct Viewing {
     /// Whether the info panel is open: the viewer's while it is, closed at every
     /// opening, and kept across a step.
     info: bool,
+    /// How far the panel is drawn towards `info`: slid by its button and `I` alone, and
+    /// shut at once by everything else that shuts it.
+    info_slide: Slide,
     /// The crop tool, while it is open.
     crop: Option<Cropping>,
     /// The slideshow, running or not.
