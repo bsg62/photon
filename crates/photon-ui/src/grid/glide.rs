@@ -102,6 +102,15 @@ impl Glides {
         self.position_at_start = new_position;
     }
 
+    /// The grid was put at `new_position` from `old_position` without a scroll - the pin
+    /// finding the photo at the top in rows a pixel wider, the end held to rows that
+    /// grew shorter - and with no glide begun: what each key glides from stays where it
+    /// stands on screen. Taken for a scroll, every photo would jump by the distance the
+    /// pin moved, which deep in a library is a row for every row above the top.
+    pub fn repositioned(&mut self, old_position: f64, new_position: f64) {
+        self.position_at_start += new_position - old_position;
+    }
+
     /// Where `key` is drawn at `now_ms` given its new place (relative to `position`):
     /// the old place moved by the scroll since the start, eased towards `target`.
     /// A key with no old place is drawn at `target`.
@@ -237,6 +246,26 @@ mod tests {
         // for, on screen at 750.
         glides.begin([(one(), target)], Vec::new(), 750.0, 3000.0, 1100.0);
         assert_eq!(glides.place(one(), at(8.0, 400.0), 3000.0, 1100.0), drawn);
+    }
+
+    #[test]
+    fn a_grid_put_elsewhere_without_a_scroll_leaves_the_start_on_screen() {
+        let mut glides = Glides::default();
+        glides.begin(
+            [(one(), at(8.0, 120.0))],
+            Vec::new(),
+            5000.0,
+            5000.0,
+            1000.0,
+        );
+        // The pin moved the grid to 5250 under rows a pixel wider; the targets are
+        // measured from there, and where each photo starts from is where it was.
+        glides.repositioned(5000.0, 5250.0);
+        assert_eq!(
+            glides.place(one(), at(8.0, 300.0), 5250.0, 1000.0),
+            at(8.0, 120.0)
+        );
+        assert_eq!(glides.visible_before(5250.0, 700.0), vec![one()]);
     }
 
     #[test]

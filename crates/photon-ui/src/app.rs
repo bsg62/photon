@@ -4952,6 +4952,8 @@ impl eframe::App for App {
             // photos, and has no keyboard of its own.
             keys: !self.shell.search_help_open(),
             copies_marked: copies::marked(self.nav.settled().view),
+            animations: self.animations,
+            glide_from: None,
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.

@@ -6,6 +6,7 @@
 //! after it, and here the place is found again before anything is drawn.
 
 use super::{
+    glide::{Glides, Key as GlideKey, Leaving, Place},
     header,
     layout::{
         GAP, HEADER, NavKey, PinnedHeader, Row, RowKind, Span, build_rows, columns_for,
@@ -28,7 +29,7 @@ use crate::{
     theme::{
         apply::{color, menu_shadow, palette},
         fonts,
-        tokens::{R, S, T},
+        tokens::{Palette, R, S, T},
     },
     thumbs::{loader::Want, shown::Thumbs},
 };
@@ -38,7 +39,7 @@ use eframe::egui::{
 };
 use jiff::tz::TimeZone;
 use photon_core::{
-    grid::GridIndex,
+    grid::{GridEntry, GridIndex, Section},
     library::{Folder, GridTile, WatchedFolder},
 };
 use std::{
@@ -157,6 +158,14 @@ pub struct GridData<'a> {
     pub keys: bool,
     /// Whether a photo with copies is marked so (`copies::marked`).
     pub copies_marked: bool,
+    /// Whether the photos glide to their new places when the columns change: the
+    /// Settings switch.
+    pub animations: bool,
+    /// The grid the photos glide from when this one is the user's own write landing
+    /// (a hide, a star taken off in Starred): the index the rows on screen were built
+    /// from, whatever else changed. None for every other grid, which glides only when
+    /// its columns change under the same sections.
+    pub glide_from: Option<&'a GridIndex>,
 }
 
 /// A key the grid answers, read from the frame's input.
@@ -296,6 +305,9 @@ pub struct GridOutput {
     pub header_menu: Option<(i64, egui::Pos2)>,
     /// The photo to open in the viewer: Enter on the lead, or a double click.
     pub open: Option<i64>,
+    /// Whether the photos are gliding to new places: frames are asked for until they are
+    /// there.
+    pub gliding: bool,
 }
 
 /// A key that asks something of the selection, with the selection as it was at that
@@ -324,6 +336,9 @@ struct LaidOut {
     layout_gen: u64,
     columns: usize,
     tile: f64,
+    /// The size chosen, before `tile_for` widens it: the size buttons change it, and
+    /// with it every photo's place, though the columns may stay as they were.
+    nominal: f64,
 }
 
 #[derive(Default)]
@@ -366,6 +381,14 @@ pub struct GridView {
     /// The photo a plain click last selected, and when: a second one on it within the
     /// time egui takes two clicks for a double click opens it.
     clicked: Option<(f64, i64)>,
+    /// The photos and headers on their way from where the last layout put them.
+    glides: Glides,
+    /// How wide the photos' room was in the last frame, which a header is as wide as:
+    /// kept apart from the layout, since a pixel of it that changes no tile builds no
+    /// rows.
+    width: f64,
+    /// Where each photo was drawn in the last frame, gliding or not.
+    placed: Vec<(i64, Rect)>,
 }
 
 impl GridView {
@@ -391,6 +414,8 @@ impl GridView {
         self.asked = None;
         self.wanted = None;
         self.scroll.set(0.0);
+        // Nor do they glide from it: they are not the same photos moved.
+        self.glides.stop();
     }
 
     /// Asks for the photo at grid offset `offset` to be shown: the Svelte grid's
@@ -424,6 +449,15 @@ impl GridView {
         ))
     }
 
+    /// Where the photo `id` was drawn in the last frame, gliding or not, and none when it
+    /// was not drawn: what a test of a glide reads beside `rect_of`, which is where the
+    /// photo is pressed.
+    pub fn drawn_place(&self, id: i64) -> Option<Rect> {
+        (self.placed.iter())
+            .find(|(drawn, _)| *drawn == id)
+            .map(|(_, rect)| *rect)
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -443,7 +477,8 @@ impl GridView {
         );
         let area = Rect::from_min_max(rect.min, pos2(bar.left(), rect.bottom()));
 
-        let rebuilt = self.lay_out(data, f64::from(area.width()), viewport);
+        let now = ui.input(|input| input.time) * 1000.0;
+        let rebuilt = self.lay_out(data, f64::from(area.width()), viewport, now);
         if let Some((offset, align)) = self.wanted.take() {
             self.place(data.index, offset, align, viewport);
         }
@@ -452,7 +487,6 @@ impl GridView {
         let before = self.scroll.position();
         self.take_input(ui, rect, bar, strip, viewport);
         self.take_picks(ui, area, data, selection, viewport);
-        let now = ui.input(|input| input.time) * 1000.0;
         if self.scroll.position() != before {
             self.speed.sample(self.scroll.position(), now, viewport);
         }
@@ -466,11 +500,29 @@ impl GridView {
         let top = self.scroll.position();
         let motion = self.speed.motion();
         let (first, last) = visible_range(&self.rows, top, viewport, 0.0);
-        let (wanted, on_screen) = self.wanted(data.index, top, viewport, motion, (first, last));
+        let (mut wanted, on_screen) = self.wanted(data.index, top, viewport, motion, (first, last));
+        let gliding = self.glides.running(now);
+        if gliding {
+            // What glides into view from where it stood, or out of it to where it now
+            // belongs, is drawn as well as what is in view, and wants its picture as much.
+            let asked: HashSet<u64> = wanted.iter().map(|want| want.key).collect();
+            let more: Vec<Want> = (self.gliding_entries(data.index, top, viewport, now))
+                .into_iter()
+                .filter(|entry| !asked.contains(&entry.thumb_key))
+                .map(|entry| Want {
+                    id: entry.id,
+                    key: entry.thumb_key,
+                })
+                .collect();
+            let at = on_screen.len();
+            wanted.splice(at..at, more);
+            // Until every photo is where it belongs, and not a frame after.
+            ui.ctx().request_repaint();
+        }
         let still = matches!(motion, Motion::Still);
         let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport), still);
 
-        let (settled, marked) = self.draw(ui, area, data, thumbs, selection, (first, last));
+        let (settled, marked) = self.draw(ui, area, data, thumbs, selection, (first, last), now);
         self.drawn = Some((area, top));
         self.draw_band(ui, area, top);
         let pinned = pinned_header(&self.rows, &self.headers, top);
@@ -507,6 +559,7 @@ impl GridView {
             asked: std::mem::take(&mut self.asks),
             header_menu: self.header_menu.take(),
             open: self.open.take(),
+            gliding,
         }
     }
 
@@ -567,15 +620,39 @@ impl GridView {
     /// one - right while nothing arrived before that photo, and off by what did when
     /// something has, which is as far as the kept number is off across any new index.
     /// Neither follows the photo by its id.
-    fn lay_out(&mut self, data: &GridData<'_>, width: f64, viewport: f64) -> bool {
+    ///
+    /// **The photos glide to the places the new rows give them** (`Glides`) when the
+    /// columns change, or the size chosen does, under the same sections - the splitter,
+    /// the sidebar sliding, a window resized, the size buttons - and when the application
+    /// says the grid is its user's own write landing (`glide_from`). Not when a tile only
+    /// widens within its columns, which moves every photo by a pixel or two and is the
+    /// drag following the hand; and not for a new index alone, which is a scan's or
+    /// another view's, nor the year strip coming with one. What is pressed is the new
+    /// rows from this frame on: the glide is drawing only.
+    fn lay_out(&mut self, data: &GridData<'_>, width: f64, viewport: f64, now_ms: f64) -> bool {
         let nominal = tile_width(data.size);
         let row = row_width(width);
         let now = LaidOut {
             layout_gen: data.layout_gen,
             columns: columns_for(row, nominal),
             tile: tile_for(row, nominal),
+            nominal,
         };
         let rebuilt = self.laid_out != Some(now);
+        let old_position = self.scroll.position();
+        if !data.animations {
+            self.glides.stop();
+        }
+        let geometry = self.laid_out.is_some_and(|was| {
+            was.layout_gen == now.layout_gen
+                && (was.columns != now.columns || was.nominal != now.nominal)
+        });
+        let glides = data.animations
+            && rebuilt
+            && self.laid_out.is_some()
+            && (geometry || data.glide_from.is_some());
+        let glide = glides
+            .then(|| self.snapshot(data.glide_from.unwrap_or(data.index), data.index, viewport));
         let mut pin = None;
         // The corner of a press or a band is a place in the rows as they were: it is
         // found again in the rows as they are, on the photo it was on.
@@ -603,7 +680,89 @@ impl GridView {
         {
             press.origin = place;
         }
+        // Measured once the pin has found the place in the new rows: deep in a library a
+        // column change moves the grid by thousands of points, and that is no scroll.
+        let new_position = self.scroll.position();
+        self.width = width;
+        if let Some((before, leaving)) = glide {
+            (self.glides).begin(before, leaving, old_position, new_position, now_ms);
+        } else if new_position != old_position && self.glides.running(now_ms) {
+            self.glides.repositioned(old_position, new_position);
+        }
         rebuilt
+    }
+
+    /// Where every photo and header of the rows on screen stands, from a screenful above
+    /// the view to two below it, before the rows are built again - what each glides
+    /// from - and the photos in view that `new` does not hold, which fade where they
+    /// stood. The rows were built from `ids`, whose offsets they name.
+    fn snapshot(
+        &self,
+        ids: &GridIndex,
+        new: &GridIndex,
+        viewport: f64,
+    ) -> (Vec<(GlideKey, Place)>, Vec<Leaving>) {
+        let (mut before, mut leaving) = (Vec::new(), Vec::new());
+        let Some(was) = self.laid_out else {
+            return (before, leaving);
+        };
+        let position = self.scroll.position();
+        let (first, last) = visible_range(&self.rows, position - viewport, 3.0 * viewport, 0.0);
+        for row in &self.rows[first..last] {
+            let y = row.top - position;
+            match row.kind {
+                RowKind::Header => {
+                    if let Some(section) = ids.sections().get(row.section) {
+                        let place = Place {
+                            x: 0.0,
+                            y,
+                            width: self.width,
+                            height: HEADER,
+                        };
+                        before.push((header_key(section), place));
+                    }
+                }
+                RowKind::Tiles => {
+                    for (column, entry) in ids.rows(row.first, row.count).iter().enumerate() {
+                        let place = tile_place(column, y, was.tile);
+                        if new.position_of(entry.id).is_some() {
+                            before.push((GlideKey::Item(entry.id), place));
+                        } else if y < viewport && y + was.tile > 0.0 {
+                            leaving.push(Leaving {
+                                entry: *entry,
+                                place,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        (before, leaving)
+    }
+
+    /// The photos drawn because they glide - into view from where they stood, or out of
+    /// it towards where they now belong - besides the rows in view, and those leaving.
+    fn gliding_entries(
+        &self,
+        index: &GridIndex,
+        top: f64,
+        viewport: f64,
+        now_ms: f64,
+    ) -> Vec<GridEntry> {
+        let (first, last) = visible_range(&self.rows, top, viewport, 0.0);
+        let mut entries: Vec<GridEntry> = (self.glides.visible_before(top, viewport).into_iter())
+            .filter_map(|key| match key {
+                GlideKey::Item(id) => index.position_of(id),
+                GlideKey::Header { .. } => None,
+            })
+            .filter(|offset| {
+                row_of_item(&self.rows, *offset).is_some_and(|row| !(first..last).contains(&row))
+            })
+            .filter_map(|offset| index.rows(offset, 1).first().copied())
+            .collect();
+        let leaving = self.glides.leaving(top, now_ms).into_iter();
+        entries.extend(leaving.map(|(gone, _)| gone.entry));
+        entries
     }
 
     fn take_input(
@@ -1151,26 +1310,66 @@ impl GridView {
         (wanted, ids)
     }
 
-    /// Draws the rows in view. `true` when every tile drawn has its picture or its mark.
+    /// Draws the rows in view, and while the photos glide, what glides into view or out
+    /// of it and what is leaving. `true` when every tile drawn has its picture or its mark.
+    #[allow(clippy::too_many_arguments)]
     fn draw(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         area: Rect,
         data: &GridData<'_>,
         thumbs: &mut Thumbs,
         selection: &Selection,
         (first, last): (usize, usize),
+        now_ms: f64,
     ) -> (bool, usize) {
+        let mut placed = std::mem::take(&mut self.placed);
+        placed.clear();
         let Some(laid) = self.laid_out else {
+            self.placed = placed;
             return (true, 0);
         };
         let palette = palette(ui.ctx());
-        let now = ui.input(|input| input.time);
         let mut clipped = clipped_to(ui, area);
-        let top = snapped(self.scroll.position(), f64::from(ui.pixels_per_point()));
-        let (mut settled, mut marks) = (true, 0);
+        let position = self.scroll.position();
+        // Rows stand on whole device pixels; a place is measured from the position as
+        // it is, and drawn that much off it.
+        let snap = (position - snapped(position, f64::from(ui.pixels_per_point()))) as f32;
+        let viewport = f64::from(area.height());
+        let gliding = self.glides.running(now_ms);
+        let on_screen = |place: Place| {
+            Rect::from_min_size(
+                pos2(
+                    area.left() + place.x as f32,
+                    area.top() + place.y as f32 + snap,
+                ),
+                vec2(place.width as f32, place.height as f32),
+            )
+        };
+        let glides = &self.glides;
+        let drawn_at = |key: GlideKey, target: Place| {
+            on_screen(if gliding {
+                glides.place(key, target, position, now_ms)
+            } else {
+                target
+            })
+        };
+        let mut painter = Painter {
+            data,
+            thumbs,
+            selection,
+            palette,
+            now: now_ms / 1000.0,
+            settled: true,
+            marks: 0,
+        };
+        let header_place = |row: &Row| Place {
+            x: 0.0,
+            y: row.top - position,
+            width: f64::from(area.width()),
+            height: HEADER,
+        };
         for row in &self.rows[first..last] {
-            let y = area.top() + (row.top - top) as f32;
             match row.kind {
                 RowKind::Header => {
                     // The rows are built from the sections they index; one that is not
@@ -1179,47 +1378,67 @@ impl GridView {
                     let Some(section) = data.index.sections().get(row.section) else {
                         continue;
                     };
-                    let heading = header::heading(section, data.folders, data.zone);
-                    let rect = Rect::from_min_size(
-                        pos2(area.left(), y),
-                        vec2(area.width(), HEADER as f32),
-                    );
-                    header::paint(&clipped, rect, &heading, false, palette);
+                    let rect = drawn_at(header_key(section), header_place(row));
+                    painter.header(&clipped, rect, section);
                 }
                 RowKind::Tiles => {
                     let entries = data.index.rows(row.first, row.count);
                     for (column, entry) in entries.iter().enumerate() {
-                        let x = area.left() + (GAP + column as f64 * tile_row(laid.tile)) as f32;
-                        let rect = Rect::from_min_size(pos2(x, y), Vec2::splat(laid.tile as f32));
-                        // Its mark, for a picture that cannot be made and for one that
-                        // is not there yet: either way the tile says so and is not a
-                        // blank the eye waits on.
-                        let marked =
-                            thumbs.failed(entry.thumb_key) || thumbs.troubled(entry.thumb_key);
-                        let shown = thumbs.shown(entry.thumb_key, now);
-                        let texture = thumbs.texture(entry.thumb_key).map(|t| (t, shown));
-                        settled &= marked || texture.is_some();
-                        marks += usize::from(marked);
-                        let selected = selection.is_selected(entry.id);
-                        let entry = &photon_core::grid::GridEntry {
-                            has_copies: entry.has_copies && data.copies_marked,
-                            ..*entry
-                        };
-                        let dimmed = data.offline.contains(&entry.folder_id);
-                        tile::paint(
-                            &mut clipped,
-                            rect,
-                            entry,
-                            texture,
-                            marked,
-                            selected,
-                            dimmed,
-                            palette,
-                        );
+                        let target = tile_place(column, row.top - position, laid.tile);
+                        let rect = drawn_at(GlideKey::Item(entry.id), target);
+                        painter.tile(&mut clipped, rect, entry, 1.0);
+                        placed.push((entry.id, rect));
                     }
                 }
             }
         }
+        if gliding {
+            // Each glides from where it stood to where it now belongs, and is drawn the
+            // whole way: one that stood in view and belongs below the fold, or one that
+            // stood below it and belongs in view, does not blink out or in.
+            for key in self.glides.visible_before(position, viewport) {
+                match key {
+                    GlideKey::Item(id) => {
+                        let Some(offset) = data.index.position_of(id) else {
+                            continue;
+                        };
+                        let Some(row) = row_of_item(&self.rows, offset)
+                            .filter(|row| !(first..last).contains(row))
+                            .map(|row| self.rows[row])
+                        else {
+                            continue;
+                        };
+                        let Some(entry) = data.index.rows(offset, 1).first() else {
+                            continue;
+                        };
+                        let target = tile_place(offset - row.first, row.top - position, laid.tile);
+                        let rect = drawn_at(key, target);
+                        painter.tile(&mut clipped, rect, entry, 1.0);
+                        placed.push((id, rect));
+                    }
+                    GlideKey::Header { .. } => {
+                        let headed = (self.headers.iter())
+                            .filter(|row| !(first..last).contains(*row))
+                            .map(|row| self.rows[*row])
+                            .find_map(|row| {
+                                let section = data.index.sections().get(row.section)?;
+                                (header_key(section) == key).then_some((row, section))
+                            });
+                        if let Some((row, section)) = headed {
+                            painter.header(&clipped, drawn_at(key, header_place(&row)), section);
+                        }
+                    }
+                }
+            }
+            // What the user's write took out fades where it stood.
+            for (gone, opacity) in self.glides.leaving(position, now_ms) {
+                let rect = on_screen(gone.place);
+                painter.tile(&mut clipped, rect, &gone.entry, opacity);
+                placed.push((gone.entry.id, rect));
+            }
+        }
+        let (settled, marks) = (painter.settled, painter.marks);
+        self.placed = placed;
         (settled, marks)
     }
 
@@ -1311,6 +1530,74 @@ impl GridView {
             galley,
             color(palette.text),
         );
+    }
+}
+
+/// What a header is to a glide: the folder or the period it heads, which its section's
+/// offset in another index is not.
+fn header_key(section: &Section) -> GlideKey {
+    GlideKey::Header {
+        folder: section.folder_id,
+        period: section.period,
+    }
+}
+
+/// Where the photo in `column` of a row `y` from the grid's top edge stands.
+fn tile_place(column: usize, y: f64, tile: f64) -> Place {
+    Place {
+        x: GAP + column as f64 * tile_row(tile),
+        y,
+        width: tile,
+        height: tile,
+    }
+}
+
+/// Paints the tiles and headers of a frame, and counts what the tiles in it lack.
+struct Painter<'d, 't> {
+    data: &'d GridData<'d>,
+    thumbs: &'t mut Thumbs,
+    selection: &'t Selection,
+    palette: &'static Palette,
+    /// The frame's time, in seconds, which a late thumbnail fades in by.
+    now: f64,
+    settled: bool,
+    marks: usize,
+}
+
+impl Painter<'_, '_> {
+    /// `entry`'s tile in `rect`, all of it seen at `opacity`: less for a photo leaving.
+    fn tile(&mut self, ui: &mut egui::Ui, rect: Rect, entry: &GridEntry, opacity: f32) {
+        // Its mark, for a picture that cannot be made and for one that is not there
+        // yet: either way the tile says so and is not a blank the eye waits on.
+        let thumbs = &mut *self.thumbs;
+        let marked = thumbs.failed(entry.thumb_key) || thumbs.troubled(entry.thumb_key);
+        let shown = thumbs.shown(entry.thumb_key, self.now);
+        let texture = thumbs.texture(entry.thumb_key).map(|t| (t, shown));
+        self.settled &= marked || texture.is_some();
+        self.marks += usize::from(marked);
+        let selected = self.selection.is_selected(entry.id);
+        let entry = &GridEntry {
+            has_copies: entry.has_copies && self.data.copies_marked,
+            ..*entry
+        };
+        let dimmed = self.data.offline.contains(&entry.folder_id);
+        let palette = self.palette;
+        let paint = |ui: &mut egui::Ui| {
+            tile::paint(ui, rect, entry, texture, marked, selected, dimmed, palette);
+        };
+        if opacity < 1.0 {
+            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                ui.multiply_opacity(opacity);
+                paint(ui);
+            });
+        } else {
+            paint(ui);
+        }
+    }
+
+    fn header(&self, ui: &egui::Ui, rect: Rect, section: &Section) {
+        let heading = header::heading(section, self.data.folders, self.data.zone);
+        header::paint(ui, rect, &heading, false, self.palette);
     }
 }
 
@@ -1441,6 +1728,11 @@ mod tests {
         /// to, and the top of every clip rectangle anything was drawn in.
         texts: Vec<(String, Rect, Rect)>,
         clip_tops: Vec<f32>,
+        /// Whether the photos glide to new places: off, as the application's tests
+        /// launch, but in the tests of the glide.
+        animations: bool,
+        /// The index the user's own write is landing from, for the frame to come.
+        glide_from: Option<GridIndex>,
     }
 
     /// Every shape in `shape`, with the clip rectangle it is drawn in.
@@ -1515,6 +1807,8 @@ mod tests {
             offline: HashSet::new(),
             texts: Vec::new(),
             clip_tops: Vec::new(),
+            animations: false,
+            glide_from: None,
         }
     }
 
@@ -1593,6 +1887,8 @@ mod tests {
                 library: self.library,
                 keys: true,
                 copies_marked: true,
+                animations: self.animations,
+                glide_from: self.glide_from.as_ref(),
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
             let selection = &mut self.selection;
@@ -4438,5 +4734,428 @@ mod tests {
             faintest, 255,
             "a thumbnail faded in where the scroll landed"
         );
+    }
+
+    // ---- the glide ----
+
+    /// Six medium columns: a row of 1012 points.
+    const SIX: Vec2 = vec2(1040.0, 600.0);
+    /// Five, in a row of 872.
+    const FIVE: Vec2 = vec2(900.0, 600.0);
+    /// Four, the fixture's own window.
+    const FOUR: Vec2 = vec2(800.0, 600.0);
+    /// When the glides of these tests begin, in milliseconds.
+    const T: f64 = 1000.0;
+
+    /// A grid with animations on, six columns wide.
+    fn animated(counts: &[usize]) -> Fixture {
+        let mut f = fixture(counts);
+        f.animations = true;
+        f.size = SIX;
+        f
+    }
+
+    impl Fixture {
+        /// A frame at `ms` on the clock.
+        fn at(&mut self, ms: f64) -> GridOutput {
+            self.time = ms / 1000.0;
+            self.frame(Vec::new())
+        }
+
+        fn id(&self, offset: usize) -> i64 {
+            self.index.rows(offset, 1)[0].id
+        }
+
+        /// Where the photo at `offset` was drawn in the last frame.
+        fn drawn(&self, offset: usize) -> Rect {
+            (self.view.drawn_place(self.id(offset))).expect("the photo was drawn")
+        }
+
+        /// Where the photo at `offset` is pressed: its place in the rows as they are.
+        fn laid(&self, offset: usize) -> Rect {
+            self.view.rect_of(offset).expect("the photo is laid out")
+        }
+    }
+
+    /// Whether `a` and `b` are the same place, give or take the device pixel a row is
+    /// drawn on.
+    fn same(a: Rect, b: Rect) -> bool {
+        (a.min - b.min).length() <= 1.0 && (a.size() - b.size()).length() <= 1.0
+    }
+
+    /// Asserts that `drawn` is on its way from `from` to `to`: in every one of its
+    /// measures that the two differ in, strictly between them.
+    fn on_its_way(from: Rect, drawn: Rect, to: Rect) {
+        let measures = |rect: Rect| [rect.min.x, rect.min.y, rect.width()];
+        let mut moved = false;
+        for ((a, d), b) in measures(from)
+            .into_iter()
+            .zip(measures(drawn))
+            .zip(measures(to))
+        {
+            if (a - b).abs() > 2.0 {
+                moved = true;
+                let (low, high) = (a.min(b), a.max(b));
+                assert!(
+                    low + 0.5 < d && d < high - 0.5,
+                    "{drawn:?} is not between {from:?} and {to:?}"
+                );
+            }
+        }
+        assert!(moved, "the photo does not move: {from:?} to {to:?}");
+    }
+
+    #[test]
+    fn a_column_change_glides_the_photos_to_their_new_places() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        // The first photo of the second row: at the end of the first row's next.
+        let from = f.laid(6);
+        f.size = FIVE;
+        let begun = f.at(T);
+        assert!(begun.gliding);
+        let to = f.laid(6);
+        assert!(same(f.drawn(6), from), "it starts where it stood");
+        assert!(f.at(T + 100.0).gliding);
+        on_its_way(from, f.drawn(6), to);
+        let ended = f.at(T + 200.0);
+        assert!(!ended.gliding);
+        assert!(same(f.drawn(6), to));
+    }
+
+    // Deep in a library the pin moves the grid by a thousand points at a column change:
+    // a glide that took that for a scroll would start its photos a screenful away.
+    #[test]
+    fn a_column_change_deep_in_the_grid_glides_from_where_the_photos_stood() {
+        let mut f = animated(&[2000]);
+        f.at(T - 100.0);
+        f.view.scroll_to(5000.0);
+        f.at(T - 50.0);
+        let photo = f.top_photo() + 7;
+        let from = f.laid(photo);
+        f.size = FIVE;
+        let begun = f.at(T);
+        assert!(
+            (begun.position - 5000.0).abs() > 500.0,
+            "the pin moved the grid"
+        );
+        assert!(same(f.drawn(photo), from), "it starts where it stood");
+        let to = f.laid(photo);
+        f.at(T + 100.0);
+        on_its_way(from, f.drawn(photo), to);
+        f.at(T + 200.0);
+        assert!(same(f.drawn(photo), to));
+    }
+
+    #[test]
+    fn a_tile_that_widens_without_a_column_change_does_not_glide() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        let tile = f.tile();
+        f.size = vec2(1050.0, 600.0);
+        let frame = f.at(T);
+        assert!(f.tile() > tile, "the tile widened");
+        assert!(!frame.gliding);
+        for photo in 0..18 {
+            assert!(same(f.drawn(photo), f.laid(photo)), "photo {photo} glides");
+        }
+    }
+
+    #[test]
+    fn a_photo_pushed_below_the_fold_glides_out() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        let last = (0..f.index.len())
+            .take_while(|photo| f.laid(*photo).top() < 600.0)
+            .last()
+            .unwrap();
+        let from = f.laid(last);
+        f.size = FIVE;
+        f.at(T);
+        let to = f.laid(last);
+        assert!(to.top() >= 600.0, "its new place is below the fold");
+        f.at(T + 100.0);
+        let drawn = f.view.drawn_place(f.id(last));
+        on_its_way(from, drawn.expect("it is drawn on its way out"), to);
+    }
+
+    #[test]
+    fn a_photo_pulled_up_from_below_the_fold_glides_in() {
+        let mut f = animated(&[400]);
+        f.size = FIVE;
+        f.at(T - 100.0);
+        let before: Vec<Rect> = (0..60).map(|photo| f.laid(photo)).collect();
+        f.size = SIX;
+        f.at(T);
+        let photo = (0..60)
+            .find(|photo| before[*photo].top() >= 600.0 && f.laid(*photo).top() < 600.0)
+            .expect("a photo comes up from below the fold");
+        assert!(
+            same(f.drawn(photo), before[photo]),
+            "it starts where it stood"
+        );
+        f.at(T + 100.0);
+        on_its_way(before[photo], f.drawn(photo), f.laid(photo));
+    }
+
+    #[test]
+    fn a_second_column_change_mid_glide_starts_from_where_the_photo_is_drawn() {
+        let mut f = animated(&[2000]);
+        f.at(T - 100.0);
+        f.view.scroll_to(5000.0);
+        f.at(T - 50.0);
+        let photo = f.top_photo() + 7;
+        f.size = FIVE;
+        f.at(T);
+        let five = f.at(T + 100.0);
+        let drawn = f.drawn(photo);
+        f.size = FOUR;
+        let four = f.at(T + 100.0);
+        assert!(
+            (four.position - five.position).abs() > 500.0,
+            "the pin moved the grid"
+        );
+        assert!(four.gliding);
+        assert!(
+            same(f.drawn(photo), drawn),
+            "{:?} jumped from {drawn:?}",
+            f.drawn(photo)
+        );
+        assert!(!same(drawn, f.laid(photo)), "it is still on its way");
+    }
+
+    // The sidebar sliding open narrows the grid in every frame for 200 ms, through
+    // several column counts: each change begins a glide from where the photos are drawn,
+    // and between them the tile widening moves the pin - which is not a scroll either.
+    // Deep in a library either mistake moves a photo by a screenful in one frame.
+    #[test]
+    fn a_slide_across_several_column_counts_moves_no_photo_by_a_jump() {
+        let mut f = animated(&[20000]);
+        f.at(T - 100.0);
+        f.view.scroll_to(50000.0);
+        f.at(T - 50.0);
+        let columns = |f: &Fixture| f.view.laid_out.unwrap().columns;
+        let first = columns(&f);
+        let mut was: HashMap<i64, Rect> = HashMap::new();
+        for step in 0..=12 {
+            let share = f64::from(step) / 12.0;
+            f.size = vec2((1040.0 - 340.0 * share) as f32, 600.0);
+            f.at(T + 200.0 * share);
+            let now: HashMap<i64, Rect> = f.view.placed.iter().copied().collect();
+            for (id, rect) in &now {
+                if let Some(before) = was.get(id) {
+                    let moved = (rect.min - before.min).length();
+                    assert!(moved < 400.0, "photo {id} jumped {moved} at step {step}");
+                }
+            }
+            was = now;
+        }
+        assert!(
+            first - columns(&f) >= 2,
+            "the slide passed several column counts"
+        );
+    }
+
+    #[test]
+    fn a_press_during_a_glide_is_on_the_photo_at_its_new_place() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        f.size = FIVE;
+        f.at(T);
+        // From the end of the second row to the start of the third: far from where it
+        // is drawn while it glides.
+        let photo = 11;
+        let at = f.laid(photo).center();
+        f.time = (T + 50.0) / 1000.0;
+        assert!(f.frame(vec![Event::PointerMoved(at)]).gliding);
+        assert!(
+            !f.drawn(photo).contains(at),
+            "the press is not where the photo is drawn"
+        );
+        f.button(at, true);
+        f.button(at, false);
+        assert_eq!(f.picked(), vec![f.id(photo)]);
+    }
+
+    #[test]
+    fn a_scroll_during_a_glide_moves_the_gliding_photos_with_it() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        f.size = FIVE;
+        f.at(T);
+        f.at(T + 50.0);
+        let drawn = f.drawn(11);
+        f.view.scroll_by(100.0);
+        assert!(f.at(T + 50.0).gliding);
+        let scrolled = f.drawn(11);
+        assert!((scrolled.top() - (drawn.top() - 100.0)).abs() <= 1.0);
+        assert_eq!(scrolled.left(), drawn.left());
+    }
+
+    #[test]
+    fn the_grid_asks_for_frames_while_a_glide_runs_and_none_once_it_is_over() {
+        let mut f = animated(&[400]);
+        // The thumbnails of both layouts in, with no glide of their own.
+        f.animations = false;
+        f.thumbs_settled();
+        f.size = FIVE;
+        f.thumbs_settled();
+        f.size = SIX;
+        f.thumbs_settled();
+        f.animations = true;
+        assert_eq!(f.repaint_delay, Duration::MAX, "the grid was still");
+        let start = f.time * 1000.0 + 100.0;
+        f.size = FIVE;
+        f.at(start);
+        f.at(start + 50.0);
+        assert_eq!(
+            f.repaint_delay,
+            Duration::ZERO,
+            "a glide asks for its frames"
+        );
+        f.at(start + 150.0);
+        assert_eq!(f.repaint_delay, Duration::ZERO);
+        f.at(start + 200.0);
+        f.at(start + 220.0);
+        assert_eq!(
+            f.repaint_delay,
+            Duration::MAX,
+            "a glide that is over asks for none"
+        );
+    }
+
+    #[test]
+    fn with_animations_off_nothing_glides() {
+        let mut f = animated(&[400]);
+        f.animations = false;
+        f.at(T - 100.0);
+        f.size = FIVE;
+        let frame = f.at(T);
+        assert!(!frame.gliding);
+        for photo in 0..20 {
+            assert!(same(f.drawn(photo), f.laid(photo)), "photo {photo} glides");
+        }
+    }
+
+    // Turned off in the middle of one, the glide ends: the photos are where they belong
+    // in the next frame.
+    #[test]
+    fn a_glide_ends_when_animations_are_turned_off() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        f.size = FIVE;
+        f.at(T);
+        f.animations = false;
+        assert!(!f.at(T + 50.0).gliding);
+        for photo in 0..20 {
+            assert!(same(f.drawn(photo), f.laid(photo)), "photo {photo} glides");
+        }
+    }
+
+    /// The fixture's index of `counts` without the photo `id`.
+    fn index_without(counts: &[usize], id: i64) -> GridIndex {
+        let full = index(counts);
+        let entries = (full.rows(0, full.len()).iter())
+            .filter(|entry| entry.id != id)
+            .copied()
+            .collect();
+        GridIndex::build(entries, Layout::Folders)
+    }
+
+    // A new index is a scan's, or another view's, unless the application says it is the
+    // user's own write (`glide_from`): it does not glide, nor do the columns changing in
+    // the same frame - as the year strip coming with a scan's grid changes them.
+    #[test]
+    fn a_new_index_with_no_glide_from_does_not_glide() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        f.index = index_without(&[400], 3);
+        f.layout_gen = 2;
+        assert!(!f.at(T).gliding);
+        for photo in 0..20 {
+            assert!(same(f.drawn(photo), f.laid(photo)), "photo {photo} glides");
+        }
+        f.index = index_without(&[400], 5);
+        f.layout_gen = 3;
+        f.size = FIVE;
+        assert!(!f.at(T + 50.0).gliding);
+        for photo in 0..20 {
+            assert!(same(f.drawn(photo), f.laid(photo)), "photo {photo} glides");
+        }
+    }
+
+    // The user's own write landing: what it took out fades where it stood, and the photos
+    // after it glide into the gap, though the columns are the same.
+    #[test]
+    fn a_new_index_with_glide_from_glides_and_what_left_fades() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        let from = f.laid(5);
+        let moved = f.id(5);
+        f.glide_from = Some(std::mem::replace(&mut f.index, index_without(&[400], 3)));
+        f.layout_gen = 2;
+        assert!(f.at(T).gliding);
+        f.glide_from = None;
+        // The photo after the one hidden is a place back.
+        assert_eq!(f.id(4), moved);
+        let to = f.laid(4);
+        f.at(T + 100.0);
+        on_its_way(from, f.drawn(4), to);
+        assert!(
+            f.view.drawn_place(3).is_some(),
+            "what left fades where it stood"
+        );
+        f.at(T + 200.0);
+        assert!(same(f.drawn(4), to));
+        assert_eq!(f.view.drawn_place(3), None);
+    }
+
+    // Other results are not the same photos moved: a glide running when they arrive
+    // ends, though they hold photos of the grid before.
+    #[test]
+    fn other_results_end_a_glide() {
+        let mut f = animated(&[400]);
+        f.at(T - 100.0);
+        f.size = FIVE;
+        f.at(T);
+        f.index = index_without(&[400], 1);
+        f.layout_gen = 2;
+        f.view.to_top();
+        assert!(!f.at(T + 50.0).gliding);
+        for photo in 0..20 {
+            assert!(same(f.drawn(photo), f.laid(photo)), "photo {photo} glides");
+        }
+    }
+
+    /// The least of what is seen of the thumbnails the last frame drew, if any was drawn.
+    fn faintest_thumbnail(f: &Fixture) -> Option<u8> {
+        let tile = f64::from(f.view.rect_of(0).map_or(0.0, |rect| rect.width()));
+        (f.fills.iter())
+            .filter(|(rect, fill)| {
+                let white = fill.r() == fill.a() && fill.g() == fill.a() && fill.b() == fill.a();
+                let ground = *fill == color(palette(&f.ctx).field);
+                (f64::from(rect.width()) - tile).abs() < 1.0 && white && !ground && fill.a() > 0
+            })
+            .map(|(_, fill)| fill.a())
+            .min()
+    }
+
+    // With animations off nothing in the grid moves, a thumbnail fading in included.
+    #[test]
+    fn with_animations_off_a_late_thumbnail_is_there_at_once() {
+        let late = |fades: bool| {
+            let mut f = fixture(&[8]);
+            f.thumbs.set_fades(fades);
+            f.frame(Vec::new());
+            // Read by the next frame, but a tenth of a second after it was asked for:
+            // late.
+            std::thread::sleep(Duration::from_millis(50));
+            f.time = 0.1;
+            f.frame(Vec::new());
+            f.frame(Vec::new());
+            faintest_thumbnail(&f).expect("a thumbnail is drawn")
+        };
+        assert!(late(true) < 255, "with animations on it fades in");
+        assert_eq!(late(false), 255);
     }
 }
