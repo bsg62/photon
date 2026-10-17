@@ -249,7 +249,7 @@ impl ThumbCache {
                 return Ok(image);
             }
         }
-        let image = Arc::new(self.read(key, ThumbSize::Preview)?.to_rgb8());
+        let image = Arc::new(self.read(key, ThumbSize::Preview)?.into_rgb8());
         let mut kept = self.decoded.lock();
         if !kept.iter().any(|(k, _)| *k == key) {
             kept.push_back((key, image.clone()));
@@ -258,6 +258,12 @@ impl ThumbCache {
             }
         }
         Ok(image)
+    }
+
+    /// Lets go of the previews `face_crop` kept: the page that asked for its crops has
+    /// closed, and eight 1600 px previews are 46-61 MB held for the rest of the session.
+    pub fn forget_decoded(&self) {
+        self.decoded.lock().clear();
     }
 
     /// Removes thumbnails whose fingerprint is not in `live`. Returns the number of files removed.
@@ -556,6 +562,27 @@ mod tests {
         // Key 2 was the oldest when 9 came in, and went for it.
         fs::remove_file(cache.path_for(2, ThumbSize::Preview)).unwrap();
         match cache.face_crop(2, &face(0.45)) {
+            Err(crate::Error::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_face_crop_decodes_again_once_the_kept_previews_are_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+        let preview = red_square_preview();
+        cache.store(1, &preview, &preview).unwrap();
+        let face = crate::face_detect::Rect {
+            left: 0.45,
+            top: 0.4,
+            right: 0.55,
+            bottom: 0.6,
+        };
+        cache.face_crop(1, &face).unwrap();
+        cache.forget_decoded();
+        fs::remove_file(cache.path_for(1, ThumbSize::Preview)).unwrap();
+        match cache.face_crop(1, &face) {
             Err(crate::Error::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
             other => panic!("{other:?}"),
         }

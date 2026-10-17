@@ -786,7 +786,8 @@ visible face, 148 ms at 150,000 (`people_150k_faces` in the grid bench). A face'
 by `ThumbCache::face_crop` from the cached preview only - never a render, so a page of crops
 cannot start a burst of renders - and `ThumbCache` keeps the last eight decoded previews by
 key (`decoded_preview`), so a group photo's faces decode it once: a key names one picture,
-so a kept decode is never stale.
+so a kept decode is never stale. They are let go of when the page closes (`forget_decoded`),
+and again after each cut that was on its way then: 46-61 MB held for the session otherwise.
 
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
@@ -2817,8 +2818,8 @@ click on a face is two plain clicks on it, not egui's: egui counts the click bef
 well, and the click on People a moment before made it a triple, no double to egui. Enter on
 a face opens it too. **The crops are cut off the window's thread** by the engine's own
 `ThumbCache::face_crop` - the route's WebP, decoded with libwebp (`webp`, at photon-core's
-version, the one dependency the page added) - one cutter a core as `FACE_CROPS` bounds the
-route, each asked for when its face is first in sight and once an opening; a face whose
+version, the one dependency the page added) - half the cores' cutters and at most four
+(`MAX_CUTTERS`: one a core held a preview's decode on each at once), each asked for when its face is first in sight and once an opening; a face whose
 preview is not cached is an empty square with a figure. They are let go of when the page
 closes. A name box is a field of its own for each group, Enter read and taken before it is
 drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"

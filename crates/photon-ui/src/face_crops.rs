@@ -4,10 +4,13 @@
 //! so that a photo of many faces is decoded once. Never from the photo, and never a render:
 //! a face whose preview is not cached is `Missing`, and the page draws an empty square.
 //!
-//! One cut at a time per core, as `FACE_CROPS` bounds the route's: a crop decodes a whole
-//! preview unless its photo's is kept, and a page asks for one per face in sight. A crop is
-//! named by its face and its thumbnail key - a key names one picture, so a crop made is never
-//! stale, and a face whose photo was edited since is another crop.
+//! At most `MAX_CUTTERS` cuts at a time, half the cores on a smaller machine: a crop decodes a
+//! whole preview unless its photo's is kept, and a page asks for one per face in sight - one
+//! cutter a core held a 1600-pixel decode on each of sixteen threads at once, memory the
+//! allocator keeps after the page is gone. A crop is named by its face and its thumbnail key -
+//! a key names one picture, so a crop made is never stale, and a face whose photo was edited
+//! since is another crop. When the page closes the engine's kept previews are let go of
+//! (`forget`), once now and once more after each cut that was on its way, which kept one.
 
 use parking_lot::{Condvar, Mutex};
 use photon_engine::engine::Engine;
@@ -26,6 +29,9 @@ pub use photon_core::thumbs::face_crop::CROP_PX;
 /// A face's crop: the face's id and its photo's thumbnail key, as the page lists them.
 pub type CropOf = (i64, String);
 
+/// The most cutters there are, whatever the cores.
+const MAX_CUTTERS: usize = 4;
+
 /// What came of cutting a crop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Made {
@@ -41,6 +47,9 @@ pub enum Made {
 #[derive(Default)]
 struct Line {
     waiting: VecDeque<(u64, CropOf)>,
+    /// The opening of the page what is cut now is for: a cut of an older one is dropped,
+    /// and what it kept forgotten.
+    opening: u64,
     closed: bool,
 }
 
@@ -52,6 +61,7 @@ struct Shared {
 /// The cutters, and what has been asked of them since the page was last opened.
 pub struct Crops {
     shared: Arc<Shared>,
+    forget: Arc<dyn Fn() + Send + Sync>,
     answers: Receiver<(u64, CropOf, Made)>,
     /// Moves when the page closes: an answer of an older opening is dropped.
     opening: u64,
@@ -59,9 +69,11 @@ pub struct Crops {
 }
 
 impl Crops {
-    /// One cutter a core, each cutting with `cut` and calling `notify` with every crop made.
+    /// The cutters, each cutting with `cut` and calling `notify` with every crop made;
+    /// `forget` lets go of what cutting kept, once the page is closed.
     pub fn spawn(
         cut: impl Fn(&CropOf) -> Made + Send + Sync + 'static,
+        forget: impl Fn() + Send + Sync + 'static,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -70,18 +82,25 @@ impl Crops {
         });
         let (tx, answers) = mpsc::channel();
         let cut = Arc::new(cut);
+        let forget: Arc<dyn Fn() + Send + Sync> = Arc::new(forget);
         let notify = Arc::new(notify);
         let cores = thread::available_parallelism().map_or(1, |n| n.get());
-        for n in 0..cores.max(1) {
-            let (shared, tx, cut, notify) =
-                (shared.clone(), tx.clone(), cut.clone(), notify.clone());
+        for n in 0..(cores / 2).clamp(1, MAX_CUTTERS) {
+            let (shared, tx, cut, forget, notify) = (
+                shared.clone(),
+                tx.clone(),
+                cut.clone(),
+                forget.clone(),
+                notify.clone(),
+            );
             thread::Builder::new()
                 .name(format!("face crop {n}"))
-                .spawn(move || cutter(&shared, &tx, &*cut, &*notify))
+                .spawn(move || cutter(&shared, &tx, &*cut, &*forget, &*notify))
                 .expect("a thread for the face crops");
         }
         Self {
             shared,
+            forget,
             answers,
             opening: 0,
             asked: HashSet::new(),
@@ -90,7 +109,12 @@ impl Crops {
 
     /// Cut by the engine, from its cache.
     pub fn of(engine: Arc<Engine>, notify: impl Fn() + Send + Sync + 'static) -> Self {
-        Self::spawn(move |of| cut(&engine, of), notify)
+        let kept = engine.clone();
+        Self::spawn(
+            move |of| cut(&engine, of),
+            move || kept.thumbs.forget_decoded(),
+            notify,
+        )
     }
 
     /// Asks for the crop of `of`, once a page: one asked for already is on its way or
@@ -117,12 +141,17 @@ impl Crops {
             .collect()
     }
 
-    /// The page is closed: what waits is not cut, and what is being cut is dropped as it
-    /// arrives.
+    /// The page is closed: what waits is not cut, what is being cut is dropped as it
+    /// arrives, and what cutting kept is let go of.
     pub fn clear(&mut self) {
         self.opening += 1;
         self.asked.clear();
-        self.shared.line.lock().waiting.clear();
+        {
+            let mut line = self.shared.line.lock();
+            line.waiting.clear();
+            line.opening = self.opening;
+        }
+        (self.forget)();
     }
 }
 
@@ -137,6 +166,7 @@ fn cutter(
     shared: &Shared,
     tx: &Sender<(u64, CropOf, Made)>,
     cut: &(dyn Fn(&CropOf) -> Made + Send + Sync),
+    forget: &(dyn Fn() + Send + Sync),
     notify: &(dyn Fn() + Send + Sync),
 ) {
     loop {
@@ -154,6 +184,11 @@ fn cutter(
         };
         // A preview whose decode panics costs its crops and no more.
         let made = catch_unwind(AssertUnwindSafe(|| cut(&of))).unwrap_or(Made::Failed);
+        // The page closed while this was cut: `clear` has forgotten what was kept, and this
+        // cut has just kept its preview again.
+        if shared.line.lock().opening != opening {
+            forget();
+        }
         if tx.send((opening, of, made)).is_err() {
             return;
         }
@@ -214,6 +249,7 @@ mod tests {
                 Made::Missing
             },
             || {},
+            || {},
         );
         crops.ask(&of(1));
         crops.ask(&of(1));
@@ -243,6 +279,7 @@ mod tests {
                 Made::Missing
             },
             || {},
+            || {},
         );
         crops.ask(&of(1));
         thread::sleep(Duration::from_millis(20));
@@ -250,6 +287,41 @@ mod tests {
         go.send(()).unwrap();
         thread::sleep(Duration::from_millis(50));
         assert!(crops.answers().is_empty());
+    }
+
+    // What cutting kept is let go of when the page closes, and again once a cut that was on
+    // its way then is done - it has kept its preview after the first.
+    #[test]
+    fn a_page_closed_forgets_what_its_cuts_kept() {
+        let (go, wait) = mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        let forgotten = Arc::new(Mutex::new(0));
+        let counted = forgotten.clone();
+        let (done, finished) = mpsc::channel::<()>();
+        let done = Mutex::new(done);
+        let mut crops = Crops::spawn(
+            move |_| {
+                let _ = wait.lock().recv();
+                Made::Missing
+            },
+            move || *counted.lock() += 1,
+            move || {
+                let _ = done.lock().send(());
+            },
+        );
+        crops.ask(&of(1));
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(*forgotten.lock(), 0);
+        crops.clear();
+        assert_eq!(*forgotten.lock(), 1);
+        go.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(*forgotten.lock(), 2);
+        // A cut for the page that is open forgets nothing.
+        crops.ask(&of(2));
+        go.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(*forgotten.lock(), 2);
     }
 
     // A cut that panics is that crop failed, and the cutters go on.
@@ -260,6 +332,7 @@ mod tests {
                 assert!(of.0 != 1, "a preview no decoder can read");
                 Made::Missing
             },
+            || {},
             || {},
         );
         crops.ask(&of(1));
