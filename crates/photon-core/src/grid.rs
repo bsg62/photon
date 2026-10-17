@@ -215,7 +215,12 @@ pub struct GridIndex {
 impl GridIndex {
     /// `entries` must already be in grid order (see `Library::grid_entries`), and `layout`
     /// is the view's (`GridView::layout`).
-    pub fn build(entries: Vec<GridEntry>, layout: Layout) -> Self {
+    pub fn build(mut entries: Vec<GridEntry>, layout: Layout) -> Self {
+        // The rows come from a `collect` that grows by doubling, so up to half of what it
+        // holds is room never used - 300k rows sat in 524k slots, 16 MB for nothing, in
+        // every index alive (the published one, a rebuild's, the window's). An index is never
+        // added to, so the room is let go of once, here, where every view's rows arrive.
+        entries.shrink_to_fit();
         let mut sections: Vec<Section> = Vec::new();
         let mut folders: Vec<FolderTally> = Vec::new();
         // foldhash, not std's SipHash, for maps with a key per photo: `startup_grid_100k`
@@ -271,6 +276,8 @@ impl GridIndex {
                 }
             }
         }
+        sections.shrink_to_fit();
+        folders.shrink_to_fit();
         Self {
             entries,
             sections,
@@ -397,6 +404,16 @@ mod tests {
             ],
             Layout::Folders,
         )
+    }
+
+    #[test]
+    fn an_index_holds_no_room_beyond_its_rows() {
+        let mut rows = Vec::with_capacity(64);
+        rows.extend([entry(1, 10), entry(2, 10), entry(3, 20)]);
+        let grid = GridIndex::build(rows, Layout::Folders);
+        assert_eq!(grid.entries.capacity(), 3);
+        assert_eq!(grid.sections.capacity(), grid.sections.len());
+        assert_eq!(grid.folders.capacity(), grid.folders.len());
     }
 
     #[test]
