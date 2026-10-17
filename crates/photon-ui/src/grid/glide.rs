@@ -7,7 +7,7 @@
 //! every photo by the same distance, and a photo is never drawn by a path through a
 //! place the user has already scrolled away from.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use photon_core::grid::{GridEntry, Period};
 
@@ -189,6 +189,41 @@ impl Glides {
     }
 }
 
+/// The user's own writes that change which photos a view holds, by their numbers on the
+/// queue of writes, for the grid each produces: that grid glides, and any other does not.
+/// The engine publishes inside the command, before the answer is pushed, so the grid is
+/// adopted while the write is on its way, or after its answer has been read - and then
+/// only if a grid published was still waiting when the answer was read. Without that
+/// last, an answer read in the frame after its grid was put on screen, or a write
+/// refused, left the next grid adopted to glide, however late: a scan's, minutes on.
+#[derive(Default)]
+pub struct Moving {
+    on_way: HashSet<u64>,
+    /// A write answered while its grid had still to be adopted.
+    landing: bool,
+}
+
+impl Moving {
+    pub fn pushed(&mut self, number: u64) {
+        self.on_way.insert(number);
+    }
+
+    /// The write `number` answered, made or refused. `waiting` says whether the engine
+    /// has published a grid that is not on screen yet, asked only of a write counted here.
+    pub fn answered(&mut self, number: u64, waiting: impl FnOnce() -> bool) {
+        if self.on_way.remove(&number) && waiting() {
+            self.landing = true;
+        }
+    }
+
+    /// A grid adopted: whether it is the user's own write landing.
+    pub fn adopted(&mut self) -> bool {
+        let users = !self.on_way.is_empty() || self.landing;
+        self.landing = false;
+        users
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +397,38 @@ mod tests {
         let half = glides.leaving(3000.0, 1200.0)[0].1;
         assert!((half - faint * (1.0 - ease_out(0.5)) as f32).abs() < 1e-6);
         assert!(glides.leaving(3000.0, 1300.0).is_empty());
+    }
+
+    #[test]
+    fn a_write_answered_after_its_grid_was_adopted_leaves_nothing_for_the_next() {
+        let mut moving = Moving::default();
+        moving.pushed(1);
+        assert!(moving.adopted(), "its grid, adopted while it is on its way");
+        moving.answered(1, || false);
+        assert!(!moving.adopted(), "a scan's grid, after");
+    }
+
+    #[test]
+    fn a_write_answered_before_its_grid_was_adopted_glides_it() {
+        let mut moving = Moving::default();
+        moving.pushed(1);
+        moving.answered(1, || true);
+        assert!(moving.adopted(), "its grid");
+        assert!(!moving.adopted(), "the grid after it");
+    }
+
+    #[test]
+    fn a_refused_write_leaves_nothing_for_the_next_grid() {
+        let mut moving = Moving::default();
+        moving.pushed(1);
+        moving.answered(1, || false);
+        assert!(!moving.adopted());
+    }
+
+    #[test]
+    fn a_write_that_moves_nothing_is_not_asked_about() {
+        let mut moving = Moving::default();
+        moving.answered(1, || panic!("asked"));
+        assert!(!moving.adopted());
     }
 }

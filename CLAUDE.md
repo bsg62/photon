@@ -1004,10 +1004,12 @@ needs a row in sight. The panel is clipped at its open right edge, or it would c
 close button. **The grid's photos glide** (`Glides`, begun by `begin`) when the columns or
 the nominal size change under the same `layout_gen` (`GridView::lay_out`), and after the
 user's own writes: `App::write` is the one place that pushes a write, `moving` holds the
-ones on their way that change a view's rows, and a grid adopted while any is, or whose
-answer came since the last adopt (`moved_since_adopt`: the engine publishes inside the
-command, so the grid lands before the answer or after), is the user's and is handed over
-with `GridData::glide_from`. A scan's grid arriving in that moment glides too, which is
+ones on their way that change a view's rows (`grid::glide::Moving`), and a grid adopted
+while any is, or after one's answer was read *while a grid the engine had published was
+still to be adopted*, is the user's and is handed over with `GridData::glide_from`. The
+engine publishes inside the command, before the answer is pushed, so the grid lands before
+the answer is read or after; an answer read once its grid was on screen, or a refusal,
+used to arm the next grid adopted however late - a scan's, minutes on. A scan's grid arriving in that moment glides too, which is
 accepted; any other does not. **A new write that changes a view's rows belongs in
 `Write::moves_grid`**, or its photos jump. Rows the view did not lay out are no place to
 glide from (`laid_from`), nor are rows the grid was not drawn in the pass before

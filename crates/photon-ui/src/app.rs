@@ -16,6 +16,7 @@ use crate::{
     face_crops::Crops,
     folder_drop::{self, FolderDrop, Watched},
     grid::{
+        glide::Moving,
         labels::folder_label,
         scroll::Notch,
         view::{Align, Ask, Asked, GridData, GridOutput, GridView},
@@ -79,13 +80,7 @@ use photon_engine::{
     engine::{Engine, EngineConfig, NOT_BUILT},
     error::AppError,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-    sync::mpsc::Receiver,
-    time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
 mod copy;
 mod open;
@@ -301,13 +296,8 @@ pub struct App {
     /// off this thread.
     writes: Queue<Write, Result<Wrote, Unwritten>>,
     /// The writes on that queue that change which photos a view holds
-    /// (`Write::moves_grid`), by their numbers, until each is answered: a grid adopted
-    /// meanwhile is likely to be one of them landing, and glides.
-    moving: HashSet<u64>,
-    /// Whether one of those was answered since the last grid was adopted: the engine
-    /// publishes inside the command, so its grid can be adopted after the answer is read
-    /// as well as before.
-    moved_since_adopt: bool,
+    /// (`Write::moves_grid`), for the grid each produces, which glides.
+    moving: Moving,
     /// The grid replaced by one the user's own write produced, for the frame that puts
     /// the new one on screen to glide from (`GridData::glide_from`), and dropped with it.
     glide_from: Option<Arc<GridIndex>>,
@@ -1454,8 +1444,7 @@ impl App {
             steps,
             search: SearchBox::default(),
             writes,
-            moving: HashSet::new(),
-            moved_since_adopt: false,
+            moving: Moving::default(),
             glide_from: None,
             laid_from: None,
             stale: false,
@@ -4339,10 +4328,11 @@ impl App {
         }
         for (number, answer) in self.writes.answers() {
             answered = true;
-            // Answered, refused or not, it is the grid adopted next that is its own.
-            if self.moving.remove(&number) {
-                self.moved_since_adopt = true;
-            }
+            // Answered, refused or not: the grid adopted next is its own if one the
+            // engine has published is still to be put on screen. The write's grid was
+            // published before its answer was pushed, so it is that one, or a later.
+            let (engine, adopted) = (&self.engine, self.grid.version);
+            (self.moving).answered(number, || engine.published().0 > adopted);
             match answer {
                 // The engine announces no data change for a search saved: the lists are
                 // read again because this side knows it wrote one.
@@ -4565,7 +4555,7 @@ impl App {
         let moves = write.moves_grid();
         let number = self.writes.push(write);
         if moves {
-            self.moving.insert(number);
+            self.moving.pushed(number);
         }
     }
 
@@ -4600,12 +4590,9 @@ impl App {
         };
         let before = std::mem::replace(&mut self.index, index);
         self.layout_gen = layout_gen;
-        // The user's own write landing, which glides: a grid adopted while such a write is
-        // on its way, or whose answer has come since the last one - the engine publishes
-        // inside the command, so the grid is adopted before the answer is read or after.
-        // A scan's grid in that moment glides too; any other does not.
-        let users = !self.moving.is_empty() || self.moved_since_adopt;
-        self.moved_since_adopt = false;
+        // The user's own write landing, which glides (`Moving`). A scan's grid in that
+        // moment glides too; any other does not.
+        let users = self.moving.adopted();
         // Other results are another list: a place in the old one names nothing here.
         if shown.other_results {
             self.view.to_top();

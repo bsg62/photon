@@ -1,8 +1,8 @@
 //! The grid gliding after the user's own write, through the whole application and the
 //! real engine: a photo hidden fades where it stood and the photos after it glide into its
 //! place, while a scan's grid and another view's are on screen at once, and so is a hide's
-//! that lands under rows laid out from an older grid, and a grid that comes back from the
-//! viewer in other columns. Over real photos in a folder the test made, so that the writes
+//! that lands under rows laid out from an older grid, a grid that comes back from the
+//! viewer in other columns, and one adopted after a write the library refused. Over real photos in a folder the test made, so that the writes
 //! are made.
 
 use crate::common::{Driver, Harness, over_animated, photos_in};
@@ -274,5 +274,31 @@ fn the_grid_does_not_glide_as_it_comes_back_from_the_viewer() {
         !near(harness.state().tile_rect(4).unwrap(), stood),
         "the grid in other columns"
     );
+    assert!(all_in_place(&harness), "a photo glides");
+}
+
+// A star the library refuses - the folder's INI is a directory, which the writer will
+// not write over - publishes no grid, and its answer, read with no grid of its own to
+// come, leaves nothing behind for the next: a photo hidden from elsewhere a moment later
+// is not the user's write landing, and its photos are where they belong at once.
+#[test]
+fn a_refused_write_leaves_nothing_to_glide_for_the_next_grid() {
+    let dir = tempfile::tempdir().unwrap();
+    let pictures = pictures(dir.path());
+    let (mut harness, mut driver, _) = opened(dir.path(), &pictures);
+    let ids = harness.state().shown();
+    std::fs::create_dir(pictures.join(".picasa.ini")).unwrap();
+
+    pick(&mut driver, &mut harness, 0);
+    harness.key_press(Key::Period);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the refusal", |app| !app.toasts().is_empty());
+    driver.settle(&mut harness);
+
+    let engine = harness.state().engine().clone();
+    photon_engine::commands::set_items_hidden(&engine, &[ids[0]], true).unwrap();
+    driver.until(&mut harness, "the grid without it", |app| {
+        !app.shown().contains(&ids[0])
+    });
     assert!(all_in_place(&harness), "a photo glides");
 }
