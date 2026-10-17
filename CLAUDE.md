@@ -577,6 +577,13 @@ Starred and Videos over, the whole library read for a grid of 3%.
 waits on another reader: it hands out an idle pooled connection or opens one (at most eight are
 kept). `writer()` is a single mutexed connection.
 
+**The thumbnail workers' decodes share a byte budget** (`thumbs/service.rs`: `DECODE_BUDGET`,
+1 GiB, by `decode_cost`'s estimate from the stored size and format; `Budget`, in turn by
+ticket, one decode always let in). Eight workers on a folder of 100 MP scans held several
+gigabytes. Taken before `decode_lock` and before the in-flight marker: a photo waiting for
+room holds neither (`a_photo_waiting_for_room_holds_no_marker`), and inside the lock a
+suspect's bounded wait would have waited out the decodes of photos queued for room too.
+
 **Thumbnail garbage collection is gated.** Any write that can orphan a thumbnail — deleting an
 item, or changing anything the thumbnail key is made of (`path`/`size`/`mtime_ms`, the
 fingerprint columns, and `edit_turns`/`edit_crop`) — must call

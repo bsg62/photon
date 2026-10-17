@@ -111,7 +111,8 @@ pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
 /// 512 MiB - roughly a 134 MP photo at RGBA8, so well clear of any camera photon will meet,
 /// while a header claiming absurd dimensions is refused before anything is allocated. That
 /// is a per-decode bound, not a total: what keeps the sum of the workers' decode buffers
-/// bounded is `MAX_WORKERS`, so the two belong together - and AVIF's own peak is roughly 3x a
+/// bounded is the thumbnail service's `DECODE_BUDGET` (by an estimate of each decode) and
+/// `MAX_WORKERS`, so they belong together - and AVIF's own peak is roughly 3x a
 /// JPEG's for the same pixel count (a rav1d frame, then its planes widened to 16-bit samples,
 /// then the RGB8 output), which makes that per-worker bound matter more, not less, for AVIF.
 /// An AVIF is bounded differently: `zenavif_parse::DecodeConfig`'s `peak_memory_limit` and
