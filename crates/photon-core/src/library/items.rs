@@ -329,7 +329,9 @@ pub(super) fn map_grid_row(r: &Row<'_>) -> rusqlite::Result<GridEntry> {
         starred: is_starred(r.get(10)?),
         has_copies: r.get(13)?,
         thumb_key: edit.thumb_key(fingerprint(&r.get::<_, String>(7)?, size, mtime_ms)),
-        duration_ms: r.get(14)?,
+        // Read wide and narrowed here: read as a `u32`, one video longer than 49 days, or a
+        // length a broken container claimed, would fail the grid's whole query.
+        duration_ms: (r.get::<_, Option<i64>>(14)?).and_then(|ms| u32::try_from(ms).ok()),
         size,
         mtime_ms,
     })
@@ -1502,6 +1504,22 @@ mod tests {
         assert_eq!(item.missing_since, None);
         assert_eq!(item.thumb_key(), fingerprint("/p/a.jpg", 100, 1_000));
         assert!(lib.item(9_999).unwrap().is_none());
+    }
+
+    // The grid holds a video's length in four bytes. One longer than they hold - 49 days,
+    // or what a broken container claims - has no badge, and does not fail the query of
+    // every photo beside it.
+    #[test]
+    fn a_video_longer_than_the_grid_holds_has_no_length_there() {
+        let (_dir, lib) = temp_library();
+        let (_, folder) = seed_folder(&lib, Path::new("/photos"));
+        let mut video = new_item(folder, "/photos/clip.mp4", 100);
+        video.kind = MediaKind::Video;
+        video.duration_ms = Some(5_000_000_000);
+        let id = lib.insert_items(&[video]).unwrap()[0];
+        let rows = lib.grid_entries().unwrap();
+        let row = rows.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(row.duration_ms, None);
     }
 
     #[test]

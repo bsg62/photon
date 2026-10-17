@@ -139,8 +139,10 @@ pub struct GridEntry {
     /// Displayed width / height (orientation applied); 1.0 when unknown.
     pub aspect: f32,
     pub kind: MediaKind,
-    /// A video's running time, for the tile's badge; `None` for a photo.
-    pub duration_ms: Option<i64>,
+    /// A video's running time, for the tile's badge; `None` for a photo, and for a video
+    /// longer than `u32` milliseconds hold - 49 days - whose badge would say nothing true.
+    /// Four bytes and not eight: an entry is held for every photo of the view.
+    pub duration_ms: Option<u32>,
     /// True when the photo is starred in Picasa's per-directory `.picasa.ini`.
     pub starred: bool,
     /// True when another live file has the same bytes or is a look-alike: membership of
@@ -208,8 +210,73 @@ pub struct GridIndex {
     entries: Vec<GridEntry>,
     sections: Vec<Section>,
     folders: Vec<FolderTally>,
-    positions: foldhash::HashMap<i64, usize>,
+    positions: Positions,
     layout: Layout,
+}
+
+/// Where each photo of an index is, by its id. A table from the smallest id to the largest
+/// while the ids lie close together - the library hands them out in order, and a view of
+/// every photo is most of the range - four bytes an id; a map otherwise, as for a view of
+/// a few photos scattered over a large library. The map is 17 bytes a slot at a load of
+/// seven eighths: 9 MB for 300,000 photos, where the table is 1.2.
+#[derive(Debug)]
+enum Positions {
+    Table { first: i64, at: Vec<u32> },
+    Map(foldhash::HashMap<i64, u32>),
+}
+
+impl Default for Positions {
+    fn default() -> Self {
+        Self::Table {
+            first: 0,
+            at: Vec::new(),
+        }
+    }
+}
+
+/// A slot of `Positions::Table` no photo is in.
+const NOWHERE: u32 = u32::MAX;
+
+/// How many slots a table may have for each photo before it is a map instead: four, which
+/// is a map's size per photo.
+const TABLE_SPREAD: usize = 4;
+
+impl Positions {
+    fn of(entries: &[GridEntry]) -> Self {
+        let (Some(first), Some(last)) = (
+            entries.iter().map(|entry| entry.id).min(),
+            entries.iter().map(|entry| entry.id).max(),
+        ) else {
+            return Self::default();
+        };
+        let span = last.abs_diff(first).saturating_add(1);
+        let table = span <= (entries.len().saturating_mul(TABLE_SPREAD)) as u64
+            && entries.len() < NOWHERE as usize;
+        if table {
+            let mut at = vec![NOWHERE; span as usize];
+            for (index, entry) in entries.iter().enumerate() {
+                at[(entry.id - first) as usize] = index as u32;
+            }
+            Self::Table { first, at }
+        } else {
+            Self::Map(
+                (entries.iter().enumerate())
+                    .map(|(index, entry)| (entry.id, index as u32))
+                    .collect(),
+            )
+        }
+    }
+
+    fn get(&self, id: i64) -> Option<usize> {
+        match self {
+            Self::Table { first, at } => {
+                let slot = usize::try_from(id.checked_sub(*first)?).ok()?;
+                (at.get(slot).copied()).filter(|index| *index != NOWHERE)
+            }
+            Self::Map(map) => map.get(&id).copied(),
+        }
+        .map(|index| index as usize)
+    }
 }
 
 impl GridIndex {
@@ -227,8 +294,7 @@ impl GridIndex {
         // 58.9 -> 57.3 ms. The ids are the library's own, so there is no hostile input for
         // SipHash's flooding resistance to guard against.
         let mut tally_of = foldhash::HashMap::<i64, usize>::default();
-        let mut positions =
-            foldhash::HashMap::with_capacity_and_hasher(entries.len(), Default::default());
+        let positions = Positions::of(&entries);
         // What a run is of. A new section starts wherever this differs from the last one's.
         let section_key = |entry: &GridEntry| match layout {
             Layout::Folders => (Some(entry.folder_id), None),
@@ -236,7 +302,6 @@ impl GridIndex {
             Layout::Periods(unit) => (None, Some(unit.of(entry.taken_at))),
         };
         for (index, entry) in entries.iter().enumerate() {
-            positions.insert(entry.id, index);
             let (folder_id, period) = section_key(entry);
             // Real minimums, not "the run's first entry": entries are ordered by folder and
             // then by capture date, but nothing here fixes the direction, and assuming it
@@ -343,7 +408,7 @@ impl GridIndex {
     }
 
     pub fn position_of(&self, id: i64) -> Option<usize> {
-        self.positions.get(&id).copied()
+        self.positions.get(id)
     }
 
     /// Items around `id`, nearest first (+1, -1, +2, -2, …), for viewer preloading.
@@ -404,6 +469,39 @@ mod tests {
             ],
             Layout::Folders,
         )
+    }
+
+    // An entry is held for every photo of the view, 300,000 of them in a large library:
+    // eight bytes more is two and a half megabytes in every index alive.
+    #[test]
+    fn an_entry_is_no_larger_than_64_bytes() {
+        assert!(std::mem::size_of::<GridEntry>() <= 64);
+    }
+
+    // Ids that lie close together are found in a table, scattered ones in a map, and
+    // either finds what is there and nothing else: below the first, past the last, in a
+    // hole between two.
+    #[test]
+    fn a_photo_is_found_by_its_id_in_a_table_or_a_map() {
+        let close = GridIndex::build(
+            vec![entry(10, 1), entry(11, 1), entry(13, 1)],
+            Layout::Folders,
+        );
+        assert!(matches!(close.positions, Positions::Table { .. }));
+        let scattered = GridIndex::build(
+            vec![entry(10, 1), entry(11, 1), entry(1_000_013, 1)],
+            Layout::Folders,
+        );
+        assert!(matches!(scattered.positions, Positions::Map(_)));
+        for (grid, last) in [(close, 13), (scattered, 1_000_013)] {
+            assert_eq!(grid.position_of(10), Some(0));
+            assert_eq!(grid.position_of(11), Some(1));
+            assert_eq!(grid.position_of(last), Some(2));
+            for absent in [9, 12, last + 1, i64::MIN, i64::MAX] {
+                assert_eq!(grid.position_of(absent), None, "{absent}");
+            }
+        }
+        assert_eq!(GridIndex::default().position_of(0), None);
     }
 
     #[test]
