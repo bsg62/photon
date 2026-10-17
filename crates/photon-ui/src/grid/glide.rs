@@ -59,10 +59,18 @@ pub struct Leaving {
     pub place: Place,
 }
 
+/// A photo fading out, and the opacity it fades from: less than whole for one that was
+/// already fading when a glide began over it.
+#[derive(Clone, Copy)]
+struct Fading {
+    gone: Leaving,
+    from: f32,
+}
+
 #[derive(Default)]
 pub struct Glides {
     from: HashMap<Key, Place>,
-    leaving: Vec<Leaving>,
+    leaving: Vec<Fading>,
     started_ms: f64,
     position_at_start: f64,
 }
@@ -75,6 +83,10 @@ impl Glides {
     /// instead (`before` is where its last glide was going). Every start is kept as the
     /// place it is on screen, measured from `new_position`, so that `place` at
     /// `new_position` draws each exactly where it stood.
+    ///
+    /// A photo still fading out goes on fading from where and how faint it is drawn:
+    /// the columns changing while a hidden photo fades - the window resized, the
+    /// sidebar toggled - would otherwise take it away at once.
     pub fn begin(
         &mut self,
         before: impl IntoIterator<Item = (Key, Place)>,
@@ -85,6 +97,11 @@ impl Glides {
     ) {
         let running = self.running(now_ms);
         let t = self.progress(now_ms);
+        let still_fading = self.leaving(old_position, now_ms).into_iter();
+        let mut fading: Vec<Fading> = still_fading
+            .map(|(gone, from)| Fading { gone, from })
+            .collect();
+        fading.extend(leaving.into_iter().map(|gone| Fading { gone, from: 1.0 }));
         let scrolled = self.position_at_start - old_position;
         let mut from = HashMap::new();
         for (key, old) in before {
@@ -97,7 +114,7 @@ impl Glides {
             from.insert(key, start);
         }
         self.from = from;
-        self.leaving = leaving;
+        self.leaving = fading;
         self.started_ms = now_ms;
         self.position_at_start = new_position;
     }
@@ -142,16 +159,16 @@ impl Glides {
         if !self.running(now_ms) {
             return Vec::new();
         }
-        let opacity = (1.0 - self.progress(now_ms)) as f32;
+        let left = (1.0 - self.progress(now_ms)) as f32;
         let scrolled = self.position_at_start - position;
         self.leaving
             .iter()
-            .map(|gone| {
+            .map(|fading| {
                 let moved = Leaving {
-                    place: gone.place.down(scrolled),
-                    ..*gone
+                    place: fading.gone.place.down(scrolled),
+                    ..fading.gone
                 };
-                (moved, opacity)
+                (moved, fading.from * left)
             })
             .collect()
     }
@@ -275,10 +292,9 @@ mod tests {
         assert_eq!(glides.place(Key::Item(2), target, 0.0, 1100.0), target);
     }
 
-    #[test]
-    fn a_leaving_photo_fades_out_and_is_gone_at_the_end() {
-        let entry = GridEntry {
-            id: 9,
+    fn entry(id: i64) -> GridEntry {
+        GridEntry {
+            id,
             folder_id: 1,
             taken_at: 0,
             aspect: 1.0,
@@ -286,13 +302,17 @@ mod tests {
             duration_ms: None,
             starred: false,
             has_copies: false,
-            thumb_key: 9,
+            thumb_key: id as u64,
             size: 0,
             mtime_ms: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn a_leaving_photo_fades_out_and_is_gone_at_the_end() {
         let mut glides = Glides::default();
         let gone = Leaving {
-            entry,
+            entry: entry(9),
             place: at(8.0, 8.0),
         };
         glides.begin([], vec![gone], 0.0, 0.0, 1000.0);
@@ -320,5 +340,27 @@ mod tests {
         assert_eq!(glides.visible_before(0.0, 700.0), vec![Key::Item(1)]);
         // Scrolled down by 300 the second is the one in view.
         assert_eq!(glides.visible_before(300.0, 700.0), vec![Key::Item(2)]);
+    }
+
+    // A hidden photo fading when the columns change - the window resized under it - goes
+    // on fading where it is drawn, from how faint it is, and is gone when the new glide
+    // ends: not taken away by the glide that began over it.
+    #[test]
+    fn a_photo_still_fading_goes_on_through_a_glide_that_begins_over_it() {
+        let mut glides = Glides::default();
+        let gone = Leaving {
+            entry: entry(9),
+            place: at(8.0, 8.0),
+        };
+        glides.begin([(one(), at(116.0, 8.0))], vec![gone], 0.0, 0.0, 1000.0);
+        // Scrolled on by 50, and the new rows put the grid at 3000.
+        let [(drawn, faint)] = glides.leaving(50.0, 1100.0)[..] else {
+            panic!("one photo fading");
+        };
+        glides.begin([(one(), at(8.0, 8.0))], Vec::new(), 50.0, 3000.0, 1100.0);
+        assert_eq!(glides.leaving(3000.0, 1100.0), vec![(drawn, faint)]);
+        let half = glides.leaving(3000.0, 1200.0)[0].1;
+        assert!((half - faint * (1.0 - ease_out(0.5)) as f32).abs() < 1e-6);
+        assert!(glides.leaving(3000.0, 1300.0).is_empty());
     }
 }

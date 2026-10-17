@@ -79,7 +79,13 @@ use photon_engine::{
     engine::{Engine, EngineConfig, NOT_BUILT},
     error::AppError,
 };
-use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+    sync::mpsc::Receiver,
+    time::Duration,
+};
 
 mod copy;
 mod open;
@@ -294,6 +300,21 @@ pub struct App {
     /// What the user has asked to be written to the library, made in the order asked and
     /// off this thread.
     writes: Queue<Write, Result<Wrote, Unwritten>>,
+    /// The writes on that queue that change which photos a view holds
+    /// (`Write::moves_grid`), by their numbers, until each is answered: a grid adopted
+    /// meanwhile is likely to be one of them landing, and glides.
+    moving: HashSet<u64>,
+    /// Whether one of those was answered since the last grid was adopted: the engine
+    /// publishes inside the command, so its grid can be adopted after the answer is read
+    /// as well as before.
+    moved_since_adopt: bool,
+    /// The grid replaced by one the user's own write produced, for the frame that puts
+    /// the new one on screen to glide from (`GridData::glide_from`), and dropped with it.
+    glide_from: Option<Arc<GridIndex>>,
+    /// The version of the grid the rows on screen were laid out from: the grid to glide
+    /// from must be the one they name the photos of, which it is not after a grid
+    /// adopted while the viewer, compare or the People page stood in the grid's place.
+    laid_from: Option<u64>,
     /// Whether the engine has published a grid that is not on screen yet. It waits while
     /// a step is on its way and no answer says what it shows (`Nav::adopt`).
     stale: bool,
@@ -545,6 +566,26 @@ enum Write {
     },
     /// A setting changed in Settings.
     Setting(SettingWrite),
+}
+
+impl Write {
+    /// Whether this write can change which photos the grid on screen holds - a photo
+    /// hidden or brought back, a star taken off in Starred, a photo taken out of the
+    /// album, person or keyword shown - so that the grid it produces glides: the photos
+    /// that left fade where they stood and the rest close the gap.
+    fn moves_grid(&self) -> bool {
+        matches!(
+            self,
+            Self::Stars { .. }
+                | Self::Hidden { .. }
+                | Self::AlbumAdd { .. }
+                | Self::AlbumRemove { .. }
+                | Self::PersonRemove { .. }
+                | Self::Name(_)
+                | Self::FolderHidden { .. }
+                | Self::Tag(_)
+        )
+    }
 }
 
 /// A write that was made.
@@ -1413,6 +1454,10 @@ impl App {
             steps,
             search: SearchBox::default(),
             writes,
+            moving: HashSet::new(),
+            moved_since_adopt: false,
+            glide_from: None,
+            laid_from: None,
             stale: false,
             counts: Counts::default(),
             counted: false,
@@ -1658,6 +1703,12 @@ impl App {
     /// presses.
     pub fn tile_rect(&self, offset: usize) -> Option<egui::Rect> {
         self.view.rect_of(offset)
+    }
+
+    /// Where the photo `id` was drawn in the last frame, gliding or not: what a test of
+    /// a glide reads beside `tile_rect`, which is where it is pressed.
+    pub fn drawn_place(&self, id: i64) -> Option<egui::Rect> {
+        self.view.drawn_place(id)
     }
 
     /// The photos of the grid on screen, in its order.
@@ -1960,13 +2011,13 @@ impl App {
             // The grid's Remove, for the one photo: every face of theirs photon has on
             // it, and the message says when Picasa keeps them there.
             ViewerPick::Not { person, name } => {
-                self.writes.push(Write::PersonRemove {
+                self.write(Write::PersonRemove {
                     person,
                     name,
                     ids: vec![photo],
                 });
             }
-            ViewerPick::Hide(hidden) => self.write(TileAction::Hide(hidden), vec![photo]),
+            ViewerPick::Hide(hidden) => self.write_tile(TileAction::Hide(hidden), vec![photo]),
             // The viewer shuts and the grid lands on the photo: in Hidden when the
             // library says it is hidden, which is the one view that holds it then. Not
             // handed back to the grid under the viewer first, which is being left - or
@@ -2039,17 +2090,17 @@ impl App {
                 self.shell.reveal(What::Folder(id));
             }
             SideAction::UseFolderName(folder) => {
-                self.writes.push(Write::FolderAlias {
+                self.write(Write::FolderAlias {
                     folder,
                     name: None,
                     sent: None,
                 });
             }
             SideAction::HideFolder { folder, hidden } => {
-                self.writes.push(Write::FolderHidden { folder, hidden });
+                self.write(Write::FolderHidden { folder, hidden });
             }
             SideAction::Rescan { watched } => {
-                self.writes.push(Write::Rescan { watched });
+                self.write(Write::Rescan { watched });
             }
             // "Delete…" asks first: under the name the thing has now, which is the name
             // the question is read with, whatever it is called by the time it is
@@ -2151,7 +2202,7 @@ impl App {
                 }
                 if let Some(submit) = picker.submit(tag.as_deref()) {
                     self.dialog = None;
-                    self.writes.push(Write::Name(submit));
+                    self.write(Write::Name(submit));
                 }
             }
             // Closed before its write, which is the user's last word on it: left up
@@ -2163,7 +2214,7 @@ impl App {
                 }
                 if let Some(submit) = picker.submit(tag.as_deref(), &keywords) {
                     self.dialog = None;
-                    self.writes.push(Write::Tag(submit));
+                    self.write(Write::Tag(submit));
                 }
             }
             (Done::Confirmed, Some(Dialog::Confirm(confirm))) => {
@@ -2172,13 +2223,13 @@ impl App {
                 match (confirm.subject(), confirm) {
                     (Some(subject), _) => {
                         self.deleting.push((subject, false));
-                        self.writes.push(Write::Delete(subject));
+                        self.write(Write::Delete(subject));
                     }
                     (None, Confirm::Person { id, .. }) => {
-                        self.writes.push(Write::DeletePerson { person: id });
+                        self.write(Write::DeletePerson { person: id });
                     }
                     (None, Confirm::Merge { from, into, .. }) => {
-                        self.writes.push(Write::MergePeople { from, into });
+                        self.write(Write::MergePeople { from, into });
                     }
                     (None, Confirm::Album { .. } | Confirm::Search { .. }) => {}
                 }
@@ -2195,7 +2246,7 @@ impl App {
             (Done::Tick(apply), Some(Dialog::Export(export))) => {
                 let was = export.apply_edits();
                 export.tick(apply);
-                self.writes.push(Write::ExportApplyEdits { apply, was });
+                self.write(Write::ExportApplyEdits { apply, was });
             }
             (Done::Size(max_edge), Some(Dialog::Export(export))) => export.size(max_edge),
             (Done::Choose, Some(Dialog::Export(_))) => self.pick_folder(pick::PickFor::Export),
@@ -2260,7 +2311,7 @@ impl App {
             }
             return;
         }
-        self.writes.push(Write::Watch { paths });
+        self.write(Write::Watch { paths });
     }
 
     /// Opens the viewer on the photo `id` of the grid on screen.
@@ -3082,15 +3133,15 @@ impl App {
                     }
                     ViewerAction::Panel(InfoAction::AddTag(tag)) => {
                         let tag = tag.clone();
-                        self.writes.push(Write::TagAdd { id, tag });
+                        self.write(Write::TagAdd { id, tag });
                     }
                     ViewerAction::Panel(InfoAction::RemoveTag(tag)) => {
                         let tag = tag.clone();
-                        self.writes.push(Write::TagRemove { id, tag });
+                        self.write(Write::TagRemove { id, tag });
                     }
                     ViewerAction::Panel(InfoAction::Album { id: album, on }) => {
                         let (album, ids) = (*album, vec![id]);
-                        self.writes.push(if *on {
+                        self.write(if *on {
                             Write::AlbumAdd { album, ids }
                         } else {
                             Write::AlbumRemove { album, ids }
@@ -3143,13 +3194,13 @@ impl App {
                 // write the opposite of nothing.
                 ViewerAction::Star => {
                     if let Some(item) = open.item.as_ref() {
-                        self.write(TileAction::Star(!item.starred), vec![item.id]);
+                        self.write_tile(TileAction::Star(!item.starred), vec![item.id]);
                     }
                     false
                 }
                 ViewerAction::Hide => {
                     if let Some(item) = open.item.as_ref() {
-                        self.write(TileAction::Hide(!item.hidden), vec![item.id]);
+                        self.write_tile(TileAction::Hide(!item.hidden), vec![item.id]);
                     }
                     false
                 }
@@ -3194,13 +3245,13 @@ impl App {
                 ViewerAction::Turn(clockwise) => {
                     if let Some(item) = open.item.as_ref() {
                         let id = item.id;
-                        self.writes.push(Write::Turn { id, clockwise });
+                        self.write(Write::Turn { id, clockwise });
                     }
                     false
                 }
                 ViewerAction::Original => {
                     if let Some(item) = open.item.as_ref() {
-                        self.writes.push(Write::Edit {
+                        self.write(Write::Edit {
                             id: item.id,
                             turns: 0,
                             crop: None,
@@ -3242,7 +3293,7 @@ impl App {
                     // answer: the tool is busy.)
                     if let (Some(item), Some(crop)) = (open.item.as_ref(), open.crop.as_mut()) {
                         crop.sent = true;
-                        self.writes.push(Write::Edit {
+                        self.write(Write::Edit {
                             id: item.id,
                             turns: item.edit.as_ref().map_or(0, |edit| edit.turns),
                             crop: crop.tool.wire(),
@@ -3552,7 +3603,7 @@ impl App {
                 CompareAction::Star => {
                     if let Some(pane) = open.compare.panes().get(open.compare.focus()) {
                         let (ids, starred) = (vec![pane.id], !pane.starred);
-                        self.writes.push(Write::Stars { ids, starred });
+                        self.write(Write::Stars { ids, starred });
                     }
                 }
                 // Opened in the viewer when the grid on screen holds it - the viewer goes
@@ -3626,7 +3677,7 @@ impl App {
         let Some(Commit { of, name, sent }) = self.rename.commit() else {
             return;
         };
-        self.writes.push(match of {
+        self.write(match of {
             Of::NewAlbum => Write::AlbumNew { name, sent },
             Of::Album(album) => Write::AlbumRename { album, name, sent },
             Of::Search(search) => Write::SearchRename { search, name, sent },
@@ -3734,12 +3785,12 @@ impl App {
         };
         match mode {
             Some(mode) => self.open_dialog(Dialog::Tags(TagPicker::new(mode, ids))),
-            None => self.write(action, ids),
+            None => self.write_tile(action, ids),
         }
     }
 
     /// Queues what `action` writes, for the photos `ids`.
-    fn write(&mut self, action: TileAction, ids: Vec<i64>) {
+    fn write_tile(&mut self, action: TileAction, ids: Vec<i64>) {
         let write = match action {
             TileAction::Star(starred) => Write::Stars { ids, starred },
             TileAction::Hide(hidden) => Write::Hidden { ids, hidden },
@@ -3764,7 +3815,7 @@ impl App {
             | TileAction::AddToPerson
             | TileAction::ShowCopies(_) => return,
         };
-        self.writes.push(write);
+        self.write(write);
     }
 
     /// What a key asked of the selection: the menu's item, without the menu - for the
@@ -3808,7 +3859,7 @@ impl App {
             Ask::Compare => TileAction::Compare,
             Ask::Copy | Ask::Reveal => return,
         };
-        self.write(action, asked.ids);
+        self.write_tile(action, asked.ids);
     }
 
     /// The status bar's count of the photos shown, when there is one to give.
@@ -4026,7 +4077,7 @@ impl App {
             Action::Search(SearchAction::Save) => {
                 if let Some(query) = self.search.save() {
                     let name = query.clone();
-                    self.writes.push(Write::SaveSearch { name, query });
+                    self.write(Write::SaveSearch { name, query });
                 }
             }
             Action::ToggleSidebar => {
@@ -4088,7 +4139,7 @@ impl App {
             // back would answer a disk error with the whole grid laid out again.
             Action::Size(size) => {
                 self.size = size;
-                self.writes.push(Write::TileSize(size));
+                self.write(Write::TileSize(size));
             }
         }
     }
@@ -4286,8 +4337,12 @@ impl App {
                 self.toasts.error(refused.said, now_ms);
             }
         }
-        for (_, answer) in self.writes.answers() {
+        for (number, answer) in self.writes.answers() {
             answered = true;
+            // Answered, refused or not, it is the grid adopted next that is its own.
+            if self.moving.remove(&number) {
+                self.moved_since_adopt = true;
+            }
             match answer {
                 // The engine announces no data change for a search saved: the lists are
                 // read again because this side knows it wrote one.
@@ -4504,6 +4559,16 @@ impl App {
         answered
     }
 
+    /// Puts `write` on the queue of writes: the one way a write is asked for, so that one
+    /// which can move the grid on screen is counted among those on their way (`moving`).
+    fn write(&mut self, write: Write) {
+        let moves = write.moves_grid();
+        let number = self.writes.push(write);
+        if moves {
+            self.moving.insert(number);
+        }
+    }
+
     /// Puts the grid the engine has published on screen, when it is known what it shows.
     ///
     /// The engine's own view is not asked: it moves when a step begins, a whole rebuild
@@ -4527,6 +4592,7 @@ impl App {
         if self.grid.len > 0 && index.is_empty() {
             self.counted = false;
         }
+        let was = self.grid.version;
         self.grid = GridState {
             version,
             len: index.len(),
@@ -4534,6 +4600,12 @@ impl App {
         };
         let before = std::mem::replace(&mut self.index, index);
         self.layout_gen = layout_gen;
+        // The user's own write landing, which glides: a grid adopted while such a write is
+        // on its way, or whose answer has come since the last one - the engine publishes
+        // inside the command, so the grid is adopted before the answer is read or after.
+        // A scan's grid in that moment glides too; any other does not.
+        let users = !self.moving.is_empty() || self.moved_since_adopt;
+        self.moved_since_adopt = false;
         // Other results are another list: a place in the old one names nothing here.
         if shown.other_results {
             self.view.to_top();
@@ -4553,22 +4625,29 @@ impl App {
             if lost {
                 self.shut_viewer();
             }
-        } else if let Some(landed) = self.selection.follow(&before, &self.index) {
-            // The lead's photo has left - hidden, taken out of the album shown, purged by
-            // a scan - and the lead is on the photo beside where it was. That photo is
-            // brought into sight if the one that left was in sight: a person working
-            // through a view goes on from where they were. If it was not, they are
-            // somewhere else in the grid, and it stays where they are.
-            let seen =
-                (self.last.as_ref()).is_some_and(|frame| frame.on_screen.contains(&landed.left));
-            if seen {
-                self.view.go_to(landed.at, Align::Nearest);
+        } else {
+            if let Some(landed) = self.selection.follow(&before, &self.index) {
+                // The lead's photo has left - hidden, taken out of the album shown, purged
+                // by a scan - and the lead is on the photo beside where it was. That photo
+                // is brought into sight if the one that left was in sight: a person
+                // working through a view goes on from where they were. If it was not,
+                // they are somewhere else in the grid, and it stays where they are.
+                let seen = (self.last.as_ref())
+                    .is_some_and(|frame| frame.on_screen.contains(&landed.left));
+                if seen {
+                    self.view.go_to(landed.at, Align::Nearest);
+                }
+                // A menu of the selection open then was of the photo that left. Its items
+                // act on what is selected at the pick, which may now be the photo landed
+                // on: one nobody asked about.
+                if self.menu.is_some_and(|open| open.of == MenuOf::Selection) {
+                    self.menu = None;
+                }
             }
-            // A menu of the selection open then was of the photo that left. Its items
-            // act on what is selected at the pick, which may now be the photo landed
-            // on: one nobody asked about.
-            if self.menu.is_some_and(|open| open.of == MenuOf::Selection) {
-                self.menu = None;
+            // The rows on screen name the photos of the grid they were laid out from, and
+            // only that grid can say which photo stood where.
+            if self.animations && users && self.laid_from == Some(was) {
+                self.glide_from = Some(before);
             }
         }
         // A folder clicked from an excursion, or a photo located from one: this is the
@@ -4787,6 +4866,10 @@ impl eframe::App for App {
             ui.ctx().input(|input| seen.frame(input.viewport()));
         }
         self.adopt();
+        // The grid replaced by the user's write is glided from in this frame or never:
+        // under the viewer, compare or the People page there is no grid to glide, and it
+        // is let go of with the frame either way.
+        let glide_from = self.glide_from.take();
         let reported = self.viewer_answers(ui.ctx(), now) || reported;
         // The launch's way back, in the frame its first photos are on screen and before
         // they are drawn.
@@ -4953,7 +5036,7 @@ impl eframe::App for App {
             keys: !self.shell.search_help_open(),
             copies_marked: copies::marked(self.nav.settled().view),
             animations: self.animations,
-            glide_from: None,
+            glide_from: glide_from.as_deref(),
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.
@@ -5123,6 +5206,9 @@ impl eframe::App for App {
                 ui.ctx().request_repaint();
             }
             self.run_probe(ui.ctx(), output, reported);
+        }
+        if output.is_some() {
+            self.laid_from = Some(self.grid.version);
         }
         self.last = output;
         // Compare, once the library has said what its photos are, goes up after this

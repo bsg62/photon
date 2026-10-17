@@ -126,7 +126,7 @@ impl App {
             .unwrap_or_else(|os| os.to_string_lossy().into_owned());
         if of == PickFor::Watch {
             // Said as a folder dropped on the window is: "Watching “…”", or why not.
-            self.writes.push(super::Write::Watch { paths: vec![text] });
+            self.write(super::Write::Watch { paths: vec![text] });
             return true;
         }
         match (of, &mut self.dialog) {

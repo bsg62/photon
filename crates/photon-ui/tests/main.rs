@@ -18,6 +18,7 @@ mod edits_edges;
 mod export;
 mod faces;
 mod faces_edges;
+mod glide;
 mod lists;
 mod menu;
 mod opener;

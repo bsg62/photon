@@ -541,7 +541,7 @@ impl App {
     }
 
     fn push_setting(&mut self, write: SettingWrite) {
-        self.writes.push(Write::Setting(write));
+        self.write(Write::Setting(write));
     }
 
     /// Does what was asked in Settings.
@@ -585,7 +585,7 @@ impl App {
                 // The top bar's own control, again.
                 Asked::Size(size) => {
                     self.size = size;
-                    self.writes.push(Write::TileSize(size));
+                    self.write(Write::TileSize(size));
                 }
                 Asked::Interval { text, store } => {
                     settings.type_interval(&text);
@@ -632,7 +632,7 @@ impl App {
                     }
                 }
                 Asked::Rescan(watched) => {
-                    self.writes.push(Write::Rescan { watched });
+                    self.write(Write::Rescan { watched });
                 }
                 Asked::RemoveFolder { id, path } => {
                     settings.ask(Question::RemoveFolder { id, path });
