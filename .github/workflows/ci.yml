@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           T=menu::the_star_key_takes_several_photos_the_way_of_the_deciding_one
-          for h in 1 2 3; do ( yes > /dev/null & echo $! >> hogs ); done
+          ( while true; do sudo purge; sleep 1; done ) & echo $! >> hogs
           for w in 1 2 3 4 5 6; do
             ( cargo nextest run --color never -p photon-ui --test all "$T" --stress-count 120 > "loop$w.log" 2>&1; echo "loop $w exit $?" >> "loop$w.log" ) &
           done
