@@ -64,6 +64,9 @@ pub fn decode_avif(bytes: &[u8]) -> ImageResult<DynamicImage> {
         let planes = av1::decode(&parser.primary_data().map_err(parse_failed)?).map_err(failed)?;
         let (matrix, full_range) = colour(&parser, &planes);
         let rgb = yuv::to_rgb(&planes, matrix, full_range);
+        // Every sample widened to two bytes: 72 MB of planes for a 24 MP photo, not to be
+        // held while the alpha is decoded and attached.
+        drop(planes);
         match parser.alpha_data() {
             None => DynamicImage::ImageRgb8(rgb),
             Some(alpha) => {

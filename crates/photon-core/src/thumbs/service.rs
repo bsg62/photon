@@ -700,13 +700,18 @@ impl ThumbService {
     /// The thumbnail file at `path` - one `request_async` answered with - decoded the same
     /// way.
     pub fn decode_file(path: &Path) -> Result<image::RgbaImage> {
-        Ok(ThumbCache::decode(path)?.to_rgba8())
+        Ok(ThumbCache::decode(path)?.into_rgba8())
     }
 
     /// A face's crop from the cached preview under `key`; see `ThumbCache::face_crop`. Never
     /// renders.
     pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> crate::Result<Vec<u8>> {
         self.cache.face_crop(key, rect)
+    }
+
+    /// Lets go of the previews `face_crop` kept; see `ThumbCache::forget_decoded`.
+    pub fn forget_decoded(&self) {
+        self.cache.forget_decoded();
     }
 
     pub fn wait_idle(&self) {

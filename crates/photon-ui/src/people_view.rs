@@ -1452,7 +1452,7 @@ mod tests {
                 ctx,
                 view: PeopleView::default(),
                 model,
-                crops: Crops::spawn(|_| Made::Missing, || {}),
+                crops: Crops::spawn(|_| Made::Missing, || {}, || {}),
                 finds_faces: true,
                 time: 0.0,
                 texts: Vec::new(),

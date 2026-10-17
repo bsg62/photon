@@ -354,6 +354,30 @@ fn appimage(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<Path
     Ok(named)
 }
 
+/// The size of a `.dmg`'s volume for `bytes` of files, in megabytes: a quarter more, and
+/// 32 MB for the file system's own. The image is compressed (`UDZO`), so the room left over
+/// costs the download nothing.
+fn dmg_megabytes(bytes: u64) -> u64 {
+    (bytes + bytes / 4).div_ceil(1 << 20) + 32
+}
+
+/// The bytes of the files under `dir`, a link counted as nothing (the `Applications` link
+/// would otherwise be the whole disk's).
+fn bytes_under(dir: &Path) -> Result<u64, String> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))? {
+        let path = entry.map_err(|err| err.to_string())?.path();
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        if meta.is_dir() {
+            total += bytes_under(&path)?;
+        } else if meta.is_file() {
+            total += meta.len();
+        }
+    }
+    Ok(total)
+}
+
 fn dmg(
     meta: &Meta,
     binary: &Path,
@@ -381,6 +405,10 @@ fn dmg(
     std::os::unix::fs::symlink("/Applications", stage.join("Applications"))
         .map_err(|err| format!("the Applications link: {err}"))?;
     let dmg = out.join(format!("photon_{}_{name}.dmg", meta.version));
+    // The volume's size is said, not left to `-srcfolder`'s estimate, which fell short of
+    // the x86_64 program by a little and failed every try with "No space left on device"
+    // (#228's run, while the aarch64 one and main's passed).
+    let size = format!("{}m", dmg_megabytes(bytes_under(&stage)?));
     // `hdiutil create` fails now and then on a runner with "Resource busy", and succeeds
     // when asked again (Tauri's own dmg script asks again too).
     let mut tries = 0;
@@ -394,6 +422,8 @@ fn dmg(
                     "-ov",
                     "-format",
                     "UDZO",
+                    "-size",
+                    &size,
                     "-srcfolder",
                 ])
                 .arg(&stage)
@@ -468,6 +498,28 @@ fn msi(
 
 #[cfg(test)]
 mod tests {
+    // A quarter more than the files, and 32 MB beside: never less than they need.
+    #[test]
+    fn a_dmgs_volume_has_room_for_its_files_and_more() {
+        assert_eq!(dmg_megabytes(0), 32);
+        assert_eq!(dmg_megabytes(80 << 20), 132);
+        assert!(dmg_megabytes(80 << 20) << 20 > (80 << 20) * 5 / 4);
+    }
+
+    // What is under a folder, its subfolders' too, and nothing a link points at.
+    #[cfg(unix)]
+    #[test]
+    fn the_bytes_under_a_folder_count_no_link() {
+        let dir = std::env::temp_dir().join(format!("photon-xtask-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/one"), [0; 100]).unwrap();
+        std::fs::write(dir.join("a/b/two"), [0; 50]).unwrap();
+        std::os::unix::fs::symlink("/usr", dir.join("link")).unwrap();
+        let counted = bytes_under(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(counted.unwrap(), 150);
+    }
+
     use super::*;
 
     fn root() -> PathBuf {

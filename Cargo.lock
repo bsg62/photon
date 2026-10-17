@@ -4222,6 +4222,7 @@ dependencies = [
  "icu_provider",
  "image",
  "jiff",
+ "libc",
  "libtest-mimic",
  "objc2 0.6.5",
  "objc2-av-foundation",

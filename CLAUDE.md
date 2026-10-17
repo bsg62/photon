@@ -786,7 +786,8 @@ visible face, 148 ms at 150,000 (`people_150k_faces` in the grid bench). A face'
 by `ThumbCache::face_crop` from the cached preview only - never a render, so a page of crops
 cannot start a burst of renders - and `ThumbCache` keeps the last eight decoded previews by
 key (`decoded_preview`), so a group photo's faces decode it once: a key names one picture,
-so a kept decode is never stale.
+so a kept decode is never stale. They are let go of when the page closes (`forget_decoded`),
+and again after each cut that was on its way then: 46-61 MB held for the session otherwise.
 
 **`people_write` serialises the corrections with grouping.** Every operation on the People data
 (`name_group`, `rename_person`, `confirm_faces`, `reject_faces`, `merge_people`,
@@ -2817,8 +2818,8 @@ click on a face is two plain clicks on it, not egui's: egui counts the click bef
 well, and the click on People a moment before made it a triple, no double to egui. Enter on
 a face opens it too. **The crops are cut off the window's thread** by the engine's own
 `ThumbCache::face_crop` - the route's WebP, decoded with libwebp (`webp`, at photon-core's
-version, the one dependency the page added) - one cutter a core as `FACE_CROPS` bounds the
-route, each asked for when its face is first in sight and once an opening; a face whose
+version, the one dependency the page added) - half the cores' cutters and at most four
+(`MAX_CUTTERS`: one a core held a preview's decode on each at once), each asked for when its face is first in sight and once an opening; a face whose
 preview is not cached is an empty square with a figure. They are let go of when the page
 closes. A name box is a field of its own for each group, Enter read and taken before it is
 drawn (the lesson of every field here), with what Enter will do under it - "Add to Anna"
@@ -3103,6 +3104,12 @@ once, a frame asked for after a delay comes one frame early, a scroll leaves two
 its own behind (`SCROLL_SETTLE_MS`, `VISIBLE_DEBOUNCE_MS`), and a nudged mouse is three
 frames, not one (`ECHO_MS`). Each would have read as a busy grid that was perfectly still.
 Anything that asserts a still interface draws nothing is tested through that loop.
+
+**glibc's mmap threshold is fixed at launch** (`allocator.rs`, `mallopt`, first thing in
+`main`). By default it slides up to each large block freed, and every photo buffer after the
+first few came out of a thread's arena, which keeps what is freed: an import of 48 photos of
+12 MP left 165 MB resident over 4 MB in use, and `malloc_trim` returned none of it. Fixed at
+1 MB, it left 4 MB. The figure Settings shows is that resident memory.
 
 **Two checkouts do not share a `CARGO_TARGET_DIR`.** Cargo names a workspace member's
 build by its place in the workspace, not by where the checkout is, and decides whether it
