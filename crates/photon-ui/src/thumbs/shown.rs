@@ -42,6 +42,11 @@ impl Thumbs {
         }
     }
 
+    /// Whether a late thumbnail fades in: the Settings switch for animations.
+    pub fn set_fades(&mut self, fades: bool) {
+        self.fades = fades;
+    }
+
     /// Once per frame, before the tiles are drawn: takes what the loader has finished,
     /// uploads within the budget, and tells the loader what is wanted now - `wanted`, most
     /// wanted first, or nothing at all while `defer` holds, since a tile that will be gone

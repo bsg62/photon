@@ -2633,6 +2633,7 @@ fn a_low_panel<'a>(notch: fn() -> Notch) -> (tempfile::TempDir, Harness<'a>, Dri
         .build_eframe(move |cc| {
             photon_ui::app::App::new(cc, dirs, None)
                 .unwrap()
+                .without_animations()
                 .with_wheel(notch)
         });
     let mut driver = Driver::new(&harness);

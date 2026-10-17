@@ -26,7 +26,7 @@ fn launch<'a>(dir: &Path, pictures: Option<PathBuf>, picker: Arc<Picker>) -> (Ha
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            (App::new(cc, dirs, pictures).unwrap())
+            (App::new(cc, dirs, pictures).unwrap().without_animations())
                 .with_videos(crate::common::no_videos())
                 .with_platform(picker)
         });

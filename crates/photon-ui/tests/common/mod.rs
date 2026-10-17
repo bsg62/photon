@@ -253,7 +253,7 @@ pub fn launch_with<'a>(
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            (App::new(cc, dirs, None).unwrap())
+            (App::new(cc, dirs, None).unwrap().without_animations())
                 .with_videos(no_videos())
                 .with_platform(platform)
         })
@@ -335,6 +335,7 @@ pub fn over_with<'a>(
         .build_eframe(move |cc| {
             App::new(cc, dirs, pictures)
                 .unwrap()
+                .without_animations()
                 .with_videos(no_videos())
                 .with_platform(platform)
         });

@@ -188,6 +188,8 @@ pub struct App {
     show_settings: Latest<(), (Option<i64>, bool)>,
     /// The theme the user chose, as put on the window.
     theme: ThemeChoice,
+    /// Whether the window moves things smoothly, read with the theme.
+    animations: bool,
     /// The theme the system last said the window has (`keep_title_bar`).
     system_theme: Option<egui::Theme>,
     /// What Settings shows of the stored settings, read as it opens.
@@ -742,6 +744,7 @@ impl App {
         // And the title bar the system draws, which is the window's own.
         let theme = commands::theme(&engine).unwrap_or_default();
         theme::apply::put(&ctx, theme);
+        let animations = commands::animations(&engine).unwrap_or(true);
         let size = commands::grid_tile(&engine).unwrap_or_default();
         engine.startup(pictures);
 
@@ -1325,7 +1328,11 @@ impl App {
             engine: engine.clone(),
             events: receiver,
             view: GridView::default(),
-            thumbs: Thumbs::new(loader),
+            thumbs: {
+                let mut thumbs = Thumbs::new(loader);
+                thumbs.set_fades(animations);
+                thumbs
+            },
             grid: GridState {
                 version,
                 len: index.len(),
@@ -1362,6 +1369,7 @@ impl App {
             ctx: ctx.clone(),
             show_settings,
             theme,
+            animations,
             system_theme: None,
             settings_read,
             memory_read,
@@ -1481,6 +1489,14 @@ impl App {
     /// no portal or picker to count on.
     pub fn with_platform(mut self, platform: Arc<dyn Platform>) -> Self {
         self.platform = platform;
+        self
+    }
+
+    /// Without animations for this session, which is not stored: for a test, whose frames
+    /// are counted and whose fades would keep a window drawing.
+    pub fn without_animations(mut self) -> Self {
+        self.animations = false;
+        self.thumbs.set_fades(false);
         self
     }
 

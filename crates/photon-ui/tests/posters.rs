@@ -145,7 +145,12 @@ fn launched<'a>(
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, pictures).unwrap().with_videos(posters));
+        .build_eframe(move |cc| {
+            App::new(cc, dirs, pictures)
+                .unwrap()
+                .without_animations()
+                .with_videos(posters)
+        });
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the folder shown", |app| {
         app.photos() == count

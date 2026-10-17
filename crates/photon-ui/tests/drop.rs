@@ -168,7 +168,12 @@ fn where_no_drop_can_arrive_none_is_offered() {
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(crate::common::REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, made, None).unwrap().without_drops());
+        .build_eframe(move |cc| {
+            App::new(cc, made, None)
+                .unwrap()
+                .without_animations()
+                .without_drops()
+        });
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the empty library's panel", |app| {
         app.panel().is_some()

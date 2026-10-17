@@ -76,6 +76,8 @@ pub(super) enum SettingWrite {
     /// Applied at the press, and kept for the session if the library will not store it:
     /// going back would answer a disk error with a flash of the whole window.
     Theme(ThemeChoice),
+    /// Kept for the session if the library will not store it, as the theme is.
+    Animations(bool),
     /// With the opening of Settings it was sent from.
     Interval {
         seconds: i64,
@@ -141,6 +143,9 @@ pub(super) fn store(engine: &Arc<Engine>, write: SettingWrite) -> Result<Wrote, 
     };
     let wrote = match write {
         SettingWrite::Theme(choice) => commands::set_theme(engine, choice)
+            .map(|()| SettingWrote::Stored)
+            .map_err(refused(Refused::Said))?,
+        SettingWrite::Animations(on) => commands::set_animations(engine, on)
             .map(|()| SettingWrote::Stored)
             .map_err(refused(Refused::Said))?,
         SettingWrite::Interval { seconds, opening } => {
@@ -279,6 +284,7 @@ impl App {
         settings.seen = Seen {
             theme: self.theme,
             size: self.size,
+            animations: self.animations,
             find_faces: self.engine.face_detection(),
             faces_line: self.scans.faces_line(),
             folders,
@@ -570,6 +576,11 @@ impl App {
                     self.theme = choice;
                     theme::apply::put(ctx, choice);
                     self.push_setting(SettingWrite::Theme(choice));
+                }
+                Asked::Animations(on) => {
+                    self.animations = on;
+                    self.thumbs.set_fades(on);
+                    self.push_setting(SettingWrite::Animations(on));
                 }
                 // The top bar's own control, again.
                 Asked::Size(size) => {

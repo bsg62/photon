@@ -63,7 +63,8 @@ fn first_run<'a>(dir: &Path, pictures: Option<PathBuf>) -> (Harness<'a>, Driver)
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            (App::new(cc, dirs, pictures).unwrap()).with_platform(crate::common::no_platform())
+            (App::new(cc, dirs, pictures).unwrap().without_animations())
+                .with_platform(crate::common::no_platform())
         });
     let driver = Driver::new(&harness);
     (harness, driver)

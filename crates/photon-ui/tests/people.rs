@@ -1041,7 +1041,7 @@ fn the_page_scrolls_by_the_systems_notch_and_its_bar_is_held() {
         .with_size(egui::vec2(1000.0, 500.0))
         .with_step_dt(crate::common::REFRESH as f32)
         .build_eframe(move |cc| {
-            (App::new(cc, dirs, None).unwrap())
+            (App::new(cc, dirs, None).unwrap().without_animations())
                 .with_videos(crate::common::no_videos())
                 .with_platform(crate::common::no_platform())
                 .with_wheel(|| photon_ui::grid::scroll::Notch::Points(100.0))

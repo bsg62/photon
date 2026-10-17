@@ -420,7 +420,12 @@ fn wheeled<'a>(dir: &std::path::Path, wheel: fn() -> Notch) -> (Harness<'a>, Dri
     let mut harness = egui_kittest::Harness::builder()
         .with_size(vec2(1000.0, 700.0))
         .with_step_dt(crate::common::REFRESH as f32)
-        .build_eframe(move |cc| App::new(cc, dirs, None).unwrap().with_wheel(wheel));
+        .build_eframe(move |cc| {
+            App::new(cc, dirs, None)
+                .unwrap()
+                .without_animations()
+                .with_wheel(wheel)
+        });
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the library shown", |app| {
         app.photos() == 900 && app.last_frame().is_some_and(|frame| frame.settled)

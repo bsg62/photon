@@ -21,9 +21,11 @@ fn three<'a>(dir: &Path, picker: Arc<Picker>) -> (Harness<'a>, Driver) {
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            (App::new(cc, dirs, Some(pictures)).unwrap())
-                .with_videos(crate::common::no_videos())
-                .with_platform(picker)
+            (App::new(cc, dirs, Some(pictures))
+                .unwrap()
+                .without_animations())
+            .with_videos(crate::common::no_videos())
+            .with_platform(picker)
         });
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the three photos shown", |app| {

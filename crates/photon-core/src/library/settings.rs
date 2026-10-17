@@ -28,6 +28,7 @@ const SLIDESHOW_SHUFFLE: &str = "slideshow_shuffle";
 
 /// Which colour scheme the UI uses.
 const THEME: &str = "theme";
+const ANIMATIONS: &str = "animations";
 
 /// Whether an export writes edited photos as they are shown. Remembered because it is a
 /// choice about how the user works, not about one export.
@@ -309,6 +310,15 @@ impl Library {
         self.set_setting(THEME, choice.as_str())
     }
 
+    /// Whether the window moves things smoothly. True until the user says otherwise.
+    pub fn animations(&self) -> Result<bool> {
+        Ok(self.setting(ANIMATIONS)?.is_none_or(|stored| stored == "1"))
+    }
+
+    pub fn set_animations(&self, on: bool) -> Result<()> {
+        self.set_setting(ANIMATIONS, if on { "1" } else { "0" })
+    }
+
     /// How large the grid draws its tiles; `Medium` when never set.
     pub fn grid_tile(&self) -> Result<GridTile> {
         Ok(self
@@ -465,6 +475,16 @@ mod tests {
             lib.set_theme(choice).unwrap();
             assert_eq!(lib.theme().unwrap(), choice);
         }
+    }
+
+    #[test]
+    fn animations_are_on_until_switched_off() {
+        let (_dir, lib) = temp_library();
+        assert!(lib.animations().unwrap());
+        lib.set_animations(false).unwrap();
+        assert!(!lib.animations().unwrap());
+        lib.set_animations(true).unwrap();
+        assert!(lib.animations().unwrap());
     }
 
     #[test]
