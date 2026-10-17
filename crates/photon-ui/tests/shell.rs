@@ -583,8 +583,9 @@ fn a_closing_sidebar_takes_no_press() {
     assert_eq!(harness.state().place(), before, "no view was asked for");
 }
 
-// The shell is not drawn under the viewer, and a slide it began there asks for no frames
-// once its time is over.
+// The shell is not drawn under the viewer: a slide begun at the press that opened it -
+// Ctrl+B and Enter in one frame - asks for no frames there, and is over by the time the
+// viewer closes, not begun then.
 #[test]
 fn a_slide_under_the_viewer_asks_for_no_frames_once_its_time_is_over() {
     let dir = tempfile::tempdir().unwrap();
@@ -602,15 +603,37 @@ fn a_slide_under_the_viewer_asks_for_no_frames_once_its_time_is_over() {
         });
     }
     driver.act(&mut harness);
-    toggle(&mut driver, &mut harness);
-    harness.key_press(Key::Enter);
+    let down = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    // Both in the frame's own input, so that one frame is drawn for the two.
+    (harness.input_mut().events).extend([
+        down(Key::B, Modifiers::COMMAND),
+        down(Key::Enter, Modifiers::NONE),
+    ]);
     driver.act(&mut harness);
+    assert!(harness.state().layout().sidebar_hidden);
     assert!(harness.state().viewer().is_some());
     driver.frames_in(&mut harness, 0.2);
     driver.settle(&mut harness);
     driver.frames_in(&mut harness, 1.0);
     driver.settle(&mut harness);
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+
+    harness.event(down(Key::Escape, Modifiers::NONE));
+    driver.act(&mut harness);
+    assert!(harness.state().viewer().is_none());
+    driver.act(&mut harness);
+    assert_eq!(
+        content_left(&harness),
+        0.0,
+        "the slide was over under the viewer"
+    );
+    assert!(!harness.state().sidebar_sliding(driver.now * 1000.0));
 }
 
 // The place in the grid is kept by its pin in every frame of a slide, as through a
