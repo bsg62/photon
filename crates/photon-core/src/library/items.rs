@@ -306,6 +306,41 @@ const STARRED_COUNT_SQL: &str =
 /// rather than a walk of `items_size`; see `library/mod.rs`.
 const FILE_NAMES_SQL: &str = "SELECT id, file_name FROM items WHERE +missing_since IS NULL";
 
+/// Every live item's file name, for a name sort: one buffer of them all, and each id's place
+/// in it, in id order. A map of a `String` a name was 300,000 allocations and about 27 MB on
+/// every rebuild of a name-sorted library of that size; this is two, and about 11.
+#[derive(Default)]
+struct FileNames {
+    text: String,
+    at: Vec<(i64, usize, usize)>,
+}
+
+impl FileNames {
+    fn push(&mut self, id: i64, name: &str) {
+        let start = self.text.len();
+        self.text.push_str(name);
+        self.at.push((id, start, self.text.len()));
+    }
+
+    /// In id order, for `get`. A scan in table order hands the names over in id order
+    /// already, which the sort then only checks; nothing promises it.
+    fn sorted(mut self) -> Self {
+        self.at.sort_unstable_by_key(|(id, ..)| *id);
+        self
+    }
+
+    /// The name of `id`, or nothing for an id that has none.
+    fn get(&self, id: i64) -> &str {
+        match self.at.binary_search_by_key(&id, |(id, ..)| *id) {
+            Ok(found) => {
+                let (_, start, end) = self.at[found];
+                &self.text[start..end]
+            }
+            Err(_) => "",
+        }
+    }
+}
+
 /// Number of columns selected by `GRID_COLUMNS`. `search_entries` uses this rather than a
 /// bare `15` so a future column added to `GRID_COLUMNS` can't silently shift `file_name`
 /// and `folder name` into the wrong indices without also touching this constant.
@@ -1163,9 +1198,9 @@ impl Library {
         let mut entries = self.entries_for(view, arg)?;
         let names = match sort.key {
             SortKey::Name => self.file_names()?,
-            _ => HashMap::new(),
+            _ => FileNames::default(),
         };
-        sort.arrange(&mut entries, |id| names.get(&id).map_or("", String::as_str));
+        sort.arrange(&mut entries, |id| names.get(id));
         Ok(entries)
     }
 
@@ -1185,13 +1220,15 @@ impl Library {
     }
 
     /// Every live item's file name, by id.
-    fn file_names(&self) -> Result<HashMap<i64, String>> {
+    fn file_names(&self) -> Result<FileNames> {
         let conn = self.reader()?;
         let mut stmt = conn.prepare(FILE_NAMES_SQL)?;
-        let names = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<HashMap<i64, String>>>()?;
-        Ok(names)
+        let mut rows = stmt.query([])?;
+        let mut names = FileNames::default();
+        while let Some(r) = rows.next()? {
+            names.push(r.get(0)?, text(r, 1)?.unwrap_or(""));
+        }
+        Ok(names.sorted())
     }
 
     /// The grid's rows for one view. `arg` is the view's argument - the query for `Search`,
@@ -1509,6 +1546,24 @@ mod tests {
     // The grid holds a video's length in four bytes. One longer than they hold - 49 days,
     // or what a broken container claims - has no badge, and does not fail the query of
     // every photo beside it.
+    // The names are found by id whatever order they were read in; an id with none has
+    // nothing.
+    #[test]
+    fn a_file_name_is_found_by_its_id() {
+        let mut names = FileNames::default();
+        for (id, name) in [(5, "e.jpg"), (2, "b.jpg"), (9, "i.jpg")] {
+            names.push(id, name);
+        }
+        let names = names.sorted();
+        assert_eq!(
+            [names.get(2), names.get(5), names.get(9)],
+            ["b.jpg", "e.jpg", "i.jpg"]
+        );
+        for absent in [1, 7, 10, i64::MIN, i64::MAX] {
+            assert_eq!(names.get(absent), "", "{absent}");
+        }
+    }
+
     #[test]
     fn a_video_longer_than_the_grid_holds_has_no_length_there() {
         let (_dir, lib) = temp_library();
