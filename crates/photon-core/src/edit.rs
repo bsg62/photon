@@ -404,6 +404,19 @@ pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<Dynami
     Ok(edit.place(crate::decode::decode_image(path)?, orientation))
 }
 
+/// [`render_picture`] fitted within `max_edge` with `filter`, and decoded no larger than
+/// that needs (`decode::render_decode`): for what is made smaller than the photo - a copy,
+/// an export sent at a size, a cropped photo's preview.
+pub fn render_fitted(
+    path: &Path,
+    orientation: u8,
+    edit: Edit,
+    max_edge: u32,
+    filter: fast_image_resize::FilterType,
+) -> Result<DynamicImage> {
+    Ok(crate::decode::render_decode(path, orientation, edit, max_edge, filter)?.0)
+}
+
 /// A copy of `picture` made to be drawn fitted into a box of `width` by `height` pixels:
 /// scaled to touch the box on the side it reaches first, with a Lanczos filter. None for a
 /// picture that fits the box as it is, which is drawn from its own pixels.
@@ -449,14 +462,15 @@ pub type ClipboardPicture = image::RgbaImage;
 /// The photo as shown, as RGBA pixels for the clipboard, scaled down to
 /// [`CLIPBOARD_MAX_EDGE`] on its long edge if it is larger; a smaller photo keeps its size.
 pub fn clipboard_picture(path: &Path, orientation: u8, edit: Edit) -> Result<ClipboardPicture> {
-    let img = render_picture(path, orientation, edit)?;
     // Lanczos, not the bilinear filter the thumbnails use: this is a picture someone will
     // look at full screen in another app, and it is made once per copy, not once per tile.
-    let img = crate::decode::fit_within_by(
-        img,
+    let img = render_fitted(
+        path,
+        orientation,
+        edit,
         CLIPBOARD_MAX_EDGE,
         fast_image_resize::FilterType::Lanczos3,
-    );
+    )?;
     Ok(img.into_rgba8())
 }
 
