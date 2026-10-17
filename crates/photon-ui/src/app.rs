@@ -2853,10 +2853,19 @@ impl App {
         // question at a time, as ever, and it is this one while the tool is open. (A
         // photo with no crop has that picture already.)
         let uncropped = (open.crop.as_ref()).is_some_and(|crop| crop.had.is_some());
+        let device = ctx.input(|input| input.max_texture_side) as u32;
         let ask = PictureAsk {
             want,
             uncropped,
-            max_side: ctx.input(|input| input.max_texture_side) as u32,
+            // The tool does not zoom, and is drawn in a box no larger than `within`: of
+            // the levels it needs none past twice that, the largest kept then still at
+            // least as large as what is drawn. Its picture is held beside the photo's own,
+            // and all its levels were a second camera's photo in textures.
+            max_side: if uncropped {
+                device.min(within.0.max(within.1).saturating_mul(2))
+            } else {
+                device
+            },
             fit: within,
         };
         // Whether to ask is decided from what is held and what is on its way, never

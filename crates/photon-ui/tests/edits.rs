@@ -459,6 +459,42 @@ fn the_tool_on_a_cropped_photo_has_the_picture_without_the_crop_made_for_it() {
     assert_eq!(harness.state().pictures_asked(), asked);
 }
 
+// The tool does not zoom, so the picture made for it has no level larger than twice
+// the box it is drawn in: a strip of 4,400 pixels in a window 1,000 wide is drawn from
+// its quarter, and its whole and its half are never made into textures.
+#[test]
+fn the_tools_picture_has_no_level_larger_than_it_is_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Pictures");
+    std::fs::create_dir_all(&folder).unwrap();
+    let strip = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        4400,
+        100,
+        image::Rgb([40, 120, 200]),
+    ));
+    strip.save(folder.join("strip.jpg")).unwrap();
+    let (mut harness, mut driver, _) = over(dir.path(), Some(&folder));
+    driver.until(&mut harness, "the strip shown", |app| {
+        app.photos() == 1 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    harness.input_mut().max_texture_side = Some(16_384);
+    let id = harness.state().shown()[0];
+    cropped(&mut driver, &mut harness, id, LEFT_HALF);
+    open(&mut driver, &mut harness, 0);
+    rest(&mut driver, &mut harness, 0.5);
+    assert_eq!(
+        wide(harness.state()),
+        Some(2200),
+        "the photo's own, its crop"
+    );
+    key(&mut driver, &mut harness, Key::C);
+    driver.until(&mut harness, "the picture without its crop", |app| {
+        app.crop_picture().is_some()
+    });
+    assert_eq!(harness.state().crop_picture(), Some(vec![1100, 550, 275]));
+}
+
 // The tool's picture is asked for as the tool opens, whatever is on its way: the
 // photo's own, still waiting at its render, gives way - one question at a time. With
 // the tool cancelled before either is made, the photo's own is asked for again.
