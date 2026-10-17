@@ -1813,6 +1813,11 @@ impl App {
         self.viewer.as_ref()?.item.as_ref()
     }
 
+    /// How many of the grid's thumbnails are held as textures.
+    pub fn grid_textures(&self) -> usize {
+        self.thumbs.held()
+    }
+
     /// The widths of the levels of the full picture on screen, largest first: none
     /// until it has been made for the photo the viewer is on.
     pub fn viewer_levels(&self) -> Option<Vec<u32>> {
@@ -5031,6 +5036,12 @@ impl eframe::App for App {
             InfoView::let_go(ui.ctx());
         }
 
+        // Under compare, the viewer or the People page the grid draws nothing, and holds
+        // only the thumbnails it last showed: room to scroll back into is not wanted
+        // until it is uncovered.
+        if self.compare.is_some() || self.viewer.is_some() || self.page.is_some() {
+            self.thumbs.rest();
+        }
         // Compare takes the whole window as the viewer does.
         if self.compare.is_some() {
             self.show_compare(ui, now, under_dialog);

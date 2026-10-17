@@ -473,3 +473,84 @@ fn the_keys_are_not_the_grids_under_the_open_search_help() {
         assert_eq!(harness.state().selected(), ids[3..=5], "{pressed:?}");
     }
 }
+
+/// A library of 900 photos opened and scrolled some screens down, its thumbnails settled:
+/// the photo ids, and those on screen.
+fn scrolled<'a>(
+    library: &photon_ui::fixture::Fixture,
+) -> (Harness<'a>, Driver, Vec<i64>, Vec<i64>) {
+    let ids = photo_ids(library);
+    let (mut harness, mut driver) = opened(library, 900);
+    harness.event(egui::Event::PointerMoved(egui::pos2(700.0, 400.0)));
+    for _ in 0..3 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -1500.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        driver.act(&mut harness);
+        driver.settle(&mut harness);
+        driver.frames_in(&mut harness, 1.0);
+        driver.settle(&mut harness);
+    }
+    let on_screen = harness.state().last_frame().unwrap().on_screen.clone();
+    let held = harness.state().grid_textures();
+    assert!(
+        held > 2 * on_screen.len(),
+        "{held} held, {} on screen",
+        on_screen.len()
+    );
+    (harness, driver, ids, on_screen)
+}
+
+// Under the viewer the grid draws nothing, and holds only the thumbnails it had on screen:
+// those it scrolled past are let go of, and those it shows are there again at once.
+#[test]
+fn the_viewer_over_the_grid_lets_go_of_the_thumbnails_out_of_sight() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver, ids, on_screen) = scrolled(&library);
+    let middle = on_screen[on_screen.len() / 2];
+    let offset = ids.iter().position(|id| *id == middle).unwrap();
+    pick(&mut driver, &mut harness, offset, Modifiers::NONE);
+    harness.key_press(Key::Enter);
+    driver.act(&mut harness);
+    assert!(harness.state().viewer().is_some());
+    assert!(harness.state().grid_textures() <= on_screen.len());
+    harness.key_press(Key::Escape);
+    driver.act(&mut harness);
+    assert!(harness.state().viewer().is_none());
+    driver.act(&mut harness);
+    assert_eq!(harness.state().last_frame().unwrap().on_screen, on_screen);
+    assert!(harness.state().grid_textures() >= on_screen.len());
+}
+
+// And so under compare, and under the People page, which is drawn in the grid's place.
+#[test]
+fn compare_and_the_people_page_over_the_grid_let_go_of_the_thumbnails_out_of_sight() {
+    let dir = tempfile::tempdir().unwrap();
+    let photos = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver, ids, on_screen) = scrolled(&photos);
+    let at = |id: i64| ids.iter().position(|of| *of == id).unwrap();
+    let adding = if cfg!(target_os = "macos") {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    pick(&mut driver, &mut harness, at(on_screen[4]), Modifiers::NONE);
+    pick(&mut driver, &mut harness, at(on_screen[5]), adding);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.key_press(Key::C);
+    driver.until(&mut harness, "compare open", |app| app.compare().is_some());
+    driver.act(&mut harness);
+    assert!(harness.state().grid_textures() <= on_screen.len());
+
+    let dir = tempfile::tempdir().unwrap();
+    let other = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver, _, on_screen) = scrolled(&other);
+    click(&mut driver, &mut harness, "People");
+    assert!(harness.state().people_open());
+    driver.act(&mut harness);
+    assert!(harness.state().grid_textures() <= on_screen.len());
+}

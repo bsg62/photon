@@ -139,6 +139,17 @@ impl Thumbs {
         self.textures.bytes()
     }
 
+    /// The grid is covered and draws nothing: every texture but those on screen when it
+    /// was last drawn is let go of (`Textures::rest`).
+    pub fn rest(&mut self) {
+        self.textures.rest();
+    }
+
+    /// How many textures are held.
+    pub fn held(&self) -> usize {
+        self.textures.len()
+    }
+
     /// Lets go of every texture: the viewer has closed. What the loader finishes after
     /// this is dropped at the next `frame` that does not want it.
     pub fn clear(&mut self) {

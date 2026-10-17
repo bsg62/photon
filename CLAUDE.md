@@ -1033,6 +1033,13 @@ video with no poster or a photo whose drive is unplugged answers `Unavailable`, 
 the tile (`troubled`), counts as settled, and is asked for again after `RETRY_SECS` - by a
 frame the grid requests for that moment, since a still grid draws none.
 
+**The grid's textures are held at three times what it wants** (`textures.rs`: `SLACK`,
+between `LIMIT_FLOOR`, 64 MB, and `DEFAULT_LIMIT`, 256 MB), never letting go of a texture it
+wants; once a library had been scrolled through, the store sat at its whole limit for the
+session. **Covered** - by the viewer, compare or the People page - it keeps only what it drew
+in its last frame (`Textures::rest`, called by `App::ui` in every covered frame), so it is
+uncovered with its screen whole and its lead read again from the cache.
+
 **Text goes through `text::paint_line`**, not through egui directly, wherever it can be in
 another script: egui shapes text but runs no bidirectional algorithm, and draws a name that
 mixes directions wrong. A right-to-left run is cut at everything that is not a letter, not

@@ -30,9 +30,16 @@ pub struct Pixels {
     pub rgba: Vec<u8>,
 }
 
-/// Bytes of texture kept before the least recently drawn are let go. A grid thumbnail is at
-/// most 256x256, so 262,144 bytes: this is about a thousand of them.
+/// The most bytes of texture kept before the least recently drawn are let go. A grid
+/// thumbnail is at most 256x256, so 262,144 bytes: this is about a thousand of them.
 pub const DEFAULT_LIMIT: usize = 256 << 20;
+/// Below the limit, what is kept is at most `SLACK` times what the view wants - the room to
+/// scroll back into without asking the cache again - and never held to less than
+/// `LIMIT_FLOOR`. At 1440p a grid wants about a hundred thumbnails, 25 MB: the store sat at
+/// its whole limit for the session once a library had been scrolled through, under the
+/// viewer and the People page too.
+pub const SLACK: usize = 3;
+pub const LIMIT_FLOOR: usize = 64 << 20;
 /// Textures uploaded in one frame. An upload is a copy to the GPU on the UI thread, and a
 /// jump to a new place brings a screenful at once.
 pub const UPLOADS_PER_FRAME: usize = 32;
@@ -219,9 +226,10 @@ impl<T> Textures<T> {
     }
 
     /// Uploads up to `budget` waiting thumbnails through `make`, then lets go of the least
-    /// recently drawn textures until the limit holds. A texture in `wanted` is never let
-    /// go, so a view that needs more than the limit keeps what it shows. `true` when
-    /// thumbnails are still waiting, and another frame is owed.
+    /// recently drawn textures until the limit holds - `SLACK` times what `wanted` holds,
+    /// between `LIMIT_FLOOR` and the limit. A texture in `wanted` is never let go, so a
+    /// view that needs more than the limit keeps what it shows. `true` when thumbnails are
+    /// still waiting, and another frame is owed.
     ///
     /// With `fade`, one the loader handed over late (`arrived`) fades in from `now`
     /// (`shown`), as the Svelte tile's `fadesIn` has it: one the cache had
@@ -262,7 +270,12 @@ impl<T> Textures<T> {
             self.bytes += bytes;
             uploaded += 1;
         }
-        while self.bytes > self.limit {
+        let in_view: usize = (self.held.iter())
+            .filter(|(key, _)| wanted.contains(key))
+            .map(|(_, held)| held.bytes)
+            .sum();
+        let limit = (in_view.saturating_mul(SLACK).max(LIMIT_FLOOR)).min(self.limit);
+        while self.bytes > limit {
             let oldest = self
                 .held
                 .iter()
@@ -281,6 +294,17 @@ impl<T> Textures<T> {
 
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// The view is covered - the viewer, compare, the People page - and draws nothing:
+    /// lets go of every texture but those drawn in its last frame, which are on screen
+    /// again the moment it is uncovered, and of what waited to be uploaded.
+    pub fn rest(&mut self) {
+        let frame = self.frame;
+        self.held.retain(|_, held| held.drawn == frame);
+        self.bytes = self.held.values().map(|held| held.bytes).sum();
+        self.waiting.clear();
+        self.waiting_keys.clear();
     }
 
     /// Lets go of everything: the textures, what waited to be one, and what was known
@@ -440,6 +464,60 @@ mod tests {
         load(&mut textures, &keys(5..6));
         assert!(textures.bytes() <= 32);
         assert_eq!(textures.get(TexKey::grid(5)), Some(&5));
+    }
+
+    /// A picture of a mebibyte: four grid thumbnails.
+    fn large() -> Pixels {
+        Pixels {
+            width: 512,
+            height: 512,
+            rgba: vec![0; 1 << 20],
+        }
+    }
+
+    fn load_large(textures: &mut Textures<u64>, wanted: &[TexKey]) {
+        let wanted_set = set(wanted);
+        for key in wanted {
+            textures.offer(*key, large(), &wanted_set);
+        }
+        textures.upload(usize::MAX, &wanted_set, (0.0, false), |key, _| key.key);
+    }
+
+    // Under the limit, what is kept is three times what the view wants, and no less than
+    // the floor: a hundred megabytes scrolled through and thirty in view keep ninety; ten
+    // in view keep sixty-four.
+    #[test]
+    fn what_is_kept_is_three_times_what_is_wanted_above_a_floor() {
+        let mib = 1 << 20;
+        let mut textures = Textures::new(DEFAULT_LIMIT);
+        load_large(&mut textures, &keys(0..100));
+        assert_eq!(textures.bytes(), 100 * mib);
+        textures.begin_frame();
+        load_large(&mut textures, &keys(70..100));
+        assert_eq!(textures.bytes(), 90 * mib);
+        for key in 70..100 {
+            assert!(textures.holds(TexKey::grid(key)), "{key} is in view");
+        }
+        textures.begin_frame();
+        load_large(&mut textures, &keys(90..100));
+        assert_eq!(textures.bytes(), LIMIT_FLOOR);
+    }
+
+    // Covered, the view keeps what it drew in its last frame, and nothing waits to be
+    // uploaded for it.
+    #[test]
+    fn at_rest_only_what_was_drawn_last_is_kept() {
+        let mut textures = Textures::new(DEFAULT_LIMIT);
+        load(&mut textures, &keys(0..4));
+        textures.begin_frame();
+        textures.get(TexKey::grid(1));
+        textures.get(TexKey::grid(2));
+        let wanted = set(&keys(5..6));
+        assert!(textures.offer(TexKey::grid(5), pixels(), &wanted));
+        textures.rest();
+        assert_eq!((textures.len(), textures.bytes()), (2, 32));
+        assert!(textures.holds(TexKey::grid(1)) && textures.holds(TexKey::grid(2)));
+        assert_eq!(textures.missing(&keys(5..6), 0.0), keys(5..6));
     }
 
     // A result that comes back after the scroll has moved on, or under a key the photo no
