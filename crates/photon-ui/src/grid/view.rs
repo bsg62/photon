@@ -383,6 +383,9 @@ pub struct GridView {
     clicked: Option<(f64, i64)>,
     /// The photos and headers on their way from where the last layout put them.
     glides: Glides,
+    /// The pass the grid was last drawn in: a grid not drawn in the one before - the
+    /// viewer, compare or the People page in its place - has rows nobody has seen since.
+    drawn_pass: Option<u64>,
     /// How wide the photos' room was in the last frame, which a header is as wide as:
     /// kept apart from the layout, since a pixel of it that changes no tile builds no
     /// rows.
@@ -478,7 +481,10 @@ impl GridView {
         let area = Rect::from_min_max(rect.min, pos2(bar.left(), rect.bottom()));
 
         let now = ui.input(|input| input.time) * 1000.0;
-        let rebuilt = self.lay_out(data, f64::from(area.width()), viewport, now);
+        let pass = ui.ctx().cumulative_pass_nr();
+        let seen = self.drawn_pass.is_some_and(|drawn| drawn + 1 == pass);
+        self.drawn_pass = Some(pass);
+        let rebuilt = self.lay_out(data, f64::from(area.width()), viewport, now, seen);
         if let Some((offset, align)) = self.wanted.take() {
             self.place(data.index, offset, align, viewport);
         }
@@ -629,7 +635,19 @@ impl GridView {
     /// drag following the hand; and not for a new index alone, which is a scan's or
     /// another view's, nor the year strip coming with one. What is pressed is the new
     /// rows from this frame on: the glide is drawing only.
-    fn lay_out(&mut self, data: &GridData<'_>, width: f64, viewport: f64, now_ms: f64) -> bool {
+    /// `seen` says the grid was drawn in the frame before: a glide is from where the
+    /// photos were seen to stand, and rows laid out before the viewer, compare or the
+    /// People page took the grid's place were last seen a window size and a grid ago -
+    /// gliding from them as it comes back, the photos drifted by the difference, and the
+    /// photo the viewer hands back was moved to as if scrolled to.
+    fn lay_out(
+        &mut self,
+        data: &GridData<'_>,
+        width: f64,
+        viewport: f64,
+        now_ms: f64,
+        seen: bool,
+    ) -> bool {
         let nominal = tile_width(data.size);
         let row = row_width(width);
         let now = LaidOut {
@@ -640,7 +658,7 @@ impl GridView {
         };
         let rebuilt = self.laid_out != Some(now);
         let old_position = self.scroll.position();
-        if !data.animations {
+        if !data.animations || !seen {
             self.glides.stop();
         }
         let geometry = self.laid_out.is_some_and(|was| {
@@ -648,6 +666,7 @@ impl GridView {
                 && (was.columns != now.columns || was.nominal != now.nominal)
         });
         let glides = data.animations
+            && seen
             && rebuilt
             && self.laid_out.is_some()
             && (geometry || data.glide_from.is_some());

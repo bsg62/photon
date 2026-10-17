@@ -1,8 +1,9 @@
 //! The grid gliding after the user's own write, through the whole application and the
 //! real engine: a photo hidden fades where it stood and the photos after it glide into its
 //! place, while a scan's grid and another view's are on screen at once, and so is a hide's
-//! that lands under rows laid out from an older grid. Over real photos in a folder the
-//! test made, so that the writes are made.
+//! that lands under rows laid out from an older grid, and a grid that comes back from the
+//! viewer in other columns. Over real photos in a folder the test made, so that the writes
+//! are made.
 
 use crate::common::{Driver, Harness, over_animated, photos_in};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Rect};
@@ -241,6 +242,37 @@ fn a_write_that_lands_as_the_viewer_closes_does_not_glide_from_rows_it_did_not_l
     assert!(
         !harness.state().shown().contains(&ids[0]),
         "the hide landed"
+    );
+    assert!(all_in_place(&harness), "a photo glides");
+}
+
+// The window narrowed while the viewer stands in the grid's place - a maximized window
+// given back, a tiling window manager - has the grid come back in other columns. The rows
+// it was last drawn in are a window size ago and nobody has seen them since: its photos
+// are where they belong in the first frame it is drawn again, not gliding from there.
+#[test]
+fn the_grid_does_not_glide_as_it_comes_back_from_the_viewer() {
+    let dir = tempfile::tempdir().unwrap();
+    let pictures = pictures(dir.path());
+    let (mut harness, mut driver, _) = opened(dir.path(), &pictures);
+    let ids = harness.state().shown();
+    let stood = harness.state().tile_rect(4).unwrap();
+
+    pick(&mut driver, &mut harness, 1);
+    key_down(&mut driver, &mut harness, Key::Enter);
+    driver.until(&mut harness, "the photo's facts read", |app| {
+        app.viewer_item().is_some_and(|item| item.id == ids[1])
+    });
+    harness.set_size(egui::vec2(700.0, 900.0));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    key_down(&mut driver, &mut harness, Key::Escape);
+    assert!(harness.state().viewer().is_none());
+    assert!(all_in_place(&harness), "a photo glides");
+    driver.act(&mut harness);
+    assert!(
+        !near(harness.state().tile_rect(4).unwrap(), stood),
+        "the grid in other columns"
     );
     assert!(all_in_place(&harness), "a photo glides");
 }

@@ -1010,7 +1010,10 @@ command, so the grid lands before the answer or after), is the user's and is han
 with `GridData::glide_from`. A scan's grid arriving in that moment glides too, which is
 accepted; any other does not. **A new write that changes a view's rows belongs in
 `Write::moves_grid`**, or its photos jump. Rows the view did not lay out are no place to
-glide from (`laid_from`), and a pin that moves the position under a running glide is
+glide from (`laid_from`), nor are rows the grid was not drawn in the pass before
+(`drawn_pass`): laid out before the viewer, compare or the People page took its place, they
+were last seen a window size ago, and the grid coming back in other columns glided from
+there. A pin that moves the position under a running glide is
 `Glides::repositioned`'s to keep steady. **The switch is the `animations` setting**, on by
 default; off, nothing here moves and the grid's late-thumbnail fade stops too. Every test
 launches `without_animations` (all but `probe.rs` and `app.rs`), and a test of a motion says
