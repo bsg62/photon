@@ -89,11 +89,15 @@ jobs:
         run: |
           T=menu::the_star_key_takes_several_photos_the_way_of_the_deciding_one
           for w in 1 2 3; do
-            ( cargo nextest run -p photon-ui --test all "$T" --stress-count 60 > "loop$w.log" 2>&1; echo "loop $w exit $?" >> "loop$w.log" ) &
+            ( cargo nextest run --color never -p photon-ui --test all "$T" --stress-count 60 > "loop$w.log" 2>&1; echo "loop $w exit $?" >> "loop$w.log" ) &
           done
           wait
-          for w in 1 2 3; do echo "=== loop $w"; grep -E "Summary|exit|FAIL" "loop$w.log"; done
-          if grep -q "FAIL \[" loop*.log; then
-            for f in loop*.log; do grep -q "FAIL \[" "$f" && cat "$f" | grep -vE "^\s+PASS"; done
-            exit 1
-          fi
+          failed=0
+          for w in 1 2 3; do
+            echo "=== loop $w: $(grep -E "Summary|exit" "loop$w.log" | tr '\n' ' ')"
+            if ! grep -q "exit 0" "loop$w.log"; then
+              failed=1
+              grep -vE "^\s+PASS" "loop$w.log"
+            fi
+          done
+          exit $failed
