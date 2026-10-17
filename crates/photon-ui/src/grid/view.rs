@@ -5147,11 +5147,17 @@ mod tests {
             let mut f = fixture(&[8]);
             f.thumbs.set_fades(fades);
             f.frame(Vec::new());
-            // Read by the next frame, but a tenth of a second after it was asked for:
-            // late.
-            std::thread::sleep(Duration::from_millis(50));
-            f.time = 0.1;
-            f.frame(Vec::new());
+            // Read by a later frame, every one of them a tenth of a second after it was
+            // asked for: late, however long the loader takes on a loaded machine.
+            for _ in 0..2500 {
+                f.time = 0.1;
+                let frame = f.frame(Vec::new());
+                if frame.settled && !frame.loading {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            // Uploaded at 0.1, where a fade has not begun to show: the frame after it.
             f.frame(Vec::new());
             faintest_thumbnail(&f).expect("a thumbnail is drawn")
         };
