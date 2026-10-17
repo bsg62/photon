@@ -2907,7 +2907,11 @@ gets there and before the page is laid out (egui moves the keyboard at the end o
 frame, and at a wrap round from the last box to the first in the frame after): a name box
 is drawn in sight or out of it and a face half in sight takes the keyboard, so Tab walked on
 into groups below the window's edge. *A crop is let go of once the page no longer lists
-it* under that key, not only when the page closes. *A line of controls wraps* (`Line`): a
+it* under that key, not only when the page closes - and asked for again when it is listed
+again (`Crops::forget`): after "Show fewer" and "Show more" its face stood an empty square
+until the page was opened again. **At most `MAX_CROPS` (32 MB) are held**, the least
+recently drawn let go of first and never one drawn in that frame; one let go of is cut again
+when it is next in sight. *A line of controls wraps* (`Line`): a
 group's offer, box and Ignore, and a person's buttons under a long name. *"Show more" stands
 under every strip of a group with more faces*. A test that reads where egui
 drew a widget after a frame reads the frame before it: egui swaps its two passes at the end
