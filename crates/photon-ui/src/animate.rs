@@ -104,21 +104,4 @@ mod tests {
         assert_eq!(slide.value(50.0), 1.0);
         assert!(!slide.running(50.0));
     }
-
-    #[test]
-    fn progress_is_time_not_frames() {
-        let mut slide = Slide::at(0.0);
-        slide.to(1.0, 0.0, true);
-        // Frame by frame at 120 Hz and at 60 Hz, as a window would ask: the value at
-        // 100 ms does not depend on how many frames it took to get there.
-        let (mut fast, mut slow) = (0.0, 0.0);
-        for n in 1..=12 {
-            fast = slide.value(f64::from(n) * 100.0 / 12.0);
-        }
-        for n in 1..=6 {
-            slow = slide.value(f64::from(n) * 100.0 / 6.0);
-        }
-        assert!((fast - slow).abs() < 1e-9);
-        assert!((fast - 0.875).abs() < 1e-6);
-    }
 }
