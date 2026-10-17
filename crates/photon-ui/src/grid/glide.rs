@@ -68,19 +68,24 @@ pub struct Glides {
 }
 
 impl Glides {
-    /// Starts a glide: `before` is every key's place in the old rows, relative to the old
-    /// position, as far as the snapshot reaches; a key already gliding starts from where
-    /// it is drawn at `now_ms` instead - `before` is where its last glide was going.
+    /// Starts a glide. `before` and `leaving` are places on screen at `old_position`
+    /// (the layout top less it), as far as the snapshot reaches; `new_position` is where
+    /// the grid is once it has the new rows - a column change moves it, by the pin, far
+    /// from where it was. A key already gliding starts from where it is drawn at `now_ms`
+    /// instead (`before` is where its last glide was going). Every start is kept as the
+    /// place it is on screen, measured from `new_position`, so that `place` at
+    /// `new_position` draws each exactly where it stood.
     pub fn begin(
         &mut self,
         before: impl IntoIterator<Item = (Key, Place)>,
         leaving: Vec<Leaving>,
-        position: f64,
+        old_position: f64,
+        new_position: f64,
         now_ms: f64,
     ) {
         let running = self.running(now_ms);
         let t = self.progress(now_ms);
-        let scrolled = self.position_at_start - position;
+        let scrolled = self.position_at_start - old_position;
         let mut from = HashMap::new();
         for (key, old) in before {
             let start = match self.from.get(&key) {
@@ -94,7 +99,7 @@ impl Glides {
         self.from = from;
         self.leaving = leaving;
         self.started_ms = now_ms;
-        self.position_at_start = position;
+        self.position_at_start = new_position;
     }
 
     /// Where `key` is drawn at `now_ms` given its new place (relative to `position`):
@@ -177,7 +182,7 @@ mod tests {
 
     fn started() -> Glides {
         let mut glides = Glides::default();
-        glides.begin([(one(), at(8.0, 0.0))], Vec::new(), 0.0, 1000.0);
+        glides.begin([(one(), at(8.0, 0.0))], Vec::new(), 0.0, 0.0, 1000.0);
         glides
     }
 
@@ -208,8 +213,30 @@ mod tests {
         let target = at(8.0, 108.0);
         let drawn = glides.place(one(), target, 0.0, 1100.0);
         // The second glide's `before` is where the first was going.
-        glides.begin([(one(), target)], Vec::new(), 0.0, 1100.0);
+        glides.begin([(one(), target)], Vec::new(), 0.0, 0.0, 1100.0);
         assert_eq!(glides.place(one(), at(8.0, 300.0), 0.0, 1100.0), drawn);
+    }
+
+    #[test]
+    fn a_first_glide_across_a_pin_jump_starts_on_screen_where_it_was() {
+        let mut glides = Glides::default();
+        let seen = at(8.0, 120.0);
+        glides.begin([(one(), seen)], Vec::new(), 5000.0, 4200.0, 1000.0);
+        assert_eq!(glides.place(one(), at(8.0, 300.0), 4200.0, 1000.0), seen);
+    }
+
+    #[test]
+    fn a_re_target_across_a_pin_jump_does_not_move_the_drawn_photo() {
+        let mut glides = Glides::default();
+        glides.begin([(one(), at(8.0, 0.0))], Vec::new(), 900.0, 700.0, 1000.0);
+        // Scrolled on to 750; the photo was going to 108 from the grid's top at 700,
+        // so on screen now it is 50 higher.
+        let target = at(8.0, 108.0 - 50.0);
+        let drawn = glides.place(one(), target, 750.0, 1100.0);
+        // The new rows put the grid at 3000; the old target stands where it was drawn
+        // for, on screen at 750.
+        glides.begin([(one(), target)], Vec::new(), 750.0, 3000.0, 1100.0);
+        assert_eq!(glides.place(one(), at(8.0, 400.0), 3000.0, 1100.0), drawn);
     }
 
     #[test]
@@ -239,7 +266,7 @@ mod tests {
             entry,
             place: at(8.0, 8.0),
         };
-        glides.begin([], vec![gone], 0.0, 1000.0);
+        glides.begin([], vec![gone], 0.0, 0.0, 1000.0);
         assert_eq!(glides.leaving(0.0, 1000.0)[0].1, 1.0);
         let half = glides.leaving(0.0, 1100.0)[0].1;
         assert!((half - (1.0 - ease_out(0.5)) as f32).abs() < 1e-6);
@@ -257,6 +284,7 @@ mod tests {
                 (Key::Item(2), at(0.0, 900.0)),
             ],
             Vec::new(),
+            0.0,
             0.0,
             0.0,
         );
