@@ -109,7 +109,7 @@ fn paint_tile(
         let play = Rect::from_min_size(corner, Vec2::splat(PLAY));
         icon_halo(ui, Icon::Play, play, PLAY, true, on_photo);
         if let Some(ms) = entry.duration_ms {
-            let words = format_duration(ms);
+            let words = format_duration(i64::from(ms));
             halo(on_photo, |shift, tint| {
                 painter.text(
                     pos2(play.right() + 3.0, play.center().y) + shift,
