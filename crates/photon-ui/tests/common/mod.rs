@@ -41,6 +41,8 @@ pub struct Driver {
     /// When another thread last asked for a frame: the engine, a decoder, a task.
     stray: Arc<Mutex<Instant>>,
     pub now: f64,
+    /// When the last frame was drawn: no frame is drawn before it.
+    drawn_at: f64,
     /// How many frames have been drawn.
     pub frames: usize,
     /// What the system says is held over the window. It says so in every frame until it
@@ -71,6 +73,7 @@ impl Driver {
             due,
             stray,
             now: 0.0,
+            drawn_at: 0.0,
             frames: 0,
             held: Vec::new(),
         }
@@ -84,7 +87,15 @@ impl Driver {
     /// (`Harness::event`, a node's `click`) is drawn with it - one frame for each event
     /// queued, which is how `egui_kittest` steps, and counted here as one: two events in
     /// one frame are a test in whole frames of a view's, not this driver's.
+    ///
+    /// Never before the last frame: `frames_in` draws a frame asked for within its span a
+    /// refresh after the one before, which can be past the span's end, and a test's frame at
+    /// a time of its own after it (`pressed + 0.2`, after six refreshes from `pressed + 0.1`)
+    /// came a rounding before it, and egui's pointer history panicked ("Time shouldn't move
+    /// backwards", macOS' CI, on whether another thread had asked for that frame).
     pub fn frame(&mut self, harness: &mut Harness<'_>, at: f64) {
+        let at = at.max(self.drawn_at);
+        self.drawn_at = at;
         *self.due.lock().unwrap() = None;
         self.now = at;
         *self.clock.lock().unwrap() = at;

@@ -554,3 +554,18 @@ fn compare_and_the_people_page_over_the_grid_let_go_of_the_thumbnails_out_of_sig
     driver.act(&mut harness);
     assert!(harness.state().grid_textures() <= on_screen.len());
 }
+
+// The driver's own clock: a frame asked for a rounding before the last one drawn is drawn
+// at the last one's time, as `frames_in` and a test's own time can ask for (`Driver::frame`):
+// earlier, egui's pointer history panics.
+#[test]
+fn a_frame_asked_for_before_the_last_is_drawn_at_its_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 3, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 3);
+    let at = driver.now + 0.5396666666666668;
+    harness.event(egui::Event::PointerMoved(pos2(300.0, 300.0)));
+    driver.frame(&mut harness, at);
+    harness.event(egui::Event::PointerMoved(pos2(310.0, 300.0)));
+    driver.frame(&mut harness, at - 1e-12);
+}
