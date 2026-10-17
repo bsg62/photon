@@ -1132,34 +1132,53 @@ mod tests {
             "a decode larger than the budget was never let in"
         );
 
+        // What the budget has handed out, waited for by its own state and not by a pause:
+        // a slow runner starts a thread later than any pause allows for.
+        let tickets = |budget: &Budget, handed: u64| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while budget.state.lock().next < handed {
+                assert!(Instant::now() < deadline, "no ticket {handed}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
         let held = budget.take(80);
         let (tx, rx) = std::sync::mpsc::channel();
-        let large = {
+        // A decode let in holds its room until it is let go of, so that what it holds is
+        // there to be seen: given back at once, a small decode let in out of turn had its
+        // bytes back before anyone looked.
+        let spawn = |cost: u64| {
             let (budget, tx) = (budget.clone(), tx.clone());
-            std::thread::spawn(move || {
-                let admitted = budget.take(50);
-                tx.send("large").unwrap();
-                std::thread::sleep(Duration::from_millis(50));
-                drop(admitted);
-            })
+            let (go, done) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                let _admitted = budget.take(cost);
+                tx.send(cost).unwrap();
+                done.recv().unwrap();
+            });
+            (thread, go)
         };
-        std::thread::sleep(Duration::from_millis(50));
-        let small = {
-            let budget = budget.clone();
-            std::thread::spawn(move || {
-                let _admitted = budget.take(10);
-                tx.send("small").unwrap();
-            })
-        };
-        assert!(
-            rx.recv_timeout(Duration::from_millis(100)).is_err(),
-            "the small decode passed the large one waiting for room"
+        let handed = budget.state.lock().next;
+        let large = spawn(50);
+        tickets(&budget, handed + 1);
+        let small = spawn(10);
+        tickets(&budget, handed + 2);
+        // Ten bytes fit beside the eighty held; they wait all the same, behind the fifty
+        // that do not. Let in out of turn, they would have been let in as their ticket was
+        // handed out, under the same lock.
+        assert_eq!(
+            budget.state.lock().bytes,
+            80,
+            "the small decode passed the large one"
         );
         drop(held);
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "large");
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "small");
-        large.join().unwrap();
-        small.join().unwrap();
+        let mut came: Vec<u64> = (0..2)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        came.sort_unstable();
+        assert_eq!(came, [10, 50]);
+        for (thread, go) in [large, small] {
+            go.send(()).unwrap();
+            thread.join().unwrap();
+        }
     }
 
     /// A JPEG takes the scaled decode and is reckoned no more than `JPEG_COST`; anything
@@ -1197,7 +1216,9 @@ mod tests {
         ) -> Result<(DynamicImage, DynamicImage)> {
             let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
             MOST.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(60));
+            // Long enough for a second worker to be in a render beside it on a loaded
+            // runner, where room allows: the claim is that they *can* run together.
+            std::thread::sleep(Duration::from_millis(200));
             RUNNING.fetch_sub(1, Ordering::SeqCst);
             default_render(cache, source, orientation, edit)
         }
