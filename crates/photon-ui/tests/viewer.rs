@@ -1825,6 +1825,12 @@ fn the_panel_slides_and_then_asks_for_nothing() {
         652 < part && part < 1000,
         "{part} at a hundred milliseconds"
     );
+    // While it moves it asks for its frames itself, as an event loop would draw them.
+    let drawn = driver.frames_in(&mut harness, 0.09);
+    assert!(
+        drawn >= 3,
+        "{drawn} frames in the slide's last ninety milliseconds"
+    );
     driver.frame(&mut harness, pressed + 0.2);
     assert_eq!(area_width(&harness), 652);
     // The copy for the narrower area is asked for once it has stood, and lands.

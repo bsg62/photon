@@ -30,7 +30,7 @@ use crate::{
     viewer::wheel_step,
     viewer_faces::{Drawn, On, face_at, face_box, on},
     viewer_info_view::{InfoAction, InfoData, InfoView},
-    viewer_layout::{BAR, CLOSE, EDGE, Frame, NAV, contained, info_place, photo_area},
+    viewer_layout::{BAR, CLOSE, EDGE, Frame, INFO_RIGHT, NAV, contained, info_place, photo_area},
     viewer_levels::level_for,
     viewer_zoom::{
         MAX_ZOOM, MIN_ZOOM, Pan, ZOOM_KEY_STEP, Zoom, actual_size_zoom, wheel_zoom_factor,
@@ -400,11 +400,18 @@ impl ViewerView {
             height: window.height(),
         };
         let area = photo_area(whole, data.info_shown);
-        // Where the panel is drawn, open or on its way in or out: a press there is
-        // nobody's while it slides away, but it is not the photo's either.
+        // Where the panel stands, open or on its way in or out, and the part of it that
+        // is drawn: cut off at the right edge it has when open, so that it slides out
+        // from under that edge and never crosses the column of the button that closes -
+        // over it, the cross vanished at every toggle, and a press on a panel sliding
+        // shut, which is nobody's, went through to the button. A press on the part drawn
+        // is not the photo's either.
         let panel = (data.info_shown > 0.0).then(|| {
             let place = info_place(whole, data.info_shown);
-            Rect::from_min_size(pos2(place.left, place.top), vec2(place.width, place.height))
+            let place =
+                Rect::from_min_size(pos2(place.left, place.top), vec2(place.width, place.height));
+            let edge = Rect::everything_left_of(window.right() - INFO_RIGHT);
+            (place, place.intersect(edge))
         });
         let within = Rect::from_min_size(pos2(area.left, area.top), vec2(area.width, area.height));
         let shows = !data.message.is_some_and(|message| !message.over);
@@ -463,7 +470,7 @@ impl ViewerView {
             slider: (!data.video && !quiet).then(|| slider_place(window)),
             strip: (data.strip.is_some() && !quiet).then(|| strip_place(window, area)),
             caption: caption.as_ref().map(|(place, _)| *place),
-            panel,
+            panel: panel.map(|(_, drawn)| drawn),
         };
         if !quiet {
             self.bar = Some(controls.bar.width());
@@ -602,18 +609,22 @@ impl ViewerView {
             );
         }
         match panel {
-            Some(place) if data.info_open => {
+            Some((place, drawn)) if data.info_open => {
+                let clip = ui.clip_rect();
+                ui.set_clip_rect(drawn.intersect(clip));
                 let pressed = self.info.show(ui, place, data.info.as_ref());
+                ui.set_clip_rect(clip);
                 actions.extend(pressed.into_iter().map(ViewerAction::Panel));
             }
             // Sliding away: drawn as it was, and nobody's, as the sidebar is - its field
             // let go of the keyboard at the press that shut it, and no link, tick or
             // cross in it is pressed on its way out. Disabled, and not dimmed for it.
-            Some(place) => {
+            Some((place, drawn)) => {
                 let mut style = (**ui.style()).clone();
                 style.visuals.disabled_alpha = 1.0;
                 let mut closing =
                     ui.new_child(UiBuilder::new().max_rect(window).style(style).disabled());
+                closing.set_clip_rect(drawn.intersect(ui.clip_rect()));
                 let _ = self.info.show(&mut closing, place, data.info.as_ref());
             }
             None => {}
@@ -4192,6 +4203,28 @@ mod tests {
             .expect("what it says is still drawn");
         assert!(lens.left() > place.left());
         assert_eq!(f.click(lens.center()), []);
+    }
+
+    // A sliding panel is cut off at the right edge it has when open, and never lies over
+    // the button that closes: the cross is pressed, whichever way the panel is going, and
+    // a press beside the panel's open edge is not the panel's.
+    #[test]
+    fn a_sliding_panel_leaves_the_close_button_alone() {
+        let close = pos2(1000.0 - 12.0 - 16.0, 12.0 + 16.0);
+        for open in [false, true] {
+            let mut f = photo();
+            f.info_open = open;
+            f.info_shown = Some(0.5);
+            f.item = Some(crate::viewer_info_view::testing::full());
+            f.frame(Vec::new());
+            assert_eq!(f.click(close), [ViewerAction::Close], "open: {open}");
+            // Its glass is drawn whole and cut off at its open edge.
+            let place = Rect::from_min_max(pos2(832.0, 12.0), pos2(1112.0, 644.0));
+            let glass = (f.lines.iter())
+                .find(|(rect, ..)| *rect == place)
+                .expect("the panel's glass");
+            assert_eq!(glass.2.right(), 1000.0 - 56.0, "open: {open}");
+        }
     }
 
     // A trackpad's points move the panel by themselves, and not by a notch each.
