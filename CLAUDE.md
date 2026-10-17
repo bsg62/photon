@@ -594,7 +594,12 @@ in `engine.rs` bounds the damage of a miss.
 lives in `items.edit_turns`/`edit_crop` and is applied in exactly three places: the thumbnail
 renderer, the full-size render (`render_picture`: the viewer's picture, a copy for the
 clipboard, an export), and the face rectangles in `viewer_item`. The window draws no edit; it
-writes one and the refresh chain brings the picture under its new `thumb_key`.
+writes one and the refresh chain brings the picture under its new `thumb_key`. **What is
+made smaller than the photo is decoded smaller** (`edit::render_fitted`,
+`decode::render_decode`): a copy, an export at a size and a cropped photo's preview take a
+JPEG through libjpeg-turbo's n/8 decode, at the scale that leaves what the edit keeps at
+least the fitted size, and are resized to exactly the size the whole decode fits to (the
+crop rounds to other pixels at another scale) - a 48 MP copy peaked at 203 MB, now 60.
 Anything that names a thumbnail must use `Item::thumb_key()` (or `Edit::thumb_key` over the
 fingerprint, as `map_grid_row` and `live_fingerprints` do); a bare `fingerprint` names the
 *unedited* photo's thumbnail. The untouched photo's key is the bare fingerprint on purpose, so

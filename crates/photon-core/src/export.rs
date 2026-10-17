@@ -8,7 +8,7 @@
 //! (`Engine::export_items`); this module would happily write there, and the scanner would
 //! then index the copies as new photos.
 
-use crate::edit::{Chroma, Edit, encode_picture, render_picture};
+use crate::edit::{Chroma, Edit, encode_picture, render_fitted, render_picture};
 use crate::error::Result;
 use crate::media::MediaKind;
 use crate::metadata::oriented_dims;
@@ -114,11 +114,20 @@ pub fn render_for_export(
     edit: Edit,
     max_edge: Option<u32>,
 ) -> Result<(Vec<u8>, &'static str)> {
-    let img = render_picture(&src.path, src.orientation, edit)?;
     match max_edge {
-        None => encode_picture(img, EXPORT_QUALITY, Chroma::Full),
+        None => encode_picture(
+            render_picture(&src.path, src.orientation, edit)?,
+            EXPORT_QUALITY,
+            Chroma::Full,
+        ),
         Some(max) => encode_picture(
-            crate::decode::fit_within_by(img, max, fast_image_resize::FilterType::Lanczos3),
+            render_fitted(
+                &src.path,
+                src.orientation,
+                edit,
+                max,
+                fast_image_resize::FilterType::Lanczos3,
+            )?,
             RESIZED_QUALITY,
             Chroma::Half,
         ),

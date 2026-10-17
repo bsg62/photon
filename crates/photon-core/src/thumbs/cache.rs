@@ -1,7 +1,7 @@
 use crate::{
     Result,
-    decode::{decode_oriented, fit_within},
-    edit::{Edit, render_picture},
+    decode::decode_oriented,
+    edit::{Edit, render_fitted},
 };
 use image::{DynamicImage, RgbImage};
 use std::{
@@ -161,8 +161,15 @@ impl ThumbCache {
     ) -> Result<(DynamicImage, DynamicImage)> {
         let preview_edge = ThumbSize::Preview.max_edge();
         let preview = if edit.crop.is_some() {
-            // The viewer's own full-size render, which crops before it turns anything.
-            fit_within(render_picture(source, orientation, edit)?, preview_edge)
+            // The viewer's render, which crops before it turns anything, decoded no larger
+            // than the preview needs - with `fit_within`'s filter.
+            render_fitted(
+                source,
+                orientation,
+                edit,
+                preview_edge,
+                fast_image_resize::FilterType::Bilinear,
+            )?
         } else {
             edit.apply(decode_oriented(source, orientation, preview_edge)?)
         };

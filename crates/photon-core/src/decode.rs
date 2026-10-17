@@ -189,6 +189,66 @@ pub(crate) fn preview_decode(path: &Path, max_edge: u32) -> Result<(DynamicImage
     Ok((img, PreviewDecoder::Image))
 }
 
+/// The photo as shown - oriented, turned and cropped by `edit` (`Edit::place`) - fitted
+/// within `max_edge` with `filter`, and decoded no larger than that needs; with which
+/// decoder made it.
+///
+/// A JPEG goes to libjpeg-turbo at the smallest n/8 scale that leaves what the edit keeps at
+/// least the fitted size on both axes: a copy for the clipboard, an export sent at 1920 px
+/// and a cropped photo's preview each decoded a 50 MP photo whole - 150 MB, and more for the
+/// resize - to throw most of it away. Two pixels of margin take up the crop's rounding at
+/// the smaller scale, and a picture that comes out short anyway is decoded whole. The
+/// picture is resized to the size the whole decode fits to, not fitted itself: the crop
+/// rounds to other pixels at another scale, and a copy of a crop came out a pixel taller
+/// than the same copy made from the whole photo. Everything else, and every JPEG
+/// libjpeg-turbo hands back, is decoded whole and fitted, as [`preview_decode`] does it.
+pub(crate) fn render_decode(
+    path: &Path,
+    orientation: u8,
+    edit: crate::edit::Edit,
+    max_edge: u32,
+    filter: FilterType,
+) -> Result<(DynamicImage, PreviewDecoder)> {
+    let mut reader = BufReader::new(File::open(path)?);
+    if !jpeg::is_jpeg(reader.fill_buf()?) {
+        let img = edit.place(decode_from(reader, path)?, orientation);
+        return Ok((fit_within_by(img, max_edge, filter), PreviewDecoder::Image));
+    }
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    if let Some((width, height)) = jpeg::dimensions(&mut Cursor::new(bytes.as_slice())) {
+        let oriented = if (5..=8).contains(&orientation) {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        let shown = edit.dims(oriented.0, oriented.1);
+        if shown.0.max(shown.1) > max_edge && shown.0 > 0 && shown.1 > 0 {
+            let goal = fitted(shown.0, shown.1, max_edge);
+            // One factor for both axes, which the edit keeps a share of whatever its turn.
+            let factor = (f64::from(goal.0 + 2) / f64::from(shown.0))
+                .max(f64::from(goal.1 + 2) / f64::from(shown.1))
+                .min(1.0);
+            let target = (
+                ((f64::from(width) * factor).ceil() as u32).min(width),
+                ((f64::from(height) * factor).ceil() as u32).min(height),
+            );
+            let scaled = {
+                let _render = tracing::debug_span!("render", path = %path.display()).entered();
+                turbo::scaled_decode(&bytes, target)
+            };
+            if let Some(img) = scaled.map(|img| edit.place(img, orientation))
+                && img.width() >= goal.0
+                && img.height() >= goal.1
+            {
+                return Ok((resize_by(&img, goal, filter), PreviewDecoder::Turbo));
+            }
+        }
+    }
+    let img = edit.place(decode_from(Cursor::new(bytes), path)?, orientation);
+    Ok((fit_within_by(img, max_edge, filter), PreviewDecoder::Image))
+}
+
 /// `img` shrunk to fit within `max_edge` on its long side, with a bilinear filter; an image
 /// already that small is returned as it is, never enlarged.
 ///
@@ -563,6 +623,136 @@ mod tests {
             difference < crate::similar::SAME_PICTURE_MAX_DIFFERENCE / 4.0,
             "{difference}"
         );
+    }
+
+    /// Mean absolute difference per channel between two pictures of one size.
+    fn mean_difference(a: &DynamicImage, b: &DynamicImage) -> f64 {
+        let (a, b) = (a.to_rgb8(), b.to_rgb8());
+        let sum: u64 = (a.as_raw().iter().zip(b.as_raw()))
+            .map(|(x, y)| u64::from(x.abs_diff(*y)))
+            .sum();
+        sum as f64 / a.as_raw().len() as f64
+    }
+
+    /// A render for a smaller picture decodes a JPEG at a reduced scale, and once fitted is
+    /// the picture a whole decode fits to - its size to the pixel, and its content, in every
+    /// orientation, turn and crop: an axis taken for the other would land a gradient turned
+    /// round, and a crop rounded short would leave the picture a pixel under its size.
+    #[test]
+    fn a_render_for_a_smaller_picture_is_the_whole_decodes_fitted() {
+        use crate::edit::{CROP_UNIT, Crop, Edit};
+        use fast_image_resize::FilterType::Lanczos3;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(dir.path(), "photo.jpg", &noisy_jpeg(800, 200));
+        // `render_picture`'s decode, once: every case places the same pixels.
+        let decoded = decode_image(&path).unwrap();
+        let unit = CROP_UNIT as u16;
+        let crops = [
+            None,
+            Some(Crop {
+                left: 0,
+                top: 0,
+                right: unit / 2,
+                bottom: unit,
+            }),
+            Some(Crop {
+                left: unit / 4,
+                top: unit / 4,
+                right: unit / 4 * 3,
+                bottom: unit / 4 * 3,
+            }),
+            Some(Crop {
+                left: 0,
+                top: 0,
+                right: unit,
+                bottom: unit / 3,
+            }),
+        ];
+        let max = 120;
+        for orientation in 1..=8 {
+            for turns in 0..4 {
+                for crop in crops {
+                    let edit = Edit { turns, crop };
+                    let case = format!("orientation {orientation}, turns {turns}, {crop:?}");
+                    let (ours, decoder) =
+                        render_decode(&path, orientation, edit, max, Lanczos3).unwrap();
+                    assert_eq!(decoder, PreviewDecoder::Turbo, "{case}");
+                    let whole = edit.place(decoded.clone(), orientation);
+                    let whole = fit_within_by(whole, max, Lanczos3);
+                    assert_eq!(
+                        (ours.width(), ours.height()),
+                        (whole.width(), whole.height()),
+                        "{case}"
+                    );
+                    let difference = mean_difference(&ours, &whole);
+                    assert!(difference < 6.0, "{case}: {difference}");
+                }
+            }
+        }
+    }
+
+    /// Two cases of the crop rounding to other pixels at another scale. A centre crop of
+    /// 1200x300 at 3/8 is 225x57 against the whole decode's 600x150: fitted itself it was
+    /// 200x51, where the copy from the whole photo is 200x50. And 912x97 cropped from 1/7 to
+    /// 4/5, at the scale that covers the fitted size exactly, came out a pixel short and
+    /// was decoded whole: the margin is what keeps it scaled.
+    #[test]
+    fn a_crop_at_a_scale_is_the_size_and_the_decode_its_scale() {
+        use crate::edit::{CROP_UNIT, Crop, Edit};
+        let dir = tempfile::tempdir().unwrap();
+        let unit = CROP_UNIT as u16;
+        let filter = FilterType::Lanczos3;
+        let path = write_file(dir.path(), "a.jpg", &noisy_jpeg(1200, 300));
+        let middle = Crop {
+            left: unit / 4,
+            top: unit / 4,
+            right: unit / 4 * 3,
+            bottom: unit / 4 * 3,
+        };
+        let edit = Edit {
+            turns: 0,
+            crop: Some(middle),
+        };
+        let (img, decoder) = render_decode(&path, 1, edit, 200, filter).unwrap();
+        assert_eq!(decoder, PreviewDecoder::Turbo);
+        assert_eq!((img.width(), img.height()), (200, 50));
+        let path = write_file(dir.path(), "b.jpg", &jpeg_bytes(912, 97));
+        let crop = Crop {
+            left: unit / 7,
+            top: 0,
+            right: unit / 5 * 4,
+            bottom: unit,
+        };
+        let edit = Edit {
+            turns: 0,
+            crop: Some(crop),
+        };
+        let (_, decoder) = render_decode(&path, 1, edit, 150, filter).unwrap();
+        assert_eq!(decoder, PreviewDecoder::Turbo);
+    }
+
+    /// A photo no larger than the picture asked for, and anything but a JPEG, is decoded
+    /// whole, as before.
+    #[test]
+    fn a_render_of_what_is_small_or_no_jpeg_is_decoded_whole() {
+        use crate::edit::Edit;
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("small.jpg", noisy_jpeg(180, 40)),
+            ("wide.png", encode(&noisy_rgb(1200, 40), ImageFormat::Png)),
+        ];
+        for (name, bytes) in cases {
+            let path = write_file(dir.path(), name, &bytes);
+            let filter = FilterType::Lanczos3;
+            let (img, decoder) = render_decode(&path, 1, Edit::default(), 200, filter).unwrap();
+            assert_eq!(decoder, PreviewDecoder::Image, "{name}");
+            let whole = fit_within_by(decode_image(&path).unwrap(), 200, filter);
+            assert_eq!(
+                (img.width(), img.height()),
+                (whole.width(), whole.height()),
+                "{name}"
+            );
+        }
     }
 
     /// Damaged data keeps today's answer exactly: zune's picture, or the `Error::Image` that
