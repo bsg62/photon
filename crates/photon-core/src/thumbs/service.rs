@@ -7,7 +7,7 @@ use crate::{
     media::{MediaKind, ThumbState},
 };
 use image::DynamicImage;
-use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
     collections::{HashMap, HashSet},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -21,12 +21,112 @@ use std::{
 /// The most thumbnail workers photon will run, however many cores the machine has.
 ///
 /// Each worker holds a whole decoded image while it downscales it, and `image`'s default
-/// limit allows up to 512 MiB for one decode, so the peak memory of the thumbnail pool is
-/// this number times that. Without a cap it grows with the core count: a 32-core machine
-/// importing a folder of large scans or panoramas could put ~16 GiB of decode buffers in
-/// flight at once. Eight workers saturate the disk on any machine photon runs on, so the
-/// cap costs no throughput worth having.
+/// limit allows up to 512 MiB for one decode. Without a cap the count grows with the cores:
+/// a 32-core machine importing a folder of large scans or panoramas could put ~16 GiB of
+/// decode buffers in flight at once. Eight workers saturate the disk on any machine photon
+/// runs on, so the cap costs no throughput worth having. What bounds the bytes those eight
+/// hold is [`DECODE_BUDGET`].
 const MAX_WORKERS: usize = 8;
+
+/// The bytes the workers' decodes may hold at once, by [`decode_cost`]'s estimate. A worker
+/// count bounds how many decodes run, not how large they are: eight workers on a folder of
+/// 100 MP scans held eight whole decodes and their resizes, several gigabytes, where a
+/// folder of camera JPEGs - each taken through the scaled decode - holds a few hundred
+/// megabytes at most. One decode is always let in, whatever it costs, so a scan larger than
+/// the whole budget is decoded alone rather than never.
+const DECODE_BUDGET: u64 = 1 << 30;
+
+/// What a JPEG's preview decode is reckoned to cost at most: libjpeg-turbo's scaled decode
+/// stops at the smallest n/8 that covers the 1600 px preview, under twice its edge, plus the
+/// resize. A JPEG it hands back is decoded whole and costs more than this; the budget
+/// assumes the common case, and the worker count still bounds the rest.
+const JPEG_COST: u64 = 48 << 20;
+
+/// What decoding `item` for its thumbnail is reckoned to cost in memory, from its stored
+/// size and its format: a JPEG [`JPEG_COST`] at most; an AVIF twelve bytes a pixel (its
+/// frame, its planes widened to sixteen bits, the RGB out - `avif`'s module doc); anything
+/// else six (RGBA, and the resize beside it). A photo of no stored size is reckoned a
+/// 24 MP one. An estimate, for `Budget`: what it gets wrong is how many decodes run beside
+/// each other, never whether one does.
+fn decode_cost(item: &Item) -> u64 {
+    let pixels = match u64::from(item.width) * u64::from(item.height) {
+        0 => 24_000_000,
+        pixels => pixels,
+    };
+    let extension = Path::new(&item.path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("jpg" | "jpeg") => (pixels * 6).min(JPEG_COST),
+        Some("avif") => pixels * 12,
+        _ => pixels * 6,
+    }
+}
+
+/// The decode budget: bytes taken by the decodes running, let in in the order they asked
+/// (a ticket each), so a large decode waiting for room is not passed for ever by the small
+/// ones behind it. Taken *before* `decode_lock`, and before the marker: a photo waiting for
+/// room holds neither. Taken inside the lock, a photo waiting for room would hold its read,
+/// and a suspect's `try_write_for` - the lock is task-fair, so it waits only for the reads
+/// already held - would wait out every such photo's decode as well as the one running: two
+/// scans past `SUSPECT_WAIT`, and it backs off. Here it waits its turn for room on no
+/// clock, and then for the decodes running. No wait forms a cycle in this order: what
+/// holds the lock is decoding and waits on nothing.
+struct Budget {
+    limit: u64,
+    state: Mutex<Taken>,
+    freed: Condvar,
+}
+
+#[derive(Default)]
+struct Taken {
+    bytes: u64,
+    /// The next ticket handed out, and the ticket whose turn it is.
+    next: u64,
+    serving: u64,
+}
+
+impl Budget {
+    fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            state: Mutex::new(Taken::default()),
+            freed: Condvar::new(),
+        }
+    }
+
+    /// Waits for `cost` bytes, in turn: until no decode is running or `cost` fits beside
+    /// those that are.
+    fn take(&self, cost: u64) -> Admitted<'_> {
+        let mut taken = self.state.lock();
+        let ticket = taken.next;
+        taken.next += 1;
+        while taken.serving != ticket
+            || (taken.bytes > 0 && taken.bytes.saturating_add(cost) > self.limit)
+        {
+            self.freed.wait(&mut taken);
+        }
+        taken.serving += 1;
+        taken.bytes += cost;
+        // The next ticket may fit beside this one.
+        self.freed.notify_all();
+        Admitted { budget: self, cost }
+    }
+}
+
+/// `cost` bytes of the budget, given back when the decode is done.
+struct Admitted<'a> {
+    budget: &'a Budget,
+    cost: u64,
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        self.budget.state.lock().bytes -= self.cost;
+        self.budget.freed.notify_all();
+    }
+}
 
 /// How long a suspect's decode waits for `decode_lock` exclusively before backing off.
 /// parking_lot's `RwLock` is task-fair, so once the suspect is waiting on `write()`, every
@@ -158,7 +258,6 @@ pub struct ThumbService {
     video_generation: AtomicU64,
 }
 
-#[derive(Default)]
 struct Suspects {
     /// Excludes a suspect's decode from every other decode, so a group of photos queued
     /// together does not inherit one photo's deaths merely for having been in flight beside
@@ -168,6 +267,8 @@ struct Suspects {
     lock: RwLock<()>,
     /// How long each suspect currently waits before its next retry - see `SUSPECT_BACKOFF_START`.
     backoff: SuspectBackoff,
+    /// The bytes decodes may hold at once, taken inside `lock` - see `Budget`.
+    budget: Budget,
 }
 
 /// Per-id backoff for a suspect that has just failed to get `decode_lock` in time. Doubles
@@ -220,6 +321,14 @@ impl SuspectBackoff {
 }
 
 impl Suspects {
+    fn new(budget: u64) -> Self {
+        Self {
+            lock: RwLock::new(()),
+            backoff: SuspectBackoff::default(),
+            budget: Budget::new(budget),
+        }
+    }
+
     /// Clears every trace of `id`'s backoff - its step count (`SuspectBackoff::reset`) and
     /// any pending `ThumbQueue::delayed` entry (`ThumbQueue::forget`) - once its fate no
     /// longer depends on winning `decode_lock` again: it has decoded, it has been found
@@ -261,21 +370,32 @@ impl Drop for DoneGuard<'_> {
 
 impl ThumbService {
     pub fn start(lib: Arc<Library>, cache: Arc<ThumbCache>, workers: usize) -> Self {
-        Self::start_with(lib, cache, workers, default_render)
+        Self::start_with_budget(lib, cache, workers, default_render, DECODE_BUDGET)
     }
 
+    #[cfg(test)]
     fn start_with(
         lib: Arc<Library>,
         cache: Arc<ThumbCache>,
         workers: usize,
         render: RenderFn,
     ) -> Self {
+        Self::start_with_budget(lib, cache, workers, render, DECODE_BUDGET)
+    }
+
+    fn start_with_budget(
+        lib: Arc<Library>,
+        cache: Arc<ThumbCache>,
+        workers: usize,
+        render: RenderFn,
+        budget: u64,
+    ) -> Self {
         let queue = Arc::new(ThumbQueue::new());
         let inflight = Arc::new(InFlight::new(cache.root()));
         let cache_root_video = cache.root().join("video");
         // Before any worker starts: a marker still here was in flight when a previous run died.
         inflight.recover();
-        let suspects = Arc::new(Suspects::default());
+        let suspects = Arc::new(Suspects::new(budget));
         let workers = (0..workers.max(1))
             .map(|i| {
                 let (lib, cache, queue, inflight, suspects) = (
@@ -857,6 +977,8 @@ fn process(
         suspects.resolved(id, queue);
         return Ok(());
     }
+    // Before the lock and the marker: a photo waiting for room holds neither (`Budget`).
+    let _admitted = suspects.budget.take(decode_cost(&item));
     // Acquired before `begin`, not after: a photo blocked here - waiting its turn behind a
     // suspect's exclusive decode - must never have a marker on disk for a decode that has not
     // actually started.
@@ -985,6 +1107,197 @@ mod tests {
     use crate::media::MediaKind;
     use crate::testutil::{jpeg_bytes, new_item, png_bytes, seed_folder, write_file};
     use tempfile::TempDir;
+
+    /// Decodes that fit beside each other are let in together; one larger than the whole
+    /// budget is let in alone; and the turn is the order they asked in: a small decode that
+    /// would fit waits behind a large one waiting for room, which would otherwise be passed
+    /// for as long as small ones keep coming.
+    #[test]
+    fn the_budget_lets_decodes_in_by_size_and_in_turn() {
+        let budget = Arc::new(Budget::new(100));
+        let a = budget.take(40);
+        let b = budget.take(50);
+        drop((a, b));
+        let alone = {
+            let budget = budget.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                drop(budget.take(500));
+                tx.send(()).unwrap();
+            });
+            rx
+        };
+        assert!(
+            alone.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "a decode larger than the budget was never let in"
+        );
+
+        let held = budget.take(80);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let large = {
+            let (budget, tx) = (budget.clone(), tx.clone());
+            std::thread::spawn(move || {
+                let admitted = budget.take(50);
+                tx.send("large").unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+                drop(admitted);
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        let small = {
+            let budget = budget.clone();
+            std::thread::spawn(move || {
+                let _admitted = budget.take(10);
+                tx.send("small").unwrap();
+            })
+        };
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the small decode passed the large one waiting for room"
+        );
+        drop(held);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "large");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "small");
+        large.join().unwrap();
+        small.join().unwrap();
+    }
+
+    /// A JPEG takes the scaled decode and is reckoned no more than `JPEG_COST`; anything
+    /// else by its pixels, an AVIF at twice the rate; a photo of no stored size as 24 MP.
+    #[test]
+    fn a_decodes_cost_is_reckoned_from_its_size_and_format() {
+        let (_dir, lib, _, ids) = setup(&[
+            ("a.JPG", Vec::new()),
+            ("b.png", Vec::new()),
+            ("c.avif", Vec::new()),
+        ]);
+        let item = |n: usize| lib.item(ids[n]).unwrap().unwrap();
+        let mut large = item(0);
+        (large.width, large.height) = (8000, 6000);
+        assert_eq!(decode_cost(&item(0)), 400 * 300 * 6);
+        assert_eq!(decode_cost(&large), JPEG_COST);
+        assert_eq!(decode_cost(&item(1)), 400 * 300 * 6);
+        assert_eq!(decode_cost(&item(2)), 400 * 300 * 12);
+        let mut unknown = item(1);
+        unknown.width = 0;
+        assert_eq!(decode_cost(&unknown), 24_000_000 * 6);
+    }
+
+    /// Through the workers: decodes that do not fit beside each other run one at a time
+    /// however many workers there are, and ones that fit run together.
+    #[test]
+    fn the_workers_decode_within_the_budget() {
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static MOST: AtomicUsize = AtomicUsize::new(0);
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+            MOST.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(60));
+            RUNNING.fetch_sub(1, Ordering::SeqCst);
+            default_render(cache, source, orientation, edit)
+        }
+        // Each is a 400 by 300 PNG to the library: 720,000 bytes.
+        for (budget, together) in [(1_000_000, false), (3_000_000, true)] {
+            MOST.store(0, Ordering::SeqCst);
+            let (_dir, lib, cache, ids) = setup(&[
+                ("a.png", png_bytes(40, 20)),
+                ("b.png", png_bytes(40, 20)),
+                ("c.png", png_bytes(40, 20)),
+            ]);
+            let service = ThumbService::start_with_budget(lib.clone(), cache, 3, probe, budget);
+            service.enqueue_pending().unwrap();
+            service.wait_idle();
+            let most = MOST.load(Ordering::SeqCst);
+            assert_eq!(most > 1, together, "a budget of {budget}: {most} at once");
+            for id in ids {
+                assert_eq!(state(&lib, id), ThumbState::Ready);
+            }
+        }
+    }
+
+    /// A photo waiting for room in the budget has no marker on disk, as one waiting for
+    /// `decode_lock` has none: a crash in the one decode that fits must not blame the photos
+    /// queued beside it at the next launch.
+    #[test]
+    fn a_photo_waiting_for_room_holds_no_marker() {
+        static MOST_MARKERS: AtomicUsize = AtomicUsize::new(0);
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            // Long enough for the other workers to reach the budget, and - in the wrong
+            // order - their own `begin`.
+            std::thread::sleep(Duration::from_millis(60));
+            let markers = std::fs::read_dir(cache.root().join("in-flight"))
+                .map(|entries| {
+                    (entries.flatten())
+                        .filter(|e| e.path().extension().and_then(|x| x.to_str()) != Some("tmp"))
+                        .count()
+                })
+                .unwrap_or(0);
+            MOST_MARKERS.fetch_max(markers, Ordering::SeqCst);
+            default_render(cache, source, orientation, edit)
+        }
+        let (_dir, lib, cache, _) = setup(&[
+            ("a.png", png_bytes(40, 20)),
+            ("b.png", png_bytes(40, 20)),
+            ("c.png", png_bytes(40, 20)),
+        ]);
+        // Room for one 400 by 300 PNG at a time.
+        let service = ThumbService::start_with_budget(lib, cache, 3, probe, 1_000_000);
+        service.enqueue_pending().unwrap();
+        service.wait_idle();
+        assert_eq!(MOST_MARKERS.load(Ordering::SeqCst), 1);
+    }
+
+    /// A suspect, which takes `decode_lock` alone, among ordinary photos queued on a budget
+    /// with room for one: every photo is made, and nothing waits for ever.
+    #[test]
+    fn a_suspect_among_photos_waiting_for_room_does_not_deadlock() {
+        fn probe(
+            cache: &ThumbCache,
+            source: &Path,
+            orientation: u8,
+            edit: Edit,
+        ) -> Result<(DynamicImage, DynamicImage)> {
+            std::thread::sleep(Duration::from_millis(40));
+            default_render(cache, source, orientation, edit)
+        }
+        let (_dir, lib, cache, ids) = setup(&[
+            ("a.png", png_bytes(40, 20)),
+            ("b_suspect.png", png_bytes(40, 20)),
+            ("c.png", png_bytes(40, 20)),
+            ("d.png", png_bytes(40, 20)),
+        ]);
+        let suspect = ids[1];
+        let inflight = InFlight::new(cache.root());
+        std::mem::forget(inflight.begin(suspect, item_key(&lib, suspect)));
+        inflight.recover();
+        drop(inflight);
+        let service = ThumbService::start_with_budget(lib.clone(), cache, 3, probe, 1_000_000);
+        service.enqueue_pending().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            service.wait_idle();
+            tx.send(()).unwrap();
+            service
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(30)).is_ok(),
+            "the pool did not finish"
+        );
+        drop(waiting.join().unwrap());
+        for id in ids {
+            assert_eq!(state(&lib, id), ThumbState::Ready);
+        }
+    }
 
     /// Pure logic, no real time needed: `bump` doubles the wait from `SUSPECT_BACKOFF_START`
     /// on each call for the same id, stops climbing once it hits `SUSPECT_BACKOFF_MAX`,
