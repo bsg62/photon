@@ -132,6 +132,11 @@ impl Crops {
         self.shared.wake.notify_one();
     }
 
+    /// The crop of `of` has been let go of: it is asked for again when it is next in sight.
+    pub fn forget(&mut self, of: &CropOf) {
+        self.asked.remove(of);
+    }
+
     /// The crops made since this was last asked, of this opening of the page.
     pub fn answers(&mut self) -> Vec<(CropOf, Made)> {
         let opening = self.opening;

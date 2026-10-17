@@ -118,13 +118,26 @@ impl Naming {
     }
 }
 
+/// How many crops are held as textures, at most: 32 MB of them. A page of every group
+/// unfolded and scrolled through held one for every face it had shown, 81 KB each - a
+/// page of thousands of faces, hundreds of megabytes - until it closed.
+pub const MAX_CROPS: usize = (32 << 20) / (CROP_PX as usize * CROP_PX as usize * 4);
+
+/// A crop made into a texture, and the frame it was last drawn in.
+struct Crop {
+    texture: TextureHandle,
+    drawn: u64,
+}
+
 /// What the page keeps from frame to frame.
 #[derive(Default)]
 pub struct PeopleView {
     column: Column,
     /// The crops made, by face and key, and those that could not be.
-    textures: HashMap<CropOf, TextureHandle>,
+    textures: HashMap<CropOf, Crop>,
     missing: HashSet<CropOf>,
+    /// The frames drawn, which a crop's `drawn` counts in.
+    frame: u64,
     /// The names being typed.
     names: HashMap<Naming, String>,
     /// The name box whose people are offered under it, and the person the arrows are on -
@@ -161,7 +174,8 @@ impl PeopleView {
                     let image = ColorImage::from_rgba_unmultiplied([side, side], &rgba);
                     let name = format!("face-crop-{}-{}", of.0, of.1);
                     let texture = ctx.load_texture(name, image, TextureOptions::LINEAR);
-                    self.textures.insert(of, texture);
+                    let drawn = self.frame;
+                    self.textures.insert(of, Crop { texture, drawn });
                 }
                 Made::Missing | Made::Failed => {
                     self.missing.insert(of);
@@ -198,6 +212,8 @@ impl PeopleView {
         data: &PeopleData<'_>,
         crops: &mut Crops,
     ) -> Vec<PeopleAction> {
+        self.frame += 1;
+        let frame = self.frame;
         let palette = palette(ui.ctx());
         // The page's padding, `--s-4`.
         let inner = rect.shrink(S[3]);
@@ -264,8 +280,9 @@ impl PeopleView {
                 ui,
                 page: &mut page,
                 palette,
-                crops,
-                textures: &self.textures,
+                crops: &mut *crops,
+                textures: &mut self.textures,
+                frame,
                 missing: &self.missing,
                 actions: &mut actions,
                 clicked: &mut self.clicked,
@@ -318,8 +335,30 @@ impl PeopleView {
             let listed: HashSet<CropOf> = (data.model.every_face())
                 .map(|face| (face.id, face.thumb_key.clone()))
                 .collect();
-            self.textures.retain(|of, _| listed.contains(of));
+            // And asked for again if it is listed again: "Show fewer" and then "Show more"
+            // is the same face under the same key.
+            self.textures.retain(|of, _| {
+                let kept = listed.contains(of);
+                if !kept {
+                    crops.forget(of);
+                }
+                kept
+            });
             self.missing.retain(|of| listed.contains(of));
+        }
+        // The least recently drawn go once more than `MAX_CROPS` are held, never one drawn
+        // in this frame; each is asked for again when it is next in sight.
+        let over = self.textures.len().saturating_sub(MAX_CROPS);
+        if over > 0 {
+            let mut old: Vec<(u64, CropOf)> = (self.textures.iter())
+                .filter(|(_, crop)| crop.drawn != frame)
+                .map(|(of, crop)| (crop.drawn, of.clone()))
+                .collect();
+            old.sort_unstable();
+            for (_, of) in old.into_iter().take(over) {
+                self.textures.remove(&of);
+                crops.forget(&of);
+            }
         }
         if deaf {
             actions.clear();
@@ -391,7 +430,9 @@ struct Draw<'a, 'u> {
     page: &'a mut Page,
     palette: &'a Palette,
     crops: &'a mut Crops,
-    textures: &'a HashMap<CropOf, TextureHandle>,
+    textures: &'a mut HashMap<CropOf, Crop>,
+    /// This frame, for the crops drawn in it.
+    frame: u64,
     missing: &'a HashSet<CropOf>,
     actions: &'a mut Vec<PeopleAction>,
     clicked: &'a mut Option<(i64, f64)>,
@@ -729,9 +770,10 @@ impl Draw<'_, '_> {
         response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, &words));
         let painter = &self.page.painter;
         painter.rect_filled(rect, R[1], color(self.palette.field));
-        match self.textures.get(&of) {
-            Some(texture) => {
-                egui::Image::new((texture.id(), rect.size()))
+        match self.textures.get_mut(&of) {
+            Some(crop) => {
+                crop.drawn = self.frame;
+                egui::Image::new((crop.texture.id(), rect.size()))
                     .corner_radius(R[1])
                     .paint_at(self.ui, rect);
             }
@@ -1434,8 +1476,9 @@ mod tests {
         finds_faces: bool,
         time: f64,
         texts: Vec<(String, Rect)>,
-        /// The window's width.
+        /// The window's width and height.
         width: f32,
+        height: f32,
         /// Whether a dialog or a menu over the page has just closed.
         just_covered: bool,
     }
@@ -1457,13 +1500,17 @@ mod tests {
                 time: 0.0,
                 texts: Vec::new(),
                 width: 1000.0,
+                height: 800.0,
                 just_covered: false,
             }
         }
 
         fn frame(&mut self, events: Vec<Event>) -> Vec<PeopleAction> {
             let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 800.0))),
+                screen_rect: Some(Rect::from_min_size(
+                    Pos2::ZERO,
+                    vec2(self.width, self.height),
+                )),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -1990,5 +2037,172 @@ mod tests {
             !f.texts.iter().any(|(text, _)| text.starts_with('Z')),
             "the last selection's name came back by Ctrl+Z"
         );
+    }
+
+    // A page scrolled through holds no more than `MAX_CROPS` crops, the least recently
+    // drawn let go of first; one let go of is cut again when it is next in sight, and does
+    // not stand an empty square for good.
+    #[test]
+    fn crops_past_the_limit_go_and_are_cut_again_when_seen() {
+        let count = MAX_CROPS as i64 + 200;
+        let faces = (1..=count).map(face).collect();
+        let page = Page {
+            unnamed: vec![group(1, faces, None)],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        let cuts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = cuts.clone();
+        f.crops = Crops::spawn(
+            move |of| {
+                seen.lock().unwrap().push(of.0);
+                let side = CROP_PX as usize;
+                Made::Pixels(vec![0; side * side * 4])
+            },
+            || {},
+            || {},
+        );
+        let held = |f: &Fixture| {
+            (1..=count)
+                .filter(|id| f.view.holds_crop(&(*id, format!("{id:016x}"))))
+                .count()
+        };
+        // Draws, and takes the crops cut for what was drawn.
+        let settle = |f: &mut Fixture, events: Vec<Event>| {
+            f.frame(events);
+            for _ in 0..200 {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let made = f.crops.answers();
+                if made.is_empty() {
+                    break;
+                }
+                f.view.took(&f.ctx, made);
+                f.frame(Vec::new());
+            }
+        };
+        let at = pos2(500.0, 400.0);
+        settle(&mut f, vec![Event::PointerMoved(at)]);
+        assert!(f.view.holds_crop(&(1, format!("{:016x}", 1))));
+        let wheel = |y: f32| Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, y),
+            modifiers: Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        };
+        for _ in 0..200 {
+            settle(&mut f, vec![Event::PointerMoved(at), wheel(-400.0)]);
+        }
+        let last = (count, format!("{count:016x}"));
+        assert!(f.view.holds_crop(&last), "scrolled to the end");
+        assert_eq!(held(&f), MAX_CROPS);
+        assert!(
+            !f.view.holds_crop(&(1, format!("{:016x}", 1))),
+            "the first went"
+        );
+        assert_eq!(
+            cuts.lock().unwrap().iter().filter(|id| **id == 1).count(),
+            1
+        );
+        for _ in 0..200 {
+            settle(&mut f, vec![Event::PointerMoved(at), wheel(400.0)]);
+        }
+        assert!(f.view.holds_crop(&(1, format!("{:016x}", 1))), "cut again");
+        assert_eq!(
+            cuts.lock().unwrap().iter().filter(|id| **id == 1).count(),
+            2
+        );
+        assert_eq!(held(&f), MAX_CROPS);
+    }
+
+    /// A page of one group of `count` faces, every crop cut as it is asked for.
+    fn cut_page(count: i64) -> Fixture {
+        let page = Page {
+            unnamed: vec![group(1, (1..=count).map(face).collect(), None)],
+            unnamed_count: 1,
+            ..Page::default()
+        };
+        let mut f = Fixture::new(page);
+        f.crops = Crops::spawn(
+            |_| {
+                let side = CROP_PX as usize;
+                Made::Pixels(vec![0; side * side * 4])
+            },
+            || {},
+            || {},
+        );
+        f
+    }
+
+    /// Draws, and takes the crops cut for what was drawn, until none comes.
+    fn settled(f: &mut Fixture) {
+        f.frame(vec![Event::PointerMoved(pos2(500.0, 400.0))]);
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let made = f.crops.answers();
+            if made.is_empty() {
+                break;
+            }
+            f.view.took(&f.ctx, made);
+            f.frame(Vec::new());
+        }
+    }
+
+    fn crop_of(id: i64) -> CropOf {
+        (id, format!("{id:016x}"))
+    }
+
+    // What is on screen is what was drawn last, however long ago its crop arrived: crops
+    // of faces out of sight arriving after it do not push it out.
+    #[test]
+    fn a_crop_in_sight_is_kept_however_early_it_came() {
+        let count = MAX_CROPS as i64 + 300;
+        let mut f = cut_page(count);
+        settled(&mut f);
+        assert!(f.view.holds_crop(&crop_of(1)));
+        let side = CROP_PX as usize;
+        let late = (200..=count).map(|id| (crop_of(id), Made::Pixels(vec![0; side * side * 4])));
+        f.view.took(&f.ctx, late.collect());
+        f.frame(Vec::new());
+        assert!(f.view.holds_crop(&crop_of(1)), "the first face, on screen");
+    }
+
+    // A window that shows more faces than `MAX_CROPS` keeps every one of them: letting go
+    // of a face on screen would blank it to save memory, and cut it again next frame.
+    #[test]
+    fn every_crop_in_sight_is_kept_past_the_limit() {
+        let count = MAX_CROPS as i64 + 200;
+        let mut f = cut_page(count);
+        (f.width, f.height) = (6000.0, 3000.0);
+        settled(&mut f);
+        let held = (1..=count)
+            .filter(|id| f.view.holds_crop(&crop_of(*id)))
+            .count();
+        assert!(held > MAX_CROPS, "{held}");
+    }
+
+    // A face the page stops listing lets go of its crop; listed again under the same key -
+    // "Show fewer", then "Show more" - it is cut again, not an empty square for good.
+    #[test]
+    fn a_face_listed_again_has_its_crop_cut_again() {
+        let mut f = cut_page(10);
+        settled(&mut f);
+        assert!(f.view.holds_crop(&crop_of(8)));
+        let list = |f: &mut Fixture, count: i64| {
+            let page = Page {
+                unnamed: vec![group(1, (1..=count).map(face).collect(), None)],
+                unnamed_count: 1,
+                ..Page::default()
+            };
+            let ask = f.model.reload(f.time * 1000.0 + 10_000.0);
+            let kept = Default::default();
+            f.model.loaded(ask.number, Loaded { page, kept });
+        };
+        list(&mut f, 5);
+        settled(&mut f);
+        assert!(!f.view.holds_crop(&crop_of(8)));
+        list(&mut f, 10);
+        settled(&mut f);
+        assert!(f.view.holds_crop(&crop_of(8)), "cut again");
     }
 }
