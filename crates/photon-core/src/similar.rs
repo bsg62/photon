@@ -12,7 +12,7 @@
 //! not invariant to a mirror or a rotation: those are different photographs to a person
 //! looking for a duplicate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use image::{DynamicImage, imageops::FilterType};
@@ -90,8 +90,8 @@ const COMPARE_EDGE: u32 = 32;
 pub const SAME_PICTURE_MAX_DIFFERENCE: f64 = 4.0;
 
 /// A thumbnail reduced for comparison: `COMPARE_EDGE` squared greyscale values and their
-/// mean. Bytes rather than mean-centred floats, because [`Reductions`] keeps one for every
-/// photo with a candidate pair for the whole session: 1 KB each instead of 4.
+/// mean. Bytes rather than mean-centred floats: a regroup holds one for every photo with a
+/// candidate pair it had to confirm, 1 KB each instead of 4.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reduction {
     grey: Box<[u8]>,
@@ -129,19 +129,25 @@ pub fn same_picture(a: &Reduction, b: &Reduction) -> bool {
     picture_difference(a, b) <= SAME_PICTURE_MAX_DIFFERENCE
 }
 
-/// What one pass leaves for the next: reductions by thumbnail key, and what the last
-/// regroup was asked.
+/// What one pass leaves for the next: `same_picture`'s answer for each pair of thumbnail
+/// keys it was asked about, and what the last regroup was asked.
 ///
 /// The regroup runs again whenever its input moves - the watcher's scan of a single file
-/// that lands is enough - and confirms every nominated pair again, so without the
-/// reductions each such pass would decode the thumbnail of every photo that has a
-/// look-alike. The key changes whenever the file or its edit does, so an entry can never
-/// describe a picture its row no longer shows, and needs no invalidation of its own. A pass
-/// keeps only the entries it used, which bounds the cache by the photos that have a
-/// candidate pair rather than letting old keys pile up.
+/// that lands is enough - and confirms every nominated pair again, so without the answers
+/// each such pass would decode the thumbnail of every photo that has a look-alike. A key
+/// changes whenever the file or its edit does, so an answer can never be about a picture
+/// its row no longer shows, and needs no invalidation of its own.
+///
+/// Answers rather than the reductions they came from: a pair's answer is a few dozen bytes
+/// where each photo's reduction is a kilobyte, kept for the session for every photo with a
+/// candidate pair - estimated at 55-110 MB in a library of 300,000. The reductions live for one regroup. An answer is let go of once either key is
+/// no photo's any more, not when a pass did not ask it: `group` visits its buckets in a
+/// `HashMap`'s order, so which pair joins two photos already joined through a third differs
+/// from pass to pass, and answers kept only while asked would be decoded for again.
 #[derive(Debug, Default)]
-pub struct Reductions {
-    by_key: HashMap<u64, Reduction>,
+pub struct Verdicts {
+    /// By the two keys, the smaller first.
+    by_pair: HashMap<(u64, u64), bool>,
     /// The last regroup this session that got to the end with every thumbnail it needed;
     /// see [`update`]. `None` until there is one, so a session's first pass always
     /// regroups. A regroup that does not finish leaves the one before it in place: an
@@ -379,7 +385,7 @@ pub fn update(
     cache: &ThumbCache,
     distance: u32,
     cancel: &AtomicBool,
-    reductions: &mut Reductions,
+    verdicts: &mut Verdicts,
 ) -> Result<PassOutcome> {
     let mut hashed = 0;
     // Off means off. The grouping below returns nothing at distance 0, so hashing first
@@ -426,7 +432,7 @@ pub fn update(
     // every pass anyway, and it is bounded by the grouped rows, not the library.
     let photos = lib.percep_hashes()?;
     let input = regroup_input(distance, &photos);
-    if let Some(last) = reductions.last
+    if let Some(last) = verdicts.last
         && last.input == input
         && groups_digest(&lib.similar_groups()?) == last.groups
     {
@@ -437,9 +443,10 @@ pub fn update(
         });
     }
     let hashes: Vec<(i64, u64)> = photos.iter().map(|p| (p.id, p.hash)).collect();
-    // `None` is a thumbnail that could not be read, remembered for this pass only so it is
-    // not retried for every pair it is in. It confirms nothing: a missed pair costs less than
-    // a false one, and the next pass tries again.
+    // The reductions of the pairs no answer was kept for, for this regroup alone. `None` is
+    // a thumbnail that could not be read, remembered so it is not retried for every pair it
+    // is in. It confirms nothing, and no answer is kept for it: a missed pair costs less
+    // than a false one, and the next pass tries again.
     let mut seen: HashMap<u64, Option<Reduction>> = HashMap::new();
     // Confirming decodes thumbnails, and on the first pass after a launch the cache is empty,
     // so this half is no longer the pure arithmetic it was: it has to honour `cancel`, or a
@@ -451,17 +458,21 @@ pub fn update(
             cancelled = true;
             return false;
         }
-        let keys = [photos[a].thumb_key, photos[b].thumb_key];
-        for key in keys {
-            seen.entry(key).or_insert_with(|| {
-                reductions
-                    .by_key
-                    .remove(&key)
-                    .or_else(|| read_reduction(cache, key))
-            });
+        let (x, y) = (photos[a].thumb_key, photos[b].thumb_key);
+        let pair = (x.min(y), x.max(y));
+        if let Some(&same) = verdicts.by_pair.get(&pair) {
+            return same;
         }
-        match (&seen[&keys[0]], &seen[&keys[1]]) {
-            (Some(a), Some(b)) => same_picture(a, b),
+        for key in [x, y] {
+            seen.entry(key)
+                .or_insert_with(|| read_reduction(cache, key));
+        }
+        match (&seen[&x], &seen[&y]) {
+            (Some(a), Some(b)) => {
+                let same = same_picture(a, b);
+                verdicts.by_pair.insert(pair, same);
+                same
+            }
             _ => false,
         }
     });
@@ -469,13 +480,12 @@ pub fn update(
     // could not read a thumbnail answered "no" for that photo's pairs - an answer the next
     // pass, with the thumbnail back, may not give - so either has to be asked again.
     let finished = !cancelled && seen.values().all(Option::is_some);
-    reductions.by_key = seen
-        .into_iter()
-        .filter_map(|(key, reduction)| Some((key, reduction?)))
-        .collect();
+    drop(seen);
+    let live: HashSet<u64> = photos.iter().map(|photo| photo.thumb_key).collect();
+    (verdicts.by_pair).retain(|(x, y), _| live.contains(x) && live.contains(y));
     let groups_changed = !cancelled && lib.set_similar_groups(&groups)?;
     if finished {
-        reductions.last = Some(Regrouped {
+        verdicts.last = Some(Regrouped {
             input,
             groups: groups_digest(&groups),
         });
@@ -827,7 +837,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &AtomicBool::new(false),
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert_eq!(outcome.hashed, 3, "every thumbnailed photo takes a hash");
@@ -853,7 +863,7 @@ mod tests {
                 &cache,
                 EXACT_RECALL_DISTANCE,
                 &AtomicBool::new(false),
-                &mut Reductions::default()
+                &mut Verdicts::default()
             )
             .unwrap(),
             PassOutcome {
@@ -869,7 +879,7 @@ mod tests {
             &cache,
             0,
             &AtomicBool::new(false),
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert_eq!(outcome.hashed, 0);
@@ -1050,13 +1060,13 @@ mod tests {
             ],
         );
 
-        let mut reductions = Reductions::default();
+        let mut verdicts = Verdicts::default();
         let outcome = update(
             &lib,
             &cache,
             EXACT_RECALL_DISTANCE,
             &AtomicBool::new(false),
-            &mut reductions,
+            &mut verdicts,
         )
         .unwrap();
         assert_eq!(outcome.hashed, 2);
@@ -1072,10 +1082,10 @@ mod tests {
         );
     }
 
-    /// A second pass confirms from what the first one reduced, not from the disk: here the
+    /// A second pass confirms from what the first one answered, not from the disk: here the
     /// thumbnails are gone before it runs, and the pair still groups.
     #[test]
-    fn the_pass_reuses_cached_reductions() {
+    fn the_pass_reuses_the_answers_it_kept() {
         let (dir, lib) = temp_library();
         let photos = dir.path().join("pics");
         let (_w, folder) = seed_folder(&lib, &photos);
@@ -1090,9 +1100,9 @@ mod tests {
                 ("small.jpg", unrelated_pattern(72, 48)),
             ],
         );
-        let mut reductions = Reductions::default();
+        let mut verdicts = Verdicts::default();
         let no = AtomicBool::new(false);
-        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(
             lib.similar_of(ids[0]).unwrap().len(),
             1,
@@ -1101,12 +1111,12 @@ mod tests {
 
         std::fs::remove_dir_all(dir.path().join("cache")).unwrap();
         lib.set_similar_groups(&[]).unwrap();
-        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(outcome.groups_changed);
         assert_eq!(
             lib.similar_of(ids[0]).unwrap().len(),
             1,
-            "the second pass went back to the disk for thumbnails it had already reduced"
+            "the second pass went back to the disk for thumbnails of a pair it had already answered"
         );
     }
 
@@ -1135,7 +1145,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &no,
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert_eq!(
@@ -1150,7 +1160,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &no,
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert!(
@@ -1183,7 +1193,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &no,
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         lib.set_similar_groups(&[]).unwrap();
@@ -1193,7 +1203,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &AtomicBool::new(true),
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert!(!outcome.groups_changed);
@@ -1248,7 +1258,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &no,
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert_eq!(outcome.hashed, 2, "the edited thumbnails were not hashed");
@@ -1259,15 +1269,16 @@ mod tests {
         );
     }
 
-    /// The cache holds what the last pass used and nothing older, so it is bounded by the
-    /// photos that have a candidate pair.
+    /// The answers are about pictures, and one whose picture is no photo's any more goes:
+    /// an edit gives the photo another key, and the answer about its old one is let go of.
+    /// An answer whose photos are both still there stays, asked by this pass or not.
     #[test]
-    fn a_pass_drops_the_reductions_it_did_not_use() {
+    fn an_answer_goes_when_its_picture_is_no_photos() {
         let (dir, lib) = temp_library();
         let photos = dir.path().join("pics");
         let (_w, folder) = seed_folder(&lib, &photos);
         let cache = ThumbCache::new(dir.path().join("cache"));
-        thumbnailed(
+        let ids = thumbnailed(
             &lib,
             &cache,
             &photos,
@@ -1278,13 +1289,20 @@ mod tests {
             ],
         );
         let no = AtomicBool::new(false);
-        let mut reductions = Reductions::default();
-        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
-        assert_eq!(reductions.by_key.len(), 2);
-        update(&lib, &cache, 0, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
+        assert_eq!(verdicts.by_pair.len(), 1);
+        update(&lib, &cache, 0, &no, &mut verdicts).unwrap();
+        assert_eq!(verdicts.by_pair.len(), 1, "both photos are still there");
+        let turned = crate::edit::Edit {
+            turns: 1,
+            crop: None,
+        };
+        assert!(lib.set_item_edit(ids[0], turned).unwrap());
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(
-            reductions.by_key.is_empty(),
-            "a pass that confirmed nothing kept the old reductions"
+            verdicts.by_pair.is_empty(),
+            "the answer about the unedited picture was kept"
         );
     }
 
@@ -1307,7 +1325,7 @@ mod tests {
                 &cache,
                 EXACT_RECALL_DISTANCE,
                 &AtomicBool::new(false),
-                &mut Reductions::default()
+                &mut Verdicts::default()
             )
             .unwrap(),
             PassOutcome {
@@ -1339,7 +1357,7 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &AtomicBool::new(true),
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         assert_eq!(outcome.hashed, 0);
@@ -1389,7 +1407,7 @@ mod tests {
             &cache,
             0,
             &AtomicBool::new(false),
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
 
@@ -1433,14 +1451,14 @@ mod tests {
     fn a_pass_with_nothing_new_does_not_regroup() {
         let (_dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
         let no = AtomicBool::new(false);
-        let mut reductions = Reductions::default();
-        let first = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        let first = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(
             first.regrouped && first.groups_changed,
             "the pair did not group"
         );
 
-        let second = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let second = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(
             second,
             PassOutcome {
@@ -1459,15 +1477,15 @@ mod tests {
     fn a_distance_change_regroups_the_same_hashes() {
         let (_dir, lib, cache, _folder, ids) = a_thumbnailed_pair();
         let no = AtomicBool::new(false);
-        let mut reductions = Reductions::default();
-        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(
             lib.similar_of(ids[0]).unwrap().len(),
             1,
             "the pair did not group"
         );
 
-        let off = update(&lib, &cache, 0, &no, &mut reductions).unwrap();
+        let off = update(&lib, &cache, 0, &no, &mut verdicts).unwrap();
         assert!(
             off.regrouped,
             "a distance change was skipped as nothing new"
@@ -1487,14 +1505,14 @@ mod tests {
         lib.set_thumb_state(ids[1], ThumbState::Pending, None)
             .unwrap();
         let no = AtomicBool::new(false);
-        let mut reductions = Reductions::default();
-        let first = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        let first = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(first.hashed, 1);
         assert!(lib.similar_of(ids[0]).unwrap().is_empty());
 
         lib.set_thumb_state(ids[1], ThumbState::Ready, None)
             .unwrap();
-        let second = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let second = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(second.hashed, 1);
         assert!(
             second.regrouped,
@@ -1530,8 +1548,8 @@ mod tests {
             ],
         );
         let no = AtomicBool::new(false);
-        let mut reductions = Reductions::default();
-        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(
             lib.similar_of(ids[0]).unwrap().is_empty(),
             "two different shots were grouped"
@@ -1560,7 +1578,7 @@ mod tests {
         lib.set_thumb_state(ids[1], ThumbState::Ready, None)
             .unwrap();
 
-        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(outcome.hashed, 1);
         assert_eq!(
             hash_of(ids[1]),
@@ -1587,24 +1605,24 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &no,
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         lib.set_similar_groups(&[]).unwrap();
 
-        let mut reductions = Reductions::default();
+        let mut verdicts = Verdicts::default();
         let cancelled = update(
             &lib,
             &cache,
             EXACT_RECALL_DISTANCE,
             &AtomicBool::new(true),
-            &mut reductions,
+            &mut verdicts,
         )
         .unwrap();
         assert!(!cancelled.groups_changed);
         assert!(lib.similar_of(ids[0]).unwrap().is_empty());
 
-        let next = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let next = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(
             next.regrouped,
             "a cancelled regroup was remembered as an answer"
@@ -1625,21 +1643,21 @@ mod tests {
             &cache,
             EXACT_RECALL_DISTANCE,
             &no,
-            &mut Reductions::default(),
+            &mut Verdicts::default(),
         )
         .unwrap();
         let (cached, aside) = (dir.path().join("cache"), dir.path().join("aside"));
         std::fs::rename(&cached, &aside).unwrap();
 
-        let mut reductions = Reductions::default();
-        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(
             lib.similar_of(ids[0]).unwrap().is_empty(),
             "the pair was confirmed without its thumbnails"
         );
 
         std::fs::rename(&aside, &cached).unwrap();
-        let next = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let next = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert!(
             next.regrouped,
             "a regroup that could not read a thumbnail was remembered as the answer"
@@ -1655,8 +1673,8 @@ mod tests {
     fn a_group_cleared_under_an_unchanged_input_is_restored() {
         let (_dir, lib, cache, folder, ids) = a_thumbnailed_pair();
         let no = AtomicBool::new(false);
-        let mut reductions = Reductions::default();
-        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let mut verdicts = Verdicts::default();
+        update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(
             lib.similar_of(ids[1]).unwrap().len(),
             1,
@@ -1671,7 +1689,7 @@ mod tests {
         lib.set_thumb_state(ids[0], ThumbState::Ready, None)
             .unwrap();
 
-        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut reductions).unwrap();
+        let outcome = update(&lib, &cache, EXACT_RECALL_DISTANCE, &no, &mut verdicts).unwrap();
         assert_eq!(outcome.hashed, 1);
         assert_eq!(
             lib.similar_of(ids[1]).unwrap().len(),

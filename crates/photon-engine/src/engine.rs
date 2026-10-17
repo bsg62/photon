@@ -411,11 +411,11 @@ pub struct Engine {
     /// `face_write` while holding this. Released before the rebuild and the pass request.
     people_write: Mutex<()>,
     /// Held by the one thread running the post-scan hashing passes; see `hash_after_scan`.
-    /// It holds what the look-alike pass keeps between passes - its thumbnail reductions,
-    /// and what its last regroup was asked, which is how a pass with nothing new skips the
-    /// regroup - and lives here rather than in the pass because the pass runs again after
-    /// every scan; see `photon_core::similar::Reductions`.
-    hashing: Mutex<photon_core::similar::Reductions>,
+    /// It holds what the look-alike pass keeps between passes - its answers for the pairs
+    /// it confirmed, and what its last regroup was asked, which is how a pass with nothing
+    /// new skips the regroup - and lives here rather than in the pass because the pass runs
+    /// again after every scan; see `photon_core::similar::Verdicts`.
+    hashing: Mutex<photon_core::similar::Verdicts>,
     /// Set by every scan that ends, cleared by the pass as it starts a round. A scan that
     /// finds the pass already running leaves this behind instead of starting a second one.
     hash_requested: AtomicBool,

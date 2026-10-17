@@ -616,8 +616,12 @@ pair; the pixels decide it.** At the hash's 9x8 resolution a second shot of the 
 the same picture, so `group` unites a pair within the distance only when `same_picture`
 agrees - both cached grid thumbnails reduced to 32x32 greyscale, mean removed, mean absolute
 difference at most `SAME_PICTURE_MAX_DIFFERENCE` (measured: copies at or under 2.3, same-pose
-second shots 19 and up). The reductions are cached in the engine's `hashing` lock between
-passes, and confirming honours `cancel`: a cancelled regroup writes no groups. The same lock
+second shots 19 and up). The answer for each pair of thumbnail keys is kept in the engine's
+`hashing` lock between passes (`Verdicts`) - not the reductions, a kilobyte a photo for the
+session, which live for one regroup - and is let go of once either key is no hashed photo's,
+not when a pass did not ask it (`group` visits buckets in a `HashMap`'s order, so the pair
+that joins two photos differs from pass to pass); a pair with an unreadable thumbnail keeps
+no answer. Confirming honours `cancel`: a cancelled regroup writes no groups. The same lock
 holds a digest of the last finished regroup's input (distance, and every `(id, hash, thumb_key)`)
 and of the groups it stored; a pass whose input and stored groups both still match skips the
 regroup, which is what keeps a no-op scan from banding the whole library. Candidates come
