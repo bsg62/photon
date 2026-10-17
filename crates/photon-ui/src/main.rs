@@ -8,6 +8,8 @@ use photon_ui::{
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Before any thread is started, and so before any arena but the main one is made.
+    photon_ui::allocator::tune();
     let args = match Args::parse(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(message) => {

@@ -5,6 +5,7 @@
 //! its bookkeeping, the tokens, the labels. *Views* draw a state module and turn input
 //! into calls on it. `state_modules_name_no_egui_type` holds the line.
 
+pub mod allocator;
 pub mod animate;
 pub mod app;
 pub mod args;

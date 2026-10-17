@@ -137,6 +137,8 @@ url = "2.5.8"
 gstreamer = "0.25.4"
 gstreamer-app = "0.25.2"
 gstreamer-video = "0.25.4"
+# glibc's `mallopt`, at launch (`allocator.rs`), at the version photon-core builds.
+libc = "0.2.189"
 
 # Video (`video/avf.rs`): AVFoundation, part of the system. Every framework crate turns on
 # all its features by default but this one's CoreMedia half, which its timing needs.

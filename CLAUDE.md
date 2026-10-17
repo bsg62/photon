@@ -3105,6 +3105,12 @@ its own behind (`SCROLL_SETTLE_MS`, `VISIBLE_DEBOUNCE_MS`), and a nudged mouse i
 frames, not one (`ECHO_MS`). Each would have read as a busy grid that was perfectly still.
 Anything that asserts a still interface draws nothing is tested through that loop.
 
+**glibc's mmap threshold is fixed at launch** (`allocator.rs`, `mallopt`, first thing in
+`main`). By default it slides up to each large block freed, and every photo buffer after the
+first few came out of a thread's arena, which keeps what is freed: an import of 48 photos of
+12 MP left 165 MB resident over 4 MB in use, and `malloc_trim` returned none of it. Fixed at
+1 MB, it left 4 MB. The figure Settings shows is that resident memory.
+
 **Two checkouts do not share a `CARGO_TARGET_DIR`.** Cargo names a workspace member's
 build by its place in the workspace, not by where the checkout is, and decides whether it
 is fresh from the sources of whichever checkout built it last: a second checkout then runs
