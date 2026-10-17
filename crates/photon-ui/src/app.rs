@@ -2448,7 +2448,10 @@ impl App {
             let image = egui::ColorImage::from_rgba_premultiplied(size, &picture.rgba);
             match (open.frame.as_mut()).filter(|(texture, ..)| texture.size() == size) {
                 Some((texture, _, at)) => {
-                    texture.set(image, egui::TextureOptions::LINEAR);
+                    // Written into the texture there is: a whole `set` is a new texture
+                    // on the device in every frame of the video, the last let go of once
+                    // the device is done with it.
+                    texture.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
                     *at = picture.at;
                 }
                 None => {
