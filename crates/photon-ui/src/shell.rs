@@ -6,6 +6,7 @@
 //! the application's business.
 
 use crate::{
+    animate::Slide,
     controls_bar::{self, ControlAction, ControlsBar, ControlsData},
     empty::{Panel, PanelButton},
     empty_panel,
@@ -73,6 +74,8 @@ pub struct ShellData<'a> {
     /// are given what is left, so it lies over none of them. Empty, the band's room alone.
     pub foot: Option<&'a str>,
     pub toasts: &'a [Toast],
+    /// Whether the sidebar slides when it is shown and hidden, or is there at once.
+    pub animations: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,6 +119,13 @@ pub struct Shell {
     pointer_focus: bool,
     /// The sidebar's list, which keeps its place while the sidebar is hidden.
     sidebar: SidebarView,
+    /// How much of the sidebar is drawn, towards what the layout stores: settled on it
+    /// in the first frame, so a launch with the sidebar hidden does not slide it away.
+    slide: Option<Slide>,
+    /// The next frame settles the slide instead of sliding.
+    at_once: bool,
+    /// The area the content was given in the last frame, none before the first.
+    content: Option<Rect>,
     search: SearchBar,
     controls: ControlsBar,
 }
@@ -148,6 +158,23 @@ impl Shell {
         self.sidebar.rename_from_grid(yes);
     }
 
+    /// Whether the sidebar is on its way in or out at `now_ms`.
+    pub fn sliding(&self, now_ms: f64) -> bool {
+        self.slide.is_some_and(|slide| slide.running(now_ms))
+    }
+
+    /// Has the next frame put the sidebar where the layout says at once: "Rename in
+    /// photon…" shows a hidden sidebar for a field that is to take the keyboard in the
+    /// frame it opens, which a sidebar a few points wide could not show.
+    pub fn sidebar_at_once(&mut self) {
+        self.at_once = true;
+    }
+
+    /// The area the content was given in the last frame.
+    pub fn content_rect(&self) -> Option<Rect> {
+        self.content
+    }
+
     /// Whether the splitter is being dragged.
     pub fn resizing(&self) -> bool {
         self.grab.is_some()
@@ -169,7 +196,22 @@ impl Shell {
         content: impl FnOnce(&mut egui::Ui),
     ) -> Vec<Action> {
         let window = ui.max_rect();
-        let found = areas(window.width(), window.height(), data.layout);
+        let now = ui.input(|input| input.time) * 1000.0;
+        let stored = if data.layout.sidebar_hidden { 0.0 } else { 1.0 };
+        let animate = data.animations && !std::mem::take(&mut self.at_once);
+        let slide = self.slide.get_or_insert(Slide::at(stored));
+        slide.to(stored, now, animate);
+        let found = areas(
+            window.width(),
+            window.height(),
+            data.layout,
+            slide.value(now) as f32,
+        );
+        // A still window draws nothing: frames are asked for while the sidebar moves and
+        // not once it has got there.
+        if slide.running(now) {
+            ui.ctx().request_repaint();
+        }
         let palette = palette(ui.ctx());
         let mut actions = Vec::new();
 
@@ -202,27 +244,59 @@ impl Shell {
             here: data.here,
             naming: data.naming,
         };
-        if let Some(area) = found.sidebar {
-            let shown = self.sidebar.show(ui, rect_of(area, window), &sidebar);
-            actions.extend(shown.named.into_iter().map(Action::Named));
-            actions.extend(shown.clicked.map(Action::Row));
-            actions.extend((shown.menu).map(|(what, at)| Action::RowMenu { what, at }));
-        } else {
-            self.sidebar.not_drawn();
+        match (found.sidebar, found.sidebar_full) {
+            // Sliding closed: drawn, and nobody's. The toggle has stored a name half
+            // typed in it, and the rules for a sidebar that is not drawn apply from the
+            // press: no field, nothing pressed, nothing given the keyboard - its rows are
+            // drawn as they were, not dimmed as what is disabled is.
+            (Some(drawn), Some(full)) if data.layout.sidebar_hidden => {
+                let drawn = rect_of(drawn, window);
+                let mut style = (**ui.style()).clone();
+                style.visuals.disabled_alpha = 1.0;
+                let mut closing =
+                    ui.new_child(UiBuilder::new().max_rect(drawn).style(style).disabled());
+                closing.set_clip_rect(drawn.intersect(ui.clip_rect()));
+                let sidebar = SidebarData {
+                    naming: None,
+                    ..sidebar
+                };
+                let _ = self
+                    .sidebar
+                    .show(&mut closing, rect_of(full, window), &sidebar);
+                self.sidebar.not_drawn();
+            }
+            // Open, or sliding open: the sidebar, laid out at its whole width and cut off
+            // where it is drawn to, which is where a press on it is taken too.
+            (Some(drawn), Some(full)) => {
+                let clip = ui.clip_rect();
+                ui.set_clip_rect(rect_of(drawn, window).intersect(clip));
+                let shown = self.sidebar.show(ui, rect_of(full, window), &sidebar);
+                ui.set_clip_rect(clip);
+                actions.extend(shown.named.into_iter().map(Action::Named));
+                actions.extend(shown.clicked.map(Action::Row));
+                actions.extend((shown.menu).map(|(what, at)| Action::RowMenu { what, at }));
+            }
+            _ => self.sidebar.not_drawn(),
         }
         if let Some(area) = found.splitter {
-            self.splitter(
-                ui,
-                rect_of(area, window),
-                window,
-                data.layout,
-                palette,
-                &mut actions,
-            );
+            let rect = rect_of(area, window);
+            if data.layout.sidebar_hidden {
+                // Sliding away with the sidebar: painted at its edge, held by nobody.
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 0.0, color(palette.chrome));
+                painter.vline(
+                    rect.left() + 0.5,
+                    rect.y_range(),
+                    (1.0, color(palette.line)),
+                );
+            } else {
+                self.splitter(ui, rect, window, data.layout, palette, &mut actions);
+            }
         }
         status_bar(ui, rect_of(found.status_bar, window), data, palette);
 
         let mut place = rect_of(found.content, window);
+        self.content = Some(place);
         ui.painter_at(place)
             .rect_filled(place, 0.0, color(palette.surface));
         if let Some(text) = data.foot {
@@ -251,6 +325,16 @@ impl Shell {
         // it over the field - can arrive in one frame, and the name stored is the one
         // with the letter.
         actions.sort_by_key(|action| !matches!(action, Action::Named(Named::Typed(_))));
+        // The slide begins at the press, as the stored state flips at it: begun in the
+        // next frame, it would end a frame after the time it is given.
+        if actions.contains(&Action::ToggleSidebar)
+            && let Some(slide) = &mut self.slide
+        {
+            slide.to(1.0 - stored, now, animate);
+            if slide.running(now) {
+                ui.ctx().request_repaint();
+            }
+        }
         actions
     }
 
@@ -791,9 +875,13 @@ mod tests {
         /// The name being typed in the sidebar: what for, and what it holds.
         naming: Option<(crate::rename::Of, String)>,
         size: egui::Vec2,
+        animations: bool,
         time: f64,
         /// Every text the last frame drew, with where.
         texts: Vec<(String, Rect)>,
+        /// And what each was cut off at, and the ink it was drawn in: a painter that
+        /// fades what it draws - a disabled `Ui`'s - fades the galley's own colours.
+        cuts: Vec<(String, Rect, Vec<egui::Color32>)>,
         /// And the colour each was laid out in.
         tints: Vec<(String, egui::Color32)>,
         /// Every filled rectangle the last frame drew.
@@ -825,8 +913,10 @@ mod tests {
                 tile: GridTile::Medium,
                 naming: None,
                 size: vec2(1280.0, 800.0),
+                animations: false,
                 time: 0.0,
                 texts: Vec::new(),
+                cuts: Vec::new(),
                 tints: Vec::new(),
                 fills: Vec::new(),
                 content: Rect::NOTHING,
@@ -868,6 +958,7 @@ mod tests {
                 grid_controls: true,
                 foot: self.foot.as_deref(),
                 toasts: self.toasts.held(),
+                animations: self.animations,
             };
             let (shell, mut actions) = (&mut self.shell, Vec::new());
             let mut search = String::new();
@@ -888,6 +979,7 @@ mod tests {
             self.content = content;
             self.clip = clip;
             self.texts.clear();
+            self.cuts.clear();
             self.tints.clear();
             self.fills.clear();
             for clipped in &full.shapes {
@@ -895,6 +987,13 @@ mod tests {
                     egui::Shape::Text(text) => {
                         self.texts
                             .push((text.galley.text().to_owned(), text.visual_bounding_rect()));
+                        let ink = (text.galley.rows.iter())
+                            .flat_map(|row| row.visuals.mesh.vertices.iter())
+                            .map(|vertex| vertex.color)
+                            .chain([text.fallback_color])
+                            .collect();
+                        self.cuts
+                            .push((text.galley.text().to_owned(), clipped.clip_rect, ink));
                         if let Some(section) = text.galley.job.sections.first() {
                             self.tints
                                 .push((text.galley.text().to_owned(), section.format.color));
@@ -1061,6 +1160,35 @@ mod tests {
         f.frame(Vec::new());
         assert_eq!(f.content.left(), SIDEBAR_DEFAULT + SPLITTER);
         assert!(f.drew("Starred").is_some());
+    }
+
+    // While it slides the list keeps the width it is laid out at, so its names do not wrap
+    // again at every point, and is cut off at the edge the slide has got to - closing as
+    // it was drawn, not dimmed as what is disabled is.
+    #[test]
+    fn a_sliding_sidebar_keeps_its_rows_whole_and_cuts_them_at_its_edge() {
+        let mut f = Fixture::new();
+        f.animations = true;
+        f.frame(Vec::new());
+        let count = |f: &Fixture| {
+            let at = f.texts.iter().position(|(text, _)| text == "12").unwrap();
+            (f.texts[at].1, f.cuts[at].1, f.cuts[at].2.clone())
+        };
+        let (open, _, ink) = count(&f);
+        assert_eq!(f.key(Key::B, Modifiers::COMMAND), [Action::ToggleSidebar]);
+        f.key_up(Key::B, Modifiers::COMMAND);
+        assert!(0.0 < f.content.left() && f.content.left() < SIDEBAR_DEFAULT + SPLITTER);
+        let (sliding, cut, sliding_ink) = count(&f);
+        assert_eq!(sliding, open, "laid out at the sidebar's whole width");
+        assert!(cut.right() < open.right(), "{cut:?} cuts {open:?}");
+        assert!(cut.right() < f.content.left());
+        assert_eq!(sliding_ink, ink, "not dimmed");
+        // And gone once the slide is over.
+        for _ in 0..12 {
+            f.frame(Vec::new());
+        }
+        assert_eq!(f.content.left(), 0.0);
+        assert_eq!(f.drew("12"), None);
     }
 
     // A frame can be long, and a letter and the key that hides the sidebar over the

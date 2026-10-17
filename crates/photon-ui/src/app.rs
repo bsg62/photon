@@ -1617,6 +1617,17 @@ impl App {
         self.shell.sidebar_position()
     }
 
+    /// Whether the sidebar is on its way in or out at `now_ms` of the window's clock.
+    pub fn sidebar_sliding(&self, now_ms: f64) -> bool {
+        self.shell.sliding(now_ms)
+    }
+
+    /// The area the shell gave the content - the grid, or the People page - when it was
+    /// last drawn.
+    pub fn content_rect(&self) -> Option<egui::Rect> {
+        self.shell.content_rect()
+    }
+
     /// How the window is laid out.
     pub fn layout(&self) -> &Layout {
         &self.layout
@@ -2010,10 +2021,13 @@ impl App {
                 // Begun from the grid, a rename closed from the keyboard gives the keys
                 // back to the grid, not to the row: `backToRow`'s own exception.
                 self.shell.rename_from_grid(self.menu_on_header);
+                // At once, not by a slide: the field takes the keyboard in the frame it
+                // opens, and a sidebar a few points wide shows nothing of it.
                 if self.layout.sidebar_hidden {
                     self.layout.sidebar_hidden = false;
                     self.layout_store.ask(self.layout);
                 }
+                self.shell.sidebar_at_once();
                 self.shell.reveal(What::Folder(id));
             }
             SideAction::UseFolderName(folder) => {
@@ -4970,6 +4984,7 @@ impl eframe::App for App {
             grid_controls: self.page.is_none(),
             foot: foot.as_deref().filter(|_| self.page.is_none()),
             toasts,
+            animations: self.animations,
         };
         let (view, thumbs, selection) = (&mut self.view, &mut self.thumbs, &mut self.selection);
         let progress = self.scans.faces_line();

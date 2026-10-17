@@ -1,7 +1,7 @@
 //! The shell and the views, through the whole application: a library on disk, the engine,
 //! and the frames a window would draw (`crate::common::Driver`).
 
-use crate::common::{Driver, Harness, click, library, opened};
+use crate::common::{Driver, Harness, click, library, opened, opened_animated};
 use eframe::egui::{self, Key, Modifiers, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::grid::GridView;
@@ -11,7 +11,7 @@ use photon_ui::{
     grid::scroll::{Notch, wheel_notch},
     nav::Place,
     sidebar::rows::Counts,
-    window_layout::{Layout, SIDEBAR_DEFAULT},
+    window_layout::{Layout, SIDEBAR_DEFAULT, SPLITTER},
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -488,4 +488,216 @@ fn a_wheel_set_to_a_screen_at_a_time_turns_a_page_of_the_grid() {
     let (mut harness, mut driver, _library) = wheeled(dir.path(), page);
     let moved = notch_down(&mut driver, &mut harness);
     assert!((moved - (IN_VIEW - 40.0)).abs() < 1.0, "{moved}");
+}
+
+/// Where the content begins: what the sidebar and its splitter leave of the window.
+fn content_left(harness: &Harness<'_>) -> f32 {
+    harness
+        .state()
+        .content_rect()
+        .expect("the shell drawn")
+        .left()
+}
+
+/// Ctrl+B, in the frame drawn next.
+fn toggle(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    driver.act(harness);
+}
+
+// The toggle slides the sidebar in over its time, the content's room changing with it in
+// every frame - and once it has got there the window is still again.
+#[test]
+fn the_sidebar_slides_open_and_then_asks_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 300, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 300);
+    driver.settle(&mut harness);
+    let open = content_left(&harness);
+    assert_eq!(open, SIDEBAR_DEFAULT + SPLITTER);
+    toggle(&mut driver, &mut harness);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    assert_eq!(content_left(&harness), 0.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0);
+
+    // The key going down alone, in a frame of its own - `key_press` would draw a second
+    // frame at the same moment for the key coming up. The slide is timed from the press,
+    // not from the frame after it.
+    harness.event(egui::Event::Key {
+        key: Key::B,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    driver.act(&mut harness);
+    let pressed = driver.now;
+    driver.frame(&mut harness, pressed + 0.1);
+    let part = content_left(&harness);
+    assert!(
+        0.0 < part && part < open,
+        "{part} at a hundred milliseconds"
+    );
+    assert!(harness.state().sidebar_sliding(driver.now * 1000.0));
+    driver.frame(&mut harness, pressed + 0.2);
+    assert_eq!(content_left(&harness), open);
+    assert!(!harness.state().sidebar_sliding(driver.now * 1000.0));
+    // What the grid does after a change of its width - what is in view said, the
+    // thumbnails of rows come into it - is the grid's, and over in a moment.
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// Sliding closed, the sidebar is drawn and is nobody's: the toggle has put it away, and
+// a press on the part still drawn is no row's.
+#[test]
+fn a_closing_sidebar_takes_no_press() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 300, 5, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 300);
+    driver.seen(&mut harness, "Starred");
+    driver.settle(&mut harness);
+    let row = harness.get_by_label("Starred").rect();
+    let at = pos2(row.left() + 20.0, row.center().y);
+    let before = harness.state().place();
+    toggle(&mut driver, &mut harness);
+    let pressed = driver.now;
+    driver.frame(&mut harness, pressed + 0.05);
+    // Still drawn where the press goes.
+    assert!(at.x < content_left(&harness), "{at:?}");
+    harness.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    driver.frame(&mut harness, pressed + 0.06);
+    driver.frame(&mut harness, pressed + 0.07);
+    assert_eq!(harness.state().place(), before, "no view was asked for");
+}
+
+// The shell is not drawn under the viewer, and a slide it began there asks for no frames
+// once its time is over.
+#[test]
+fn a_slide_under_the_viewer_asks_for_no_frames_once_its_time_is_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 300, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 300);
+    driver.settle(&mut harness);
+    let at = harness.state().tile_rect(0).unwrap().center();
+    harness.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    driver.act(&mut harness);
+    toggle(&mut driver, &mut harness);
+    harness.key_press(Key::Enter);
+    driver.act(&mut harness);
+    assert!(harness.state().viewer().is_some());
+    driver.frames_in(&mut harness, 0.2);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// The place in the grid is kept by its pin in every frame of a slide, as through a
+// splitter dragged: the folder at the top stays at the top while the rows are built again
+// at each width. Many folders, so that a place kept as a number would be another's.
+#[test]
+fn the_top_photo_stays_at_the_top_through_a_slide() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12_000, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 12_000);
+    driver.until(&mut harness, "the folders read", |app| {
+        app.folders().len() >= 40
+    });
+    driver.settle(&mut harness);
+    // Far down, by the wheel over the grid.
+    harness.event(egui::Event::PointerMoved(pos2(700.0, 400.0)));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -60_000.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the grid scrolled", |app| {
+        app.last_frame()
+            .is_some_and(|frame| frame.position > 50_000.0)
+    });
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let top = |harness: &Harness<'_>| harness.state().last_frame().unwrap().top_folder;
+    let folder = top(&harness);
+    assert!(folder.is_some());
+    let open = content_left(&harness);
+
+    toggle(&mut driver, &mut harness);
+    let pressed = driver.now;
+    driver.frame(&mut harness, pressed + 0.04);
+    driver.frame(&mut harness, pressed + 0.08);
+    let part = content_left(&harness);
+    assert!(0.0 < part && part < open, "{part}: sliding");
+    assert_eq!(top(&harness), folder);
+    driver.frame(&mut harness, pressed + 0.2);
+    assert_eq!(content_left(&harness), 0.0);
+    assert_eq!(top(&harness), folder);
+}
+
+// "Rename in photon…" on a header shows a hidden sidebar at once, not by a slide: the
+// name field is to take the keyboard in the frame it opens.
+#[test]
+fn rename_in_photon_shows_the_sidebar_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 900);
+    driver.until(&mut harness, "the folders read", |app| {
+        app.folders().len() >= 3
+    });
+    driver.settle(&mut harness);
+    let open = content_left(&harness);
+    toggle(&mut driver, &mut harness);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    assert_eq!(content_left(&harness), 0.0);
+
+    // The other button on the first folder's header, over its first photo.
+    let tile = harness.state().tile_rect(0).unwrap();
+    let at = tile.center_top() - vec2(0.0, 14.0);
+    harness.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.state().menu_open());
+    harness.get_by_label("Rename in photon…").click();
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert_eq!(content_left(&harness), open);
+    harness.event(egui::Event::Text("x".to_owned()));
+    driver.act(&mut harness);
+    assert!(
+        matches!(harness.state().naming(), Some((_, text, false)) if text.ends_with('x')),
+        "{:?}",
+        harness.state().naming()
+    );
 }
