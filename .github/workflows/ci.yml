@@ -88,12 +88,15 @@ jobs:
         shell: bash
         run: |
           T=menu::the_star_key_takes_several_photos_the_way_of_the_deciding_one
-          for w in 1 2 3; do
-            ( cargo nextest run --color never -p photon-ui --test all "$T" --stress-count 250 > "loop$w.log" 2>&1; echo "loop $w exit $?" >> "loop$w.log" ) &
+          for h in 1 2 3; do ( yes > /dev/null & echo $! >> hogs ); done
+          for w in 1 2 3 4 5 6; do
+            ( cargo nextest run --color never -p photon-ui --test all "$T" --stress-count 120 > "loop$w.log" 2>&1; echo "loop $w exit $?" >> "loop$w.log" ) &
           done
-          wait
+          wait $(jobs -p | tail -6) 2>/dev/null; sleep 1
+          while pgrep -f "stress-count 120" > /dev/null; do sleep 5; done
+          kill $(cat hogs) 2>/dev/null || true
           failed=0
-          for w in 1 2 3; do
+          for w in 1 2 3 4 5 6; do
             echo "=== loop $w: $(grep -E "Summary|exit" "loop$w.log" | tr '\n' ' ')"
             if ! grep -q "exit 0" "loop$w.log"; then
               failed=1
