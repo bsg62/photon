@@ -1,0 +1,267 @@
+//! Where each photo and header is drawn while the grid moves from one layout to another
+//! (a column change, the user's own write). The grid view asks for every key's place in
+//! every frame; this says where between the old rows and the new it is.
+//!
+//! Places are measured from the grid's top edge (the row's layout top less the scroll
+//! position), so the screen moves as one: a scroll during a glide moves both ends of
+//! every photo by the same distance, and a photo is never drawn by a path through a
+//! place the user has already scrolled away from.
+
+use std::collections::HashMap;
+
+use photon_core::grid::{GridEntry, Period};
+
+use crate::animate::{DURATION_MS, ease_out};
+
+/// What a drawn thing is, across two layouts: a photo by its id, a header by what it
+/// heads. Not an offset, which names another thing in the new rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Key {
+    Item(i64),
+    Header {
+        folder: Option<i64>,
+        period: Option<Period>,
+    },
+}
+
+/// A rectangle in the grid's coordinates, `y` from the grid's top edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Place {
+    fn towards(self, to: Place, t: f64) -> Place {
+        let mix = |a: f64, b: f64| a + (b - a) * t;
+        Place {
+            x: mix(self.x, to.x),
+            y: mix(self.y, to.y),
+            width: mix(self.width, to.width),
+            height: mix(self.height, to.height),
+        }
+    }
+
+    fn down(self, by: f64) -> Place {
+        Place {
+            y: self.y + by,
+            ..self
+        }
+    }
+}
+
+/// A photo the new grid does not hold, kept to be faded out where it was.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Leaving {
+    pub entry: GridEntry,
+    pub place: Place,
+}
+
+#[derive(Default)]
+pub struct Glides {
+    from: HashMap<Key, Place>,
+    leaving: Vec<Leaving>,
+    started_ms: f64,
+    position_at_start: f64,
+}
+
+impl Glides {
+    /// Starts a glide: `before` is every key's place in the old rows, relative to the old
+    /// position, as far as the snapshot reaches; a key already gliding starts from where
+    /// it is drawn at `now_ms` instead - `before` is where its last glide was going.
+    pub fn begin(
+        &mut self,
+        before: impl IntoIterator<Item = (Key, Place)>,
+        leaving: Vec<Leaving>,
+        position: f64,
+        now_ms: f64,
+    ) {
+        let running = self.running(now_ms);
+        let t = self.progress(now_ms);
+        let scrolled = self.position_at_start - position;
+        let mut from = HashMap::new();
+        for (key, old) in before {
+            let start = match self.from.get(&key) {
+                // Drawn between its old place (moved by the scroll) and the one it
+                // was going to, which is what `before` holds for it.
+                Some(was) if running => was.down(scrolled).towards(old, t),
+                _ => old,
+            };
+            from.insert(key, start);
+        }
+        self.from = from;
+        self.leaving = leaving;
+        self.started_ms = now_ms;
+        self.position_at_start = position;
+    }
+
+    /// Where `key` is drawn at `now_ms` given its new place (relative to `position`):
+    /// the old place moved by the scroll since the start, eased towards `target`.
+    /// A key with no old place is drawn at `target`.
+    pub fn place(&self, key: Key, target: Place, position: f64, now_ms: f64) -> Place {
+        match self.from.get(&key) {
+            Some(old) if self.running(now_ms) => old
+                .down(self.position_at_start - position)
+                .towards(target, self.progress(now_ms)),
+            _ => target,
+        }
+    }
+
+    /// The keys whose old place, moved by the scroll, is in view: drawn during the glide
+    /// though their new place is out of view.
+    pub fn visible_before(&self, position: f64, viewport: f64) -> Vec<Key> {
+        let scrolled = self.position_at_start - position;
+        self.from
+            .iter()
+            .filter(|(_, old)| {
+                let top = old.y + scrolled;
+                top < viewport && top + old.height > 0.0
+            })
+            .map(|(key, _)| *key)
+            .collect()
+    }
+
+    /// The photos that left, each with its opacity at `now_ms`, drawn where they were.
+    pub fn leaving(&self, position: f64, now_ms: f64) -> Vec<(Leaving, f32)> {
+        if !self.running(now_ms) {
+            return Vec::new();
+        }
+        let opacity = (1.0 - self.progress(now_ms)) as f32;
+        let scrolled = self.position_at_start - position;
+        self.leaving
+            .iter()
+            .map(|gone| {
+                let moved = Leaving {
+                    place: gone.place.down(scrolled),
+                    ..*gone
+                };
+                (moved, opacity)
+            })
+            .collect()
+    }
+
+    pub fn running(&self, now_ms: f64) -> bool {
+        (!self.from.is_empty() || !self.leaving.is_empty())
+            && now_ms - self.started_ms < DURATION_MS
+    }
+
+    pub fn stop(&mut self) {
+        self.from.clear();
+        self.leaving.clear();
+    }
+
+    /// The eased share of the way, 0 before the start and 1 from the end on.
+    fn progress(&self, now_ms: f64) -> f64 {
+        ease_out((now_ms - self.started_ms) / DURATION_MS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(x: f64, y: f64) -> Place {
+        Place {
+            x,
+            y,
+            width: 100.0,
+            height: 100.0,
+        }
+    }
+
+    fn one() -> Key {
+        Key::Item(1)
+    }
+
+    fn started() -> Glides {
+        let mut glides = Glides::default();
+        glides.begin([(one(), at(8.0, 0.0))], Vec::new(), 0.0, 1000.0);
+        glides
+    }
+
+    #[test]
+    fn a_photo_glides_from_its_old_place_to_its_new() {
+        let glides = started();
+        let target = at(8.0, 108.0);
+        let half = glides.place(one(), target, 0.0, 1100.0);
+        assert!((half.y - 108.0 * ease_out(0.5)).abs() < 1e-9);
+        assert_eq!(glides.place(one(), target, 0.0, 1000.0), at(8.0, 0.0));
+        assert_eq!(glides.place(one(), target, 0.0, 1200.0), target);
+    }
+
+    #[test]
+    fn a_scroll_during_a_glide_moves_both_ends() {
+        let glides = started();
+        // Scrolled down by 50: the target, given relative to the new position, is 50
+        // higher than it was, and so is the place the photo started from.
+        let target = at(8.0, 108.0 - 50.0);
+        let drawn = glides.place(one(), target, 50.0, 1100.0);
+        let unscrolled = glides.place(one(), at(8.0, 108.0), 0.0, 1100.0);
+        assert!((drawn.y - (unscrolled.y - 50.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_key_already_gliding_starts_again_from_where_it_is_drawn() {
+        let mut glides = started();
+        let target = at(8.0, 108.0);
+        let drawn = glides.place(one(), target, 0.0, 1100.0);
+        // The second glide's `before` is where the first was going.
+        glides.begin([(one(), target)], Vec::new(), 0.0, 1100.0);
+        assert_eq!(glides.place(one(), at(8.0, 300.0), 0.0, 1100.0), drawn);
+    }
+
+    #[test]
+    fn a_key_with_no_old_place_is_at_its_target() {
+        let glides = started();
+        let target = at(40.0, 40.0);
+        assert_eq!(glides.place(Key::Item(2), target, 0.0, 1100.0), target);
+    }
+
+    #[test]
+    fn a_leaving_photo_fades_out_and_is_gone_at_the_end() {
+        let entry = GridEntry {
+            id: 9,
+            folder_id: 1,
+            taken_at: 0,
+            aspect: 1.0,
+            kind: photon_core::media::MediaKind::Image,
+            duration_ms: None,
+            starred: false,
+            has_copies: false,
+            thumb_key: 9,
+            size: 0,
+            mtime_ms: 0,
+        };
+        let mut glides = Glides::default();
+        let gone = Leaving {
+            entry,
+            place: at(8.0, 8.0),
+        };
+        glides.begin([], vec![gone], 0.0, 1000.0);
+        assert_eq!(glides.leaving(0.0, 1000.0)[0].1, 1.0);
+        let half = glides.leaving(0.0, 1100.0)[0].1;
+        assert!((half - (1.0 - ease_out(0.5)) as f32).abs() < 1e-6);
+        assert!(glides.running(1100.0));
+        assert!(!glides.running(1200.0));
+        assert!(glides.leaving(0.0, 1200.0).is_empty());
+    }
+
+    #[test]
+    fn visible_before_lists_what_was_in_view() {
+        let mut glides = Glides::default();
+        glides.begin(
+            [
+                (Key::Item(1), at(0.0, 50.0)),
+                (Key::Item(2), at(0.0, 900.0)),
+            ],
+            Vec::new(),
+            0.0,
+            0.0,
+        );
+        assert_eq!(glides.visible_before(0.0, 700.0), vec![Key::Item(1)]);
+        // Scrolled down by 300 the second is the one in view.
+        assert_eq!(glides.visible_before(300.0, 700.0), vec![Key::Item(2)]);
+    }
+}

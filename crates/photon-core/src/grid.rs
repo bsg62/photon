@@ -76,7 +76,7 @@ pub enum Layout {
 }
 
 /// How long a stretch one header of a date grouping covers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PeriodUnit {
     Day,
     Month,
@@ -112,7 +112,7 @@ impl PeriodUnit {
 /// A day, a month or a year: a month has no `day`, a year neither. Sent as its numbers
 /// rather than as a timestamp, so the UI names the day Rust put the photos in instead of
 /// reading an instant again in the viewer's own zone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Period {
     pub year: i64,
