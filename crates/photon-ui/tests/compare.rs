@@ -257,6 +257,48 @@ fn every_panes_full_picture_is_made_once_zoomed_and_none_at_fit() {
     );
 }
 
+// A pane's full picture has no level past twice the pane until a zoom outgrows the
+// largest it holds, and then the whole picture is made again: a notch is 588 pixels drawn
+// of a level 600 wide, three are 848.
+#[test]
+fn a_panes_whole_picture_is_made_only_once_a_zoom_outgrows_its_levels() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    compare(&mut driver, &mut harness, &[0, 1, 2]);
+    driver.settle(&mut harness);
+    driver.act(&mut harness);
+    let place = places(
+        egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 700.0)),
+        3,
+    )[0];
+    let notch = |harness: &mut Harness<'_>, lines: f32| {
+        harness.event(egui::Event::PointerMoved(place.center()));
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, lines),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    notch(&mut harness, 1.0);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "every pane's full picture", |app| {
+        app.compare_pictures()
+            .is_some_and(|pictures| pictures.iter().all(Option::is_some))
+    });
+    driver.frames_in(&mut harness, 0.5);
+    driver.settle(&mut harness);
+    assert_eq!(
+        harness.state().compare_pictures(),
+        Some(vec![Some(600), Some(600), Some(600)])
+    );
+    notch(&mut harness, 2.0);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the whole pictures", |app| {
+        app.compare_pictures() == Some(vec![Some(1200), Some(1200), Some(600)])
+    });
+}
+
 // A compare left alone is a still window.
 #[test]
 fn compare_left_alone_draws_nothing() {

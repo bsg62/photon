@@ -949,6 +949,10 @@ fn zoomed(harness: &mut Harness<'_>) {
         harness.key_press(Key::Plus);
         harness.step();
     }
+    // The zoom outgrows the levels held at the fit, and the whole picture is made again.
+    until(harness, "the picture the zoom needs", |app| {
+        !app.viewer_asked() && app.viewer_levels().is_some()
+    });
     let from = egui::pos2(640.0, 500.0);
     harness.event(egui::Event::PointerMoved(from));
     harness.event(egui::Event::PointerButton {
