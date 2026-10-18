@@ -316,33 +316,54 @@ mod tests {
     struct Themes {
         light: Vec<(String, String)>,
         dark: Vec<(String, String)>,
+        /// The dark block a visitor's own choice turns on (`site/theme.js`), which must say
+        /// what the system's does, token for token.
+        chosen_dark: Vec<(String, String)>,
         /// Tokens declared anywhere else: a second `:root`, or a `--line` on `body`, would
-        /// override the two blocks compared and be compared with nothing.
+        /// override the blocks compared and be compared with nothing.
         strays: Vec<String>,
     }
 
-    /// A page's own tokens: its `:root` block outside any media query, and the one inside
-    /// `prefers-color-scheme: dark`.
+    /// The system's dark block. Not when the visitor has chosen light: written as a bare
+    /// `:root`, it would win over that choice on a dark desktop.
+    const SYSTEM_DARK: &str = r#":root:not([data-theme="light"])"#;
+    /// The dark block of a visitor's own choice.
+    const CHOSEN_DARK: &str = r#":root[data-theme="dark"]"#;
+
+    /// A page's own tokens: its `:root` block outside any media query, the one inside
+    /// `prefers-color-scheme: dark`, and the one a chosen dark theme turns on.
     fn themes(css: &str) -> Themes {
         let media = css
             .find("@media (prefers-color-scheme: dark)")
             .expect("the page has no dark block");
-        let root = media + css[media..].find(":root").expect("no dark :root");
+        let root = media + css[media..].find(SYSTEM_DARK).expect("no dark :root");
         let (dark, end) = block(css, root);
         let media_end = end + css[end..].find('}').unwrap() + 1;
         let outside = format!("{}{}", &css[..media], &css[media_end..]);
         let at = outside
-            .find(":root")
+            .find(":root {")
             .expect("the page has no light :root block");
         let (light, end) = block(&outside, at);
-        let strays = declared(&format!("{}{}", &outside[..at], &outside[end..]))
+        let rest = format!("{}{}", &outside[..at], &outside[end..]);
+        let chosen = rest.find(CHOSEN_DARK).expect("no dark block to choose");
+        let (chosen_dark, end) = block(&rest, chosen);
+        let strays = declared(&format!("{}{}", &rest[..chosen], &rest[end..]))
             .into_iter()
             .map(|(name, _)| name)
             .collect();
         Themes {
             light: declared(light),
             dark: declared(dark),
+            chosen_dark: declared(chosen_dark),
             strays,
+        }
+    }
+
+    #[test]
+    fn a_chosen_dark_theme_is_the_systems() {
+        for (page, html) in PAGES {
+            let found = themes(&page_css(html));
+            assert_eq!(found.chosen_dark, found.dark, "{page}");
         }
     }
 

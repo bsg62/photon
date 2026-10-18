@@ -28,8 +28,10 @@
     --on-accent: #ffffff;
     --shadow: 0 24px 60px #00000026;
   }
+  /* Dark by the system's setting, unless the visitor chose light, and dark by their choice
+     (theme.js): one palette twice, which tokens.rs's tests hold to be the same. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --surface: #1b1b1e;
       --chrome: #2c2c31;
       --field: #ffffff12;
@@ -41,6 +43,19 @@
       --shadow: 0 24px 60px #00000080;
     }
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1b1b1e;
+    --chrome: #2c2c31;
+    --field: #ffffff12;
+    --line: #ffffff14;
+    --text: #ededf0;
+    --text-dim: #a6a6af;
+    --accent: #62a0ea;
+    --on-accent: #111111;
+    --shadow: 0 24px 60px #00000080;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
   /* Geist and Geist Mono, served from here rather than a font service: the page makes no
      request anywhere else, as photon makes none. SIL OFL 1.1, fonts/*-OFL.txt. */
   @font-face { font-family: Geist; src: url(fonts/geist.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
@@ -173,7 +188,12 @@
     .hero { padding-top: 3.5rem; }
     .stop { margin-top: 3.5rem; }
   }
+  /* The theme's switch (theme.js): a word, quieter than the links' Download. */
+  .theme { min-height: 44px; padding: 0 .75rem; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--text-dim); font: inherit; font-size: .875rem; cursor: pointer; }
+  .theme:hover { color: var(--text); }
+  .theme[hidden] { display: none; }
 </style>
+<script src="theme.js"></script>
 </head>
 <body>
 <!-- The icons are from Lucide (https://lucide.dev), lucide-static 1.47.0, unmodified:
@@ -201,6 +221,7 @@
       <a href="picasa.html">Coming from Picasa</a>
       <a href="faq.html">FAQ</a>
       <a href="https://github.com/bsg62/photon">GitHub</a>
+      <button class="theme" id="theme" type="button" hidden>System</button>
       <a class="button small" href="#download">Download</a>
     </div>
   </nav>
@@ -221,7 +242,7 @@
   <div class="shot">
     <figure class="wrap">
       <picture>
-        <source srcset="img/main-dark.webp" media="(prefers-color-scheme: dark)">
+        <source srcset="img/main-dark.webp" media="(prefers-color-scheme: dark)" data-dark>
         <img src="img/main-light.webp" width="1280" height="800" alt="photon's main window: a sidebar of views, albums and folders beside a grid of photos grouped by folder">
       </picture>
     </figure>

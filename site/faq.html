@@ -20,8 +20,10 @@
     --text-dim: #5f5f67;
     --accent: #1f6fd6;
   }
+  /* Dark by the system's setting, unless the visitor chose light, and dark by their choice
+     (theme.js): one palette twice, which tokens.rs's tests hold to be the same. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --surface: #1b1b1e;
       --field: #ffffff12;
       --line: #ffffff14;
@@ -30,6 +32,16 @@
       --accent: #62a0ea;
     }
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1b1b1e;
+    --field: #ffffff12;
+    --line: #ffffff14;
+    --text: #ededf0;
+    --text-dim: #a6a6af;
+    --accent: #62a0ea;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
   /* Served from here, as on the front page: SIL OFL 1.1, fonts/*-OFL.txt. */
   @font-face { font-family: Geist; src: url(fonts/geist.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
   @font-face { font-family: "Geist Mono"; src: url(fonts/geist-mono.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
@@ -69,7 +81,12 @@
   footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem 1.5rem; padding-top: 2rem; padding-bottom: 3rem; border-top: 1px solid var(--line); color: var(--text-dim); font-size: .875rem; }
   footer a { color: var(--text-dim); }
   footer nav { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; }
+  /* The theme's switch (theme.js): a word, quieter than the links' Download. */
+  .theme { min-height: 44px; padding: 0 .75rem; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--text-dim); font: inherit; font-size: .875rem; cursor: pointer; }
+  .theme:hover { color: var(--text); }
+  .theme[hidden] { display: none; }
 </style>
+<script src="theme.js"></script>
 </head>
 <body>
 <header class="top">
@@ -80,6 +97,7 @@
       <a href="picasa.html">Coming from Picasa</a>
       <a href="faq.html" aria-current="page">FAQ</a>
       <a href="https://github.com/bsg62/photon">GitHub</a>
+      <button class="theme" id="theme" type="button" hidden>System</button>
       <a href="./#download">Download</a>
     </div>
   </nav>

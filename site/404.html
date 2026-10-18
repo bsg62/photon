@@ -14,14 +14,24 @@
     --text-dim: #5f5f67;
     --accent: #1f6fd6;
   }
+  /* Dark by the system's setting, unless the visitor chose light, and dark by their choice
+     (theme.js): one palette twice, which tokens.rs's tests hold to be the same. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --surface: #1b1b1e;
       --text: #ededf0;
       --text-dim: #a6a6af;
       --accent: #62a0ea;
     }
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1b1b1e;
+    --text: #ededf0;
+    --text-dim: #a6a6af;
+    --accent: #62a0ea;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
   /* Served from the site, as on every page: SIL OFL 1.1, /fonts/geist-OFL.txt. Absolute,
      as this page answers at any path. */
   @font-face { font-family: Geist; src: url(/fonts/geist.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
@@ -38,6 +48,7 @@
   a { color: var(--accent); text-underline-offset: 2px; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 </style>
+<script src="/theme.js"></script>
 </head>
 <body>
 <main>
