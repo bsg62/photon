@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every page a search engine should index; 404.html says noindex itself. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://photon.webcodr.io/</loc></url>
+  <url><loc>https://photon.webcodr.io/picasa.html</loc></url>
+  <url><loc>https://photon.webcodr.io/faq.html</loc></url>
+</urlset>

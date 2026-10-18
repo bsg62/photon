@@ -3,15 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>photon — a local photo manager</title>
-<meta name="description" content="A local photo manager for Linux, macOS and Windows, for everyone who misses Picasa. It shows the photos in your folders and leaves the files as they are.">
+<title>photon — a free Picasa alternative for Linux, macOS and Windows</title>
+<meta name="description" content="photon is a free, open-source Picasa alternative for Linux, macOS and Windows. It reads Picasa's stars, people and albums, shows the photos in your folders and leaves the files as they are.">
+<link rel="canonical" href="https://photon.webcodr.io/">
 <link rel="icon" href="img/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <link rel="preload" href="fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
-<meta property="og:title" content="photon">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="photon">
+<meta property="og:title" content="photon — a free Picasa alternative">
 <meta property="og:description" content="A local photo manager for Linux, macOS and Windows, for everyone who misses Picasa.">
 <meta property="og:image" content="https://photon.webcodr.io/img/og.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="800">
+<meta property="og:image:alt" content="photon's main window: a sidebar of views, albums and folders beside a grid of photos grouped by folder">
 <meta property="og:url" content="https://photon.webcodr.io/">
+<meta name="twitter:card" content="summary_large_image">
+<!-- For search engines. No version number: a release changes nothing on the site
+     (pages.yml), so one written here would go stale. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "photon",
+  "description": "A free, open-source local photo manager for Linux, macOS and Windows, and an alternative to Picasa that reads Picasa's stars, people and albums.",
+  "url": "https://photon.webcodr.io/",
+  "applicationCategory": "MultimediaApplication",
+  "operatingSystem": "Linux, macOS, Windows",
+  "downloadUrl": "https://github.com/bsg62/photon/releases/latest",
+  "screenshot": "https://photon.webcodr.io/img/og.jpg",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
 <style>
   /* The app's own tokens (crates/photon-ui/src/theme/tokens.rs), value for value, so the
      page and the pictures agree; that file's tests fail when one differs. --shadow is the
@@ -231,7 +256,7 @@
   <section class="hero wrap">
     <p class="pill">Free and open source · Linux · macOS · Windows</p>
     <h1>A local photo manager for everyone who misses Picasa</h1>
-    <p class="lede">photon runs on Linux, macOS and Windows. It shows the photos in your folders and leaves the files as they are.</p>
+    <p class="lede">photon is a free Picasa alternative for Linux, macOS and Windows. It shows the photos in your folders and leaves the files as they are.</p>
     <div class="actions">
       <a class="button" id="get" href="https://github.com/bsg62/photon/releases/latest">Download</a>
       <a class="button plain" href="#download">Other systems</a>
