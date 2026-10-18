@@ -122,6 +122,17 @@ fn over_files<'a>(dir: &Path, pictures: &Path) -> (Harness<'a>, Driver, Dirs) {
     driver.until(&mut harness, "the five photos shown", |app| {
         app.photos() == 5 && app.last_frame().is_some_and(|frame| frame.settled)
     });
+    // And the copies found: `a` and `d` are one file, as are `b` and `e`, which the hash
+    // pass after the scan says a moment later. A menu of one of them has the item that shows
+    // its copies, and a grid saying so that arrived while a test had a menu open put it in
+    // under the pointer.
+    driver.until(&mut harness, "the copies found and on screen", |app| {
+        let (version, index) = app.engine().grid();
+        let copies = (index.rows(0, index.len()).iter())
+            .filter(|entry| entry.has_copies)
+            .count();
+        app.version() == version && copies == 4
+    });
     let names: Vec<String> = {
         let lib = Library::open(&made.db_path).unwrap();
         (harness.state().shown().iter())

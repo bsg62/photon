@@ -43,8 +43,12 @@ pub enum TileAction {
 /// when one is selected, and among several the one the star key goes by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deciding {
+    pub id: i64,
     pub video: bool,
     pub starred: bool,
+    /// Whether the grid has it among the Duplicates (`GridEntry::has_copies`): what puts
+    /// the item that shows its copies in the menu of one photo, from the menu's first frame.
+    pub copies: bool,
 }
 
 /// What the menu is built from.
@@ -67,10 +71,16 @@ pub struct Facts<'a> {
     /// until the one that runs is over.
     pub exporting: bool,
     /// The one photo selected and how many copies the library has of it, once it has
-    /// said: the item that shows them comes a moment after the menu opens, as the Svelte
-    /// one does, and not at all for a photo with none.
+    /// said: the number in the item's words, which come a moment after the menu opens.
+    /// Whether the item is there at all is the grid's word (`Deciding::copies`), had at
+    /// once - an item that came with the count grew the menu by a row under the pointer,
+    /// and a menu opened upward then moved every item up it: a click on "Unstar photo" a
+    /// frame after the count landed was "Hide photo".
     pub copies: Option<(i64, usize)>,
 }
+
+/// The item that shows a photo's copies, until the library has counted them.
+pub const COPIES: &str = "Show duplicates";
 
 /// The fewest and the most photos that can be compared side by side.
 const COMPARE: std::ops::RangeInclusive<usize> = 2..=4;
@@ -237,16 +247,21 @@ pub fn tile_menu(facts: &Facts<'_>) -> Vec<Item<TileAction>> {
         look: Look::Plain,
         does: TileAction::Export,
     });
-    // The one photo's copies, once the library has counted them. The application gives
-    // the count only for the photo the menu is of now.
-    if let Some((id, count)) = facts
-        .copies
-        .filter(|(_, count)| facts.count == 1 && *count > 0)
+    // The one photo's copies, from the first frame where the grid has it among the
+    // Duplicates, and counted in its words once the library has said - the application
+    // gives the count only for the photo the menu is of now. A count of none leaves the
+    // words without a number rather than taking the item away, which would move every
+    // item of a menu opened upward under the pointer, as its coming did.
+    if facts.count == 1
+        && let Some(photo) = facts.deciding.filter(|photo| photo.copies)
     {
+        let counted = (facts.copies)
+            .filter(|&(id, count)| id == photo.id && count > 0)
+            .map(|(_, count)| count);
         items.push(plain(
-            crate::viewer_info::show_copies_label(count),
+            counted.map_or_else(|| COPIES.to_owned(), crate::viewer_info::show_copies_label),
             None,
-            TileAction::ShowCopies(id),
+            TileAction::ShowCopies(photo.id),
         ));
     }
     items.push(Item::Heading("Add to album"));
@@ -371,8 +386,10 @@ mod tests {
             Self {
                 count: 1,
                 deciding: Some(Deciding {
+                    id: 5,
                     video: false,
                     starred: false,
+                    copies: false,
                 }),
                 place: Place::of(GridView::All),
                 albums: vec![album(4, "Lisbon", false), album(9, "From Picasa", true)],
@@ -469,6 +486,7 @@ mod tests {
         w.deciding = Some(Deciding {
             video: false,
             starred: true,
+            ..w.deciding.unwrap()
         });
         assert_eq!(w.does("Unstar photo"), Some(TileAction::Star(false)));
         assert_eq!(w.does("Star photo"), None);
@@ -481,6 +499,7 @@ mod tests {
         w.deciding = Some(Deciding {
             video: true,
             starred: false,
+            ..w.deciding.unwrap()
         });
         assert!(!w.lines().iter().any(|line| line.starts_with("Copy photo")));
         assert!(w.lines().iter().any(|line| line.starts_with("Reveal")));
@@ -521,6 +540,7 @@ mod tests {
         w.deciding = Some(Deciding {
             video: false,
             starred: true,
+            ..w.deciding.unwrap()
         });
         let lines = w.lines();
         assert_eq!(lines[0], "Star 3 photos");
@@ -691,21 +711,43 @@ mod tests {
         assert_eq!(w.does("Hide photo"), Some(TileAction::Hide(true)));
     }
 
-    // The one photo's copies, once the library has counted them, after "Export…": none
-    // for a photo with no copy, nor for several photos.
+    // The one photo's copies, after "Export…", from the menu's first frame where the grid
+    // has it among the Duplicates, the number in its words once the library has counted
+    // them - and the menu no taller for the count: grown by it, a menu opened upward moved
+    // every item under the pointer. None for a photo the grid has no copy of, nor for
+    // several photos.
     #[test]
-    fn the_copies_of_one_photo_are_offered_once_they_are_counted() {
+    fn the_copies_of_one_photo_are_offered_from_the_first_frame_and_counted_after() {
         let mut w = World::one();
-        assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
-        w.copies = Some((5, 0));
-        assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
         w.copies = Some((5, 2));
-        let lines = w.lines();
-        let export = lines.iter().position(|line| line == "Export photo…");
-        let copies = lines.iter().position(|line| line == "Show 2 duplicates");
-        assert_eq!(copies, export.map(|at| at + 1), "{lines:?}");
+        assert!(
+            !w.lines().iter().any(|line| line.starts_with("Show ")),
+            "not among them"
+        );
+        let mut copies = w.deciding.unwrap();
+        copies.copies = true;
+        w.deciding = Some(copies);
+        w.copies = None;
+        let before = w.lines();
+        let export = before.iter().position(|line| line == "Export photo…");
+        let at = before.iter().position(|line| line == COPIES);
+        assert_eq!(at, export.map(|at| at + 1), "{before:?}");
+        assert_eq!(w.does(COPIES), Some(TileAction::ShowCopies(5)));
+        w.copies = Some((5, 2));
+        let after = w.lines();
+        assert_eq!(after.len(), before.len(), "{after:?}");
+        assert_eq!(
+            after.iter().position(|line| line == "Show 2 duplicates"),
+            at
+        );
         assert_eq!(w.does("Show 2 duplicates"), Some(TileAction::ShowCopies(5)));
+        // A count of another photo's, or of none, is no number for this one.
+        for other in [(6, 2), (5, 0)] {
+            w.copies = Some(other);
+            assert_eq!(w.lines(), before, "{other:?}");
+        }
         let mut w = World::several(2);
+        w.deciding = Some(copies);
         w.copies = Some((5, 2));
         assert!(!w.lines().iter().any(|line| line.starts_with("Show ")));
     }

@@ -2031,7 +2031,8 @@ impl App {
         self.menu_on_header = false;
         self.menu_view.reset();
         // The one photo's copies are counted for its menu, a round trip that the menu
-        // does not wait for: its item is put in when the answer is in.
+        // does not wait for: its item is there from the first frame (the grid's
+        // `has_copies`), and the count is put in its words when the answer is in.
         self.menu_copies = None;
         if of == MenuOf::Selection
             && self.selection.len() == 1
@@ -3752,8 +3753,10 @@ impl App {
         tile_menu::tile_menu(&tile_menu::Facts {
             count: self.selection.len(),
             deciding: self.deciding().map(|entry| Deciding {
+                id: entry.id,
                 video: entry.kind == MediaKind::Video,
                 starred: entry.starred,
+                copies: entry.has_copies,
             }),
             place: self.nav.settled(),
             albums: &collections.albums,
