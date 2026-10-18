@@ -2800,9 +2800,17 @@ it cannot spell is a key no row lists, and `Key::` is egui's only after no lette
 `GridView::Copies`, a `Step::Copies` on the views' queue, from the info panel's "Show N
 duplicates in the grid" and the tile menu's "Show N duplicates", and landed as the Svelte
 `showCopies` lands it - the view first, then the photo selected in it and brought into
-sight (`App::show_copies`, `Nav::jump`). The menu's item is there once the library has
-counted the one photo's copies (`copy_count`, asked as the menu opens and forgotten at the
-next opening), and not for a photo with none. **The engine's argument is the photo and the
+sight (`App::show_copies`, `Nav::jump`). The menu's item is there from its first frame
+where the grid has the photo among the Duplicates (`Deciding::copies`, the entry's
+`has_copies`), and the library's count (`copy_count`, asked as the menu opens and forgotten at
+the next opening) puts only the number in its words - "Show duplicates" until then, and
+without a number for a count of none. **Nothing comes into an open menu with the count**:
+it came with it at first, and a menu opened low in the window grows upward from the
+pointer (`place_menu`), so the row it gained moved every item up under the pointer, and a
+click on "Unstar photo" a frame after the count landed hid the photo (the macOS flake of
+`the_star_key_takes_several_photos_the_way_of_the_deciding_one`, caught by a trace of every
+star write on a stress loop). A grid whose rebuild changes `has_copies` while a menu is open
+still moves its items, and a menu's test waits for the hash pass first (`over_files`). **The engine's argument is the photo and the
 hash its content had when the view opened** (`CopiesArg`), which no step can name, so where
 the user already is is asked of the photo alone (`nav::copies_of`): asked by the step's
 argument, every link to the copies on screen was a rebuild. The sidebar names the view
