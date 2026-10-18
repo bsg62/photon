@@ -1938,8 +1938,8 @@ mod tests {
     // One field under one name for every photo and every keyword: egui keeps a field's
     // history by that name. Ctrl+Z in the field of another photo brings back the keyword
     // typed for the photo before - which Enter then adds to this one. The sidebar's
-    // field and the picker's each learnt this (CLAUDE.md, "A field opens with a history
-    // of its own"); this third field has no history of its own.
+    // field and the picker's each learnt this (docs/architecture/ui-grid.md, "A field opens
+    // with a history of its own"); this third field has no history of its own.
     #[test]
     fn undo_in_another_photos_field_does_not_bring_back_the_last_photos_keyword() {
         let mut f = Fixture::of(full());

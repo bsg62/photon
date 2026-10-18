@@ -92,7 +92,7 @@ impl ScanReport {
     ///
     /// Here rather than at the caller: which fields mean "rows moved" is the scanner's
     /// knowledge, and spelled out in the app crate it had to be remembered in three places
-    /// (this doc, the caller, and CLAUDE.md). A new mutation counter added to this struct
+    /// (this doc, the caller, and the architecture notes). A new mutation counter added to this struct
     /// and forgotten there compiles, passes every scanner test, and silently stops the grid
     /// from ever rebuilding for it - which is exactly what `restarred` did once.
     ///

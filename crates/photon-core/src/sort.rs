@@ -12,7 +12,7 @@
 //!
 //! The sort runs here, in Rust, over the rows a view's query already returned, rather than
 //! as one more `ORDER BY` per key: the name has to compare case-insensitively, which SQL
-//! cannot do here beyond ASCII (see `CLAUDE.md`), and one sort over rows already in memory
+//! cannot do here beyond ASCII (see `CLAUDE.md` and `docs/architecture/library.md`), and one sort over rows already in memory
 //! is cheaper than teaching every view's query a second shape.
 
 use crate::grid::{GridEntry, GridView, Layout, PeriodUnit};

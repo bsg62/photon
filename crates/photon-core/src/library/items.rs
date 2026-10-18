@@ -1301,7 +1301,7 @@ impl Library {
     /// are each served by a partial index on `(folder_id, taken_at)` holding exactly their
     /// rows (`items_starred`, `items_videos`, schema 22), which the driver and the per-folder
     /// walk both read; All reads `items_folder`, since an index of every visible row would
-    /// tie with those two and take them over (CLAUDE.md, "Schema").
+    /// tie with those two and take them over (docs/architecture/library.md, "Schema").
     ///
     /// `params` bind the filter's `?N` placeholders. The fragment appears twice in the
     /// query (driver and outer filter), which is why placeholders are numbered: the same
@@ -2604,7 +2604,7 @@ mod tests {
     /// the outer per-folder walk. Without them both read `items_folder`, every row of the
     /// library, to return a few percent of it. All is pinned to `items_folder`, so a new
     /// partial index its WHERE implies - one that would tie with the view indexes and take
-    /// them over (CLAUDE.md, "Schema") - fails here rather than slowing Starred silently.
+    /// them over (docs/architecture/library.md, "Schema") - fails here rather than slowing Starred silently.
     #[test]
     fn the_all_starred_and_videos_views_are_served_by_their_indexes() {
         let (_dir, lib) = temp_library();

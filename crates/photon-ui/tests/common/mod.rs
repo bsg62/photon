@@ -5,7 +5,7 @@
 //! whatever runs it of every request through one callback - it is how eframe learns of
 //! them - so the frames drawn here are the ones a window would draw. Stepping the harness
 //! blindly draws a frame at every step, which says nothing about a still window, and hid
-//! three things the gate's first count of idle frames got wrong (CLAUDE.md, "A test that
+//! three things the gate's first count of idle frames got wrong (docs/architecture/ui-testing.md, "A test that
 //! counts frames").
 //!
 //! A clock that jumps leaves the application's other threads behind: a second of it passes

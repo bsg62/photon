@@ -338,7 +338,7 @@ mod tests {
         // test below for a query where a sort is real and worth naming.
     }
 
-    /// The grid query is the one CLAUDE.md actually warns about: driver and outer filter
+    /// The grid query is the one `docs/architecture/grid.md` actually warns about: driver and outer filter
     /// pinned to the same string, so a folder is placed by its oldest *matching* photo. The
     /// `COUNT(*)` query above never runs the driver at all, so it cannot catch a driver that
     /// silently stopped seeing look-alikes.
