@@ -1,6 +1,6 @@
 //! The window as it is drawn, written to PNG without a window: the application itself,
 //! over a library made of the CC0 photos in `crates/xtask/screenshots/photos` (credited in
-//! their `CREDITS.md`), rendered off screen through wgpu. The website's pictures are three
+//! their `CREDITS.md`), rendered off screen through wgpu. The website's pictures are five
 //! of them (`native-site-*`).
 //!
 //! Ignored by default - it needs a GPU adapter, which a CI runner need not have - and run
@@ -57,6 +57,9 @@ const WINDOW: Setup = Setup {
     videos: false,
     copy: false,
 };
+
+/// Where the pictures' library is shown to be: someone's own Pictures folder.
+const SHOWN_PICTURES: &str = "/home/anna/Pictures";
 
 /// The website's pictures (`site/img`), which stand 1280 by 800 in its page: a library
 /// as someone's is, with folders named as people name them - not the other scripts the
@@ -334,10 +337,13 @@ fn shot_of(theme: ThemeChoice, name: &str, setup: Setup, then: impl Fn(&mut Harn
     };
     let db = dirs.db_path.clone();
 
+    // Shown where someone's own photos would be, not in the temporary folder they are in.
+    let real = std::fs::canonicalize(&pictures).unwrap();
     let mut harness = window(Some(harness_theme), setup.size).build_eframe(|cc| {
         let app = App::new(cc, dirs, Some(pictures))
             .unwrap()
-            .without_animations();
+            .without_animations()
+            .showing_paths_as(&real, SHOWN_PICTURES);
         if setup.videos {
             app.with_videos(Films::new())
         } else {
@@ -1850,7 +1856,8 @@ fn native_viewer_video_light() {
 }
 
 // The website's pictures (`site/img`, converted with `magick x.png -quality 85 x.webp`):
-// the main window in both themes and the viewer with its panel, at the page's 1280 by 800.
+// the main window in both themes, the viewer with its panel, and the feature tour's search
+// and compare (below), at the page's 1280 by 800.
 #[test]
 #[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
 fn native_site_main_light() {
@@ -1895,6 +1902,43 @@ fn native_site_viewer_info_light() {
             .unwrap();
             harness.state().engine().refresh_grid().unwrap();
             faces_on(harness, db, false);
+        },
+    );
+}
+
+// The site's feature tour: the search's help over a search typed, and compare.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_site_search_light() {
+    shot_of(
+        ThemeChoice::Light,
+        "native-site-search-light.png",
+        SITE,
+        |harness, _| {
+            lived_in(harness);
+            harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
+            harness.step();
+            harness.event(egui::Event::Text("alps".to_owned()));
+            until(harness, "the search shown", |app| {
+                app.settled().view == GridView::Search
+                    && app.last_frame().is_some_and(|frame| frame.settled)
+            });
+            harness.get_by_label("What you can search for").click();
+            until(harness, "the help open", |app| app.search_help_open());
+        },
+    );
+}
+
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_site_compare_dark() {
+    shot_of(
+        ThemeChoice::Dark,
+        "native-site-compare-dark.png",
+        SITE,
+        |harness, _| {
+            lived_in(harness);
+            comparing(harness);
         },
     );
 }

@@ -234,6 +234,9 @@ pub struct App {
     /// Whether a folder dropped on the window can arrive at all: asked of the window
     /// once (`folder_drop::can_arrive`). Where none can, none is offered.
     drops: bool,
+    /// For a picture of the window (`showing_paths_as`): a folder the library is really
+    /// in, and the path it is shown under. None in every other run.
+    paths_shown_as: Option<(String, String)>,
     /// What is held over the window.
     drop: FolderDrop,
     /// How many paths the system says are held over the window, and those it has
@@ -1421,6 +1424,7 @@ impl App {
             comparing,
             compare_pictures,
             drops,
+            paths_shown_as: None,
             drop: FolderDrop::default(),
             hovered: 0,
             fell: Vec::new(),
@@ -1538,6 +1542,16 @@ impl App {
     /// As in a window that takes no drop: for a test, which has no window to be one.
     pub fn without_drops(mut self) -> Self {
         self.drops = false;
+        self
+    }
+
+    /// Shows the paths under `real` as under `shown`, where the window prints a path: a
+    /// folder's header and the viewer's facts. For the pictures of the window, whose library
+    /// is in a temporary folder - the website showed `/tmp/.tmpKfsTOG/Pictures` over its
+    /// photos. Only what is shown is rewritten: the window's copy of the folder list and of
+    /// the photo's facts; the engine, and every path asked of it, keep the real one.
+    pub fn showing_paths_as(mut self, real: &std::path::Path, shown: &str) -> Self {
+        self.paths_shown_as = Some((real.to_string_lossy().into_owned(), shown.to_owned()));
         self
     }
 
@@ -2563,6 +2577,16 @@ impl App {
             answered = true;
             // (Of the photo the viewer is on: `Latest` hands out the answer to the
             // last question only, and each step asks.)
+            let answer = answer.map(|(id, item)| {
+                let item = item.map(|mut item| {
+                    shown_path(&self.paths_shown_as, &mut item.path);
+                    for copy in &mut item.copies {
+                        shown_path(&self.paths_shown_as, &mut copy.path);
+                    }
+                    item
+                });
+                (id, item)
+            });
             if let (Ok((id, item)), Some(open)) = (answer, &mut self.viewer) {
                 // What the library says has been read again: a picture that waited
                 // for that may be asked for (`Made::Stale`).
@@ -4266,8 +4290,11 @@ impl App {
         let mut answered = self.settings_answers(now_ms);
         if let Some(read) = self.folder_list.answer() {
             answered = true;
-            if let Ok(Some(list)) = read {
+            if let Ok(Some(mut list)) = read {
                 self.watched = list.watched;
+                for folder in &mut list.folders {
+                    shown_path(&self.paths_shown_as, &mut folder.path);
+                }
                 self.held.set_folders(list.folders);
                 // A removal answered before this list was asked for is in it: its row
                 // has gone, and its number is free to be another folder's.
@@ -5519,6 +5546,15 @@ fn cannot_show(viewer: &Viewer) -> bool {
 }
 
 /// What of `item` decides the picture on screen (`viewer::picture_changed`).
+/// `path` as `App::showing_paths_as` says to show it.
+fn shown_path(shown_as: &Option<(String, String)>, path: &mut String) {
+    if let Some((real, shown)) = shown_as
+        && let Some(rest) = path.strip_prefix(real.as_str())
+    {
+        *path = format!("{shown}{rest}");
+    }
+}
+
 fn shown_of(item: &ViewerItem) -> Shown {
     Shown {
         // The key is written in hex for the web view's URLs; one that does not read is
