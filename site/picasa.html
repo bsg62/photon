@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coming from Picasa — photon</title>
+<meta name="description" content="Moving from Picasa to photon: what carries over from Picasa's .picasa.ini files, what does not, and how to keep using both.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="preload" href="fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+  /* The app's own tokens (crates/photon-ui/src/theme/tokens.rs), value for value; that
+     file's tests fail when one differs. */
+  :root {
+    color-scheme: light dark;
+    --surface: #ffffff;
+    --field: #0000000d;
+    --line: #00000018;
+    --text: #1f1f23;
+    --text-dim: #5f5f67;
+    --accent: #1f6fd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1b1b1e;
+      --field: #ffffff12;
+      --line: #ffffff14;
+      --text: #ededf0;
+      --text-dim: #a6a6af;
+      --accent: #62a0ea;
+    }
+  }
+  /* Served from here, as on the front page: SIL OFL 1.1, fonts/*-OFL.txt. */
+  @font-face { font-family: Geist; src: url(fonts/geist.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "Geist Mono"; src: url(fonts/geist-mono.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface); color: var(--text); font: 16px/1.6 Geist, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .wrap { max-width: 72rem; margin: 0 auto; padding-left: 1.5rem; padding-right: 1.5rem; }
+
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem 1.5rem; padding-top: .875rem; padding-bottom: .875rem; }
+  .brand { display: flex; align-items: center; gap: .625rem; color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.125rem; letter-spacing: -.01em; }
+  .brand img { width: 28px; height: 28px; }
+  .links { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1.375rem; font-size: .9375rem; }
+  .links a { color: var(--text-dim); text-decoration: none; }
+  .links a:hover, .links a[aria-current] { color: var(--text); }
+
+  /* Prose at a readable measure; the tables use the same width. */
+  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem 5rem; }
+  h1 { margin: 0; font-size: clamp(2.25rem, 5vw, 3rem); line-height: 1.1; font-weight: 700; letter-spacing: -.03em; }
+  .lede { margin: 1rem 0 0; font-size: 1.125rem; color: var(--text-dim); }
+  h2 { margin: 3rem 0 .5rem; font-size: 1.25rem; line-height: 1.3; font-weight: 600; letter-spacing: -.01em; scroll-margin-top: 1.5rem; }
+  p { margin: .5rem 0; }
+  ul { padding-left: 1.25rem; }
+  li { margin: .375rem 0; }
+  li::marker { color: var(--text-dim); }
+  code { font: .875em "Geist Mono", ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace; background: var(--field); padding: .1em .35em; border-radius: 4px; }
+  /* A key, in the colours and shape the app's shortcut sheet gives one; unwrapped, so the
+     line can break on either side of it. */
+  kbd { padding: .1em .45em; border-radius: 6px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: .8125em; white-space: nowrap; }
+  .table-wrap { overflow-x: auto; margin: .75rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .9375rem; }
+  th, td { text-align: left; padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .75rem; font-weight: 600; color: var(--text-dim); }
+
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem 1.5rem; padding-top: 2rem; padding-bottom: 3rem; border-top: 1px solid var(--line); color: var(--text-dim); font-size: .875rem; }
+  footer a { color: var(--text-dim); }
+  footer nav { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; }
+</style>
+</head>
+<body>
+<header class="top">
+  <nav class="wrap" aria-label="Site">
+    <a class="brand" href="./"><img src="img/icon.svg" alt="">photon</a>
+    <div class="links">
+      <a href="./#features">Features</a>
+      <a href="picasa.html" aria-current="page">Coming from Picasa</a>
+      <a href="faq.html">FAQ</a>
+      <a href="https://github.com/bsg62/photon">GitHub</a>
+      <a href="./#download">Download</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <h1>Coming from Picasa</h1>
+  <p class="lede">photon picks up the library Picasa built, with nothing to export or import.</p>
+
+  <h2 id="start">Getting started</h2>
+  <p>
+    Install photon and add the folders Picasa watched: in Settings, or by dropping a folder onto
+    photon's window. On its first launch photon watches your Pictures folder by itself. It reads
+    what Picasa kept beside your photos, in each folder's <code>.picasa.ini</code>, and in the
+    photos themselves.
+  </p>
+
+  <h2 id="carried">What carries over</h2>
+  <ul>
+    <li><strong>Stars</strong>, both ways: a star set in photon is written back into that file,
+      touching only its <code>star=</code> line, so Picasa sees it too.</li>
+    <li><strong>People</strong> you named, outlined on the photo in the viewer. Give a group of
+      faces photon found a name Picasa uses, and the two are one person.</li>
+    <li><strong>Albums</strong>, kept up to date as you change them in Picasa.</li>
+    <li><strong>Hidden photos</strong> stay hidden.</li>
+    <li><strong>Captions and tags</strong>, which Picasa saved into the photos themselves.</li>
+  </ul>
+
+  <h2 id="not">What doesn't</h2>
+  <ul>
+    <li>Picasa's own edits (crops, filters, retouching) are not applied.</li>
+    <li>An album Picasa kept only in its database, never in a folder's <code>.picasa.ini</code>,
+      does not appear.</li>
+  </ul>
+
+  <h2 id="both">Using both</h2>
+  <p>
+    You can keep Picasa. Both read and write the same <code>.picasa.ini</code>, and photon picks
+    up a change Picasa makes within a few seconds of it saving the file. If Picasa has the file
+    open at the moment you set a star in photon, photon says so and changes nothing; try again a
+    moment later.
+  </p>
+
+  <h2 id="renaming">Renaming and moving</h2>
+  <p>
+    A star lives in the folder's <code>.picasa.ini</code> under the file's name, so it follows a
+    renamed or moved folder, which takes the file with it, but not a single photo renamed or moved
+    on its own. What photon keeps itself - albums, keywords, rotations and crops, names on faces -
+    follows both. <a href="faq.html#moving">More on renaming and moving</a>.
+  </p>
+
+  <h2 id="files">Your files</h2>
+  <p>
+    photon never moves, renames or changes a photo. The one file it writes in your folders is
+    Picasa's <code>.picasa.ini</code>, and in it only the <code>star=</code> line of the photo you
+    starred; every other byte is kept.
+  </p>
+</main>
+
+<footer class="wrap">
+  <span>photon · MIT licensed</span>
+  <nav aria-label="Project">
+    <a href="https://github.com/bsg62/photon">GitHub</a>
+    <a href="https://github.com/bsg62/photon/releases">Releases</a>
+    <a href="https://github.com/bsg62/photon/issues">Issues</a>
+    <span>Font: <a href="fonts/geist-OFL.txt">Geist</a></span>
+  </nav>
+</footer>
+</body>
+</html>

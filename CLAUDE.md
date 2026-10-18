@@ -44,10 +44,13 @@ cargo nextest run -p photon-ui --test all dialogs::   # one file of the whole-ap
   (`--tag vX.Y.Z` to match a tag), `cargo run -p xtask -- metadata`.
 - **Seeing the window:** `cargo run -p xtask -- native-shot` draws it off screen into
   `target/screenshots/native-*.png` (needs a GPU adapter, no display; not in CI). The
-  website (`site/`, photon.webcodr.io) uses `native-site-main-light`, `-main-dark` and
-  `-viewer-info-light` as `site/img/*.webp` (`magick x.png -quality 85 x.webp`), the first
-  also as `site/img/og.jpg` at quality 88. **Never run `cargo run -p photon-ui` to verify
-  a change.**
+  website (`site/`, photon.webcodr.io: `index.html`, `faq.html`, `picasa.html`, `404.html`,
+  hand-written, no build step) uses the five `native-site-*` pictures as `site/img/*.webp`
+  (`magick x.png -quality 85 x.webp`), `-main-light` also as `site/img/og.jpg` at quality
+  88. Every page's colours are held to the app's tokens by `tokens.rs`'s tests (a new page
+  goes into its `PAGES`), the front page's icons to `icons.rs`'s; its font, Geist, is served
+  from `site/fonts/`, so the site requests nothing from anywhere else. **Never run
+  `cargo run -p photon-ui` to verify a change.**
 - **Two checkouts never share a `CARGO_TARGET_DIR`**: cargo will silently run the other
   checkout's binary.
 

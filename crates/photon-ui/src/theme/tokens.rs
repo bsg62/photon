@@ -232,8 +232,10 @@ mod tests {
     /// The website's pages (`site/`), hand-written with no build step: their stylesheets
     /// say their palette is the app's, and this is what holds them to it. It had drifted
     /// before - two tokens were approximations nobody had compared.
-    const PAGES: [(&str, &str); 2] = [
+    const PAGES: [(&str, &str); 4] = [
         ("index.html", include_str!("../../../../site/index.html")),
+        ("faq.html", include_str!("../../../../site/faq.html")),
+        ("picasa.html", include_str!("../../../../site/picasa.html")),
         ("404.html", include_str!("../../../../site/404.html")),
     ];
 

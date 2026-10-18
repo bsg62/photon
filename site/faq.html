@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questions — photon</title>
+<meta name="description" content="Where photon keeps its library, what to back up, what happens when photos are renamed or moved, what it does not do, and how to install and uninstall it.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="preload" href="fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+  /* The app's own tokens (crates/photon-ui/src/theme/tokens.rs), value for value; that
+     file's tests fail when one differs. */
+  :root {
+    color-scheme: light dark;
+    --surface: #ffffff;
+    --field: #0000000d;
+    --line: #00000018;
+    --text: #1f1f23;
+    --text-dim: #5f5f67;
+    --accent: #1f6fd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1b1b1e;
+      --field: #ffffff12;
+      --line: #ffffff14;
+      --text: #ededf0;
+      --text-dim: #a6a6af;
+      --accent: #62a0ea;
+    }
+  }
+  /* Served from here, as on the front page: SIL OFL 1.1, fonts/*-OFL.txt. */
+  @font-face { font-family: Geist; src: url(fonts/geist.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "Geist Mono"; src: url(fonts/geist-mono.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface); color: var(--text); font: 16px/1.6 Geist, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .wrap { max-width: 72rem; margin: 0 auto; padding-left: 1.5rem; padding-right: 1.5rem; }
+
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem 1.5rem; padding-top: .875rem; padding-bottom: .875rem; }
+  .brand { display: flex; align-items: center; gap: .625rem; color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.125rem; letter-spacing: -.01em; }
+  .brand img { width: 28px; height: 28px; }
+  .links { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1.375rem; font-size: .9375rem; }
+  .links a { color: var(--text-dim); text-decoration: none; }
+  .links a:hover, .links a[aria-current] { color: var(--text); }
+
+  /* Prose at a readable measure; the tables use the same width. */
+  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem 5rem; }
+  h1 { margin: 0; font-size: clamp(2.25rem, 5vw, 3rem); line-height: 1.1; font-weight: 700; letter-spacing: -.03em; }
+  .lede { margin: 1rem 0 0; font-size: 1.125rem; color: var(--text-dim); }
+  h2 { margin: 3rem 0 .5rem; font-size: 1.25rem; line-height: 1.3; font-weight: 600; letter-spacing: -.01em; scroll-margin-top: 1.5rem; }
+  p { margin: .5rem 0; }
+  ul { padding-left: 1.25rem; }
+  li { margin: .375rem 0; }
+  li::marker { color: var(--text-dim); }
+  code { font: .875em "Geist Mono", ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace; background: var(--field); padding: .1em .35em; border-radius: 4px; }
+  /* A key, in the colours and shape the app's shortcut sheet gives one; unwrapped, so the
+     line can break on either side of it. */
+  kbd { padding: .1em .45em; border-radius: 6px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: .8125em; white-space: nowrap; }
+  .table-wrap { overflow-x: auto; margin: .75rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .9375rem; }
+  th, td { text-align: left; padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .75rem; font-weight: 600; color: var(--text-dim); }
+
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem 1.5rem; padding-top: 2rem; padding-bottom: 3rem; border-top: 1px solid var(--line); color: var(--text-dim); font-size: .875rem; }
+  footer a { color: var(--text-dim); }
+  footer nav { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; }
+</style>
+</head>
+<body>
+<header class="top">
+  <nav class="wrap" aria-label="Site">
+    <a class="brand" href="./"><img src="img/icon.svg" alt="">photon</a>
+    <div class="links">
+      <a href="./#features">Features</a>
+      <a href="picasa.html">Coming from Picasa</a>
+      <a href="faq.html" aria-current="page">FAQ</a>
+      <a href="https://github.com/bsg62/photon">GitHub</a>
+      <a href="./#download">Download</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <h1>Questions</h1>
+  <p class="lede">About photon's library, your files, and what it does and doesn't do.</p>
+
+  <h2 id="library">Where does photon keep its library?</h2>
+  <p>
+    In a folder called <code>io.github.bsg62.photon</code>: the library (<code>library.db</code>)
+    under your user data directory, the thumbnails under your cache directory.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>System</th><th>Library</th><th>Thumbnails</th></tr>
+      <tr><td>Linux</td><td><code>~/.local/share/</code></td><td><code>~/.cache/</code></td></tr>
+      <tr><td>macOS</td><td><code>~/Library/Application Support/</code></td><td><code>~/Library/Caches/</code></td></tr>
+      <tr><td>Windows</td><td><code>%APPDATA%\</code></td><td><code>%LOCALAPPDATA%\</code></td></tr>
+    </table>
+  </div>
+
+  <h2 id="backup">What should I back up?</h2>
+  <p>
+    Your photos, as always. Beyond them, the library folder holds what exists only in photon:
+    its own albums, keywords you added, rotations and crops, photos and folders you hid, the
+    names you gave to faces and to folders, saved searches, tag renames and settings. Copy it
+    while photon is closed. The thumbnails are rebuilt on their own if lost. Stars, and
+    everything else photon reads from Picasa's files or from the photos, live with the photos
+    already.
+  </p>
+
+  <h2 id="another-computer">Can I move my library to another computer?</h2>
+  <p>
+    Yes, if the photos are at the same paths there: the library remembers each photo by its full
+    path. Otherwise, let the new computer build its own library. Stars and Picasa's people and
+    albums come back by themselves; what exists only in photon, above, does not.
+  </p>
+
+  <h2 id="moving">What happens when I rename or move photos?</h2>
+  <p>
+    Inside the folders photon watches, a renamed or moved photo or folder keeps what photon
+    knows about it: albums, keywords, turns and crops, its hidden flag and the names on its
+    faces. photon recognises the file by its size, dates and dimensions, and where two photos
+    fit equally well it does not guess. A photo moved out of the watched folders and brought
+    back later is a new photo. A star lives in the folder's <code>.picasa.ini</code> under the
+    file's name, so it follows a renamed or moved folder but not a single photo renamed or
+    moved on its own. The
+    <a href="https://github.com/bsg62/photon#renaming-and-moving-photos">README</a> lists
+    what is followed and what is not.
+  </p>
+
+  <h2 id="network">Does it work with a NAS or a network share?</h2>
+  <p>
+    Yes. Thumbnails are cached on your own computer, so browsing does not wait on the network,
+    and a rescan reads only the files whose size or date changed. When the share is offline,
+    photon leaves the library as it is, checks every 30 seconds, and picks up when it is back.
+    It does not look inside a drive's or a share's recycle bin (<code>$RECYCLE.BIN</code>,
+    <code>#recycle</code>, <code>@Recycle</code>), so a photo you delete leaves the library.
+  </p>
+
+  <h2 id="internet">Does photon connect to the internet?</h2>
+  <p>
+    No. There is no account, no cloud, no telemetry and no update check. The only time it opens
+    anything online is when you click "Open in OpenStreetMap" in the info panel, which opens the
+    spot in your browser.
+  </p>
+
+  <h2 id="picasa">Can I keep using Picasa alongside it?</h2>
+  <p>
+    Yes. Both read and write the same <code>.picasa.ini</code>, and photon picks up a change
+    Picasa makes within a few seconds of it saving the file. If Picasa has the file open at the
+    moment you set a star in photon, photon says so and changes nothing; try again a moment
+    later. <a href="picasa.html">More on moving from Picasa</a>.
+  </p>
+
+  <h2 id="more">What else can it do?</h2>
+  <ul>
+    <li><strong>Where a photo was taken</strong>: the info panel finds the photos taken nearby,
+      and opens the spot on OpenStreetMap in your browser, only when you click it.</li>
+    <li><strong>On this day</strong>, <strong>Starred</strong>, <strong>Recent</strong> and
+      <strong>Videos</strong> are one click away in the sidebar.</li>
+    <li><strong>Zoom</strong> to the photo's own pixels with a double-click, <kbd>+</kbd> and
+      <kbd>-</kbd>, or <kbd>Ctrl</kbd> and the wheel.</li>
+    <li><strong>Copy a photo</strong> to the clipboard with <kbd>Ctrl</kbd>+<kbd>C</kbd>
+      (<kbd>⌘</kbd><kbd>C</kbd> on a Mac), as photon shows it, open it in your default app, or
+      reveal it in the file manager.</li>
+    <li><strong>Keys for most things</strong>: <kbd>?</kbd> lists them all, <kbd>.</kbd>
+      stars, <kbd>H</kbd> hides, and <kbd>Shift</kbd> with the arrows selects, as dragging a
+      rectangle over the photos does.</li>
+    <li><strong>Light and dark</strong>, following your desktop or pinned; three photo sizes;
+      a sidebar that gets out of the way with <kbd>Ctrl</kbd>+<kbd>B</kbd>.</li>
+    <li><strong>Rename a folder in photon</strong> without renaming the directory on disk.</li>
+    <li><strong>Statistics</strong>: photos by year, your most used cameras and lenses, each a
+      link to its photos.</li>
+    <li><strong>Getting started</strong>: photon watches your Pictures folder on its first
+      launch, and a folder dropped onto its window is added.</li>
+  </ul>
+
+  <h2 id="not">What doesn't it do?</h2>
+  <ul>
+    <li>No camera RAW or HEIC. Reading them means shipping a large C library, and photon keeps
+      its C to a few small ones compiled into it, so it needs no system libraries beyond what
+      every desktop has.</li>
+    <li>No editing beyond rotating and cropping.</li>
+    <li>No cloud, sync or sharing. Your library stays on your computer.</li>
+    <li>No phone app.</li>
+  </ul>
+
+  <h2 id="install">Which file do I download?</h2>
+  <p>Get the installer for your system from the <a href="https://github.com/bsg62/photon/releases/latest">latest release</a>.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>System</th><th>File</th></tr>
+      <tr><td>Linux</td><td><code>.AppImage</code>, or <code>.deb</code> for Debian and Ubuntu</td></tr>
+      <tr><td>macOS</td><td><code>.dmg</code> — <code>aarch64</code> for Apple Silicon, <code>x64</code> for Intel</td></tr>
+      <tr><td>Windows</td><td><code>.msi</code></td></tr>
+    </table>
+  </div>
+  <p>
+    photon reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF, and plays MP4, M4V, MOV and (but on a
+    Mac) WebM video through the system's own support.
+  </p>
+
+  <h2 id="unsigned">Why does my system warn about the installer?</h2>
+  <p>
+    The installers are not code-signed, so macOS and Windows will warn the first time you open
+    photon. The <a href="https://github.com/bsg62/photon#photon-is-not-code-signed">README</a>
+    explains how to get past that on each system, and how to check a download against its
+    <code>SHA256SUMS</code>.
+  </p>
+
+  <h2 id="uninstall">How do I uninstall it?</h2>
+  <p>
+    Remove the app the usual way for your system, then delete the two
+    <code>io.github.bsg62.photon</code> folders above. Your photos are not affected either way.
+  </p>
+</main>
+
+<footer class="wrap">
+  <span>photon · MIT licensed</span>
+  <nav aria-label="Project">
+    <a href="https://github.com/bsg62/photon">GitHub</a>
+    <a href="https://github.com/bsg62/photon/releases">Releases</a>
+    <a href="https://github.com/bsg62/photon/issues">Issues</a>
+    <span>Font: <a href="fonts/geist-OFL.txt">Geist</a></span>
+  </nav>
+</footer>
+</body>
+</html>

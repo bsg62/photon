@@ -283,7 +283,10 @@ mod tests {
             })
             .collect();
         let mut held: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
+        // An icon can be used more than once (the checks of a list); what is compared is the
+        // set of names.
         used.sort_unstable();
+        used.dedup();
         held.sort_unstable();
         assert_eq!(used, held);
     }
