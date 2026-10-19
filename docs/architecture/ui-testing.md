@@ -47,15 +47,18 @@ press gave it (`Shell::pointer_focus`): egui has no `:focus-visible` of its own.
 **The installers are built by `xtask package`, in `release.yml`** (spec `2026-10-16-photon-native-platform-design.md`,
 decision 8): a `.deb` (`dpkg-deb`, its `Depends` read off the binary by `dpkg-shlibdeps`),
 an AppImage (`linuxdeploy`, which carries the libraries the binary links - GStreamer's
-among them, never its plugins; `AppRun` points GStreamer at the host's), a `.dmg` for each
+among them, never its plugins - moved off the runpath to `usr/fallback`: `AppRun` uses the
+host's GStreamer wherever the host has one, and the carried one, pointed at the host's
+plugins, only where it has none - the carried 1.20 refused Arch's 1.28 plugins and every
+video said GStreamer was missing), a `.dmg` for each
 Mac (an ad hoc signed `photon.app`, `hdiutil`), and an MSI (WiX 3 over
 `crates/photon-ui/packaging/windows/`, photon's own `main.wxs`: Tauri's template with its
 placeholders out, the Tauri MSI's upgrade code as a literal so that the native one replaces
 it, the opt-in desktop shortcut kept). The program is installed as `photon` under the
 Tauri photon's identifier. The text of every file an installer carries is a pure function
 of `package.rs` and tested as text; the tools run in the workflow alone, which reads what
-they made: the `.deb`'s links (no GTK, nothing unresolved), the AppImage's desktop entry
-and no plugins in it, the app's signature, the MSI's tables.
+they made: the `.deb`'s links (no GTK, nothing unresolved), the AppImage's desktop entry,
+no plugins in it and no GStreamer on its runpath, the app's signature, the MSI's tables.
 **Media Foundation is delay-loaded** (`build.rs`, `/DELAYLOAD` for `mfplat.dll` and
 `mfreadwrite.dll`, held by the workflow's `dumpbin /imports`) and loaded by `video::mf`
 before any call into it (`installed`), so a Windows "N" edition without the Media Feature

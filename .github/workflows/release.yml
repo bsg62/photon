@@ -89,16 +89,23 @@ jobs:
           # No FUSE on the runner.
           echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
       - run: cargo run -p xtask -- package appimage --binary target/release/photon --out dist
-      - name: The AppImage names photon and carries no GStreamer plugin
+      - name: The AppImage names photon, carries no GStreamer plugin, and its GStreamer off the runpath
         run: |
           set -euo pipefail
           app=$(ls dist/*.AppImage)
           test -x "$app"
           ( cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract >/dev/null )
-          grep -qx 'Name=photon' "$RUNNER_TEMP"/squashfs-root/*.desktop
-          if find "$RUNNER_TEMP/squashfs-root" -path '*gstreamer-1.0/*' | grep -q .; then
+          root="$RUNNER_TEMP/squashfs-root"
+          grep -qx 'Name=photon' "$root"/*.desktop
+          if find "$root" -path '*gstreamer-1.0/*' | grep -q .; then
             echo "::error::the AppImage carries GStreamer plugins"; exit 1
           fi
+          # The host's GStreamer is used where it has one: a carried copy on the runpath
+          # would win over it and refuse the host's newer plugins.
+          if find "$root/usr/lib" -name 'libgst*' 2>/dev/null | grep -q .; then
+            echo "::error::the AppImage carries GStreamer on the binary's runpath"; exit 1
+          fi
+          test -e "$root/usr/fallback/libgstreamer-1.0.so.0"
       - uses: actions/upload-artifact@v5
         with:
           name: photon-linux

@@ -163,11 +163,13 @@ panel, drawn as dim words. Each of them starts to work in its place, and nothing
      libraries the binary links and never GStreamer's plugins: video in the AppImage uses
      the host's (`AppRun` points GStreamer's plugin path at the usual places distributions
      put them), and where it finds none the viewer says what is missing, as it does on a
-     Linux without the plugins. Built on the oldest Ubuntu the runners have, for glibc -
-     which is also the limit: GStreamer's libraries are that Ubuntu's, and a host's plugin
-     built for a newer GStreamer can refuse to load into them; the viewer then says the
-     plugins are missing. Bundled anyway: without them the AppImage would not start on a
-     system with no GStreamer at all.
+     Linux without the plugins. Built on the oldest Ubuntu the runners have, for glibc.
+     GStreamer's carried libraries are that Ubuntu's, and a host's plugin built for a newer
+     GStreamer refuses to load into them (Arch's 1.28 into 1.20: every video said the
+     plugins were missing), so they are kept off the runpath, in `usr/fallback`, and
+     `AppRun` uses the host's GStreamer wherever the host has one - its ABI holds within
+     1.x - and the carried one only where it has none: without them the AppImage would not
+     start on a system with no GStreamer at all.
    - **Windows**: the `.msi` by WiX 3 (as the Tauri bundler uses), from photon's own
      `main.wxs` - rebuilt from the copied template, which names Tauri's variables
      throughout - keeping what the copied one does: the opt-in desktop shortcut

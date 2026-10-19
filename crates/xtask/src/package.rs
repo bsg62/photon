@@ -2,9 +2,9 @@
 //! (spec `2026-10-16-photon-native-platform-design.md`, decision 8). The files an installer
 //! carries - the desktop entry, the Debian control file, `Info.plist`, the licence as RTF,
 //! the AppImage's `AppRun` - are written by pure functions, tested here as text; the tools
-//! that make the packages of them (`dpkg-deb`, `linuxdeploy`, `codesign` and `hdiutil`, WiX's
-//! `candle` and `light`) are run by the workflow that calls this, `release.yml`, and
-//! by nothing in the gate.
+//! that make the packages of them (`dpkg-deb`, `linuxdeploy` and `readelf`, `codesign` and
+//! `hdiutil`, WiX's `candle` and `light`) are run by the workflow that calls this,
+//! `release.yml`, and by nothing in the gate.
 //!
 //!   cargo run -p xtask -- package deb      --binary <photon> --out <dir>
 //!   cargo run -p xtask -- package appimage --binary <photon> --out <dir>
@@ -122,16 +122,58 @@ pub fn license_rtf(text: &str) -> String {
     rtf
 }
 
-/// The AppImage's `AppRun`: GStreamer's plugin path pointed at where distributions put
-/// their plugins, since the GStreamer libraries the AppImage carries look where the Ubuntu
-/// they were built on keeps them. A host's plugin built for a newer GStreamer than the one
-/// carried can refuse to load, and the viewer then says the plugins are missing.
+/// Where the AppImage keeps the libraries linuxdeploy carried - GStreamer's and the GLib
+/// under them - off the binary's runpath (`$ORIGIN/../lib`), so they are found only when
+/// `AppRun` names them.
+pub const FALLBACK: &str = "usr/fallback";
+
+/// The GStreamer libraries the binary links, which `AppRun` looks for on the host. Every
+/// GStreamer library the binary names must be one of them (`appimage` refuses otherwise):
+/// the carried copies are off the runpath, so one it comes to link that is not asked after
+/// would, on a host without it, leave photon unable to start. What they link in turn
+/// (`libgstallocators` under a newer `libgstvideo`) comes with the host's own.
+pub const HOST_GSTREAMER: [&str; 4] = [
+    "libgstreamer-1.0.so.0",
+    "libgstbase-1.0.so.0",
+    "libgstvideo-1.0.so.0",
+    "libgstapp-1.0.so.0",
+];
+
+/// The AppImage's `AppRun`: **the host's GStreamer wherever the host has one**, the carried
+/// one only where it has none. The carried libraries are the Ubuntu's the AppImage is built
+/// on, and a host's plugins built for a newer GStreamer do not load into them (a symbol of
+/// the newer core missing): on Arch's 1.28 every video said GStreamer was not installed.
+/// GStreamer keeps its ABI within 1.x, so the binary built against the old one runs on the
+/// host's. The host is asked through the loader's cache, and through the usual folders
+/// only where there is no cache to ask - a 32-bit library in `/usr/lib` is not the host's
+/// 64-bit one. Carried, the libraries look for plugins where the Ubuntu keeps them, so the
+/// plugin path is pointed at where distributions put theirs.
 pub fn app_run() -> String {
-    "#!/bin/sh\n\
-     HERE=\"$(dirname \"$(readlink -f \"$0\")\")\"\n\
-     export GST_PLUGIN_SYSTEM_PATH=\"${GST_PLUGIN_SYSTEM_PATH:-/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0}\"\n\
-     exec \"$HERE/usr/bin/photon\" \"$@\"\n"
-        .to_owned()
+    format!(
+        r#"#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+cache="$( (ldconfig -p || /sbin/ldconfig -p) 2>/dev/null)"
+on_host() {{
+    if [ -n "$cache" ]; then
+        case "$cache" in *"$1 (libc6,x86-64)"*) return 0 ;; esac
+        return 1
+    fi
+    for dir in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
+        [ -e "$dir/$1" ] && return 0
+    done
+    return 1
+}}
+for lib in {libs}; do
+    if ! on_host "$lib"; then
+        export LD_LIBRARY_PATH="$HERE/{FALLBACK}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+        export GST_PLUGIN_SYSTEM_PATH="${{GST_PLUGIN_SYSTEM_PATH:-/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0}}"
+        break
+    fi
+done
+exec "$HERE/usr/bin/photon" "$@"
+"#,
+        libs = HOST_GSTREAMER.join(" ")
+    )
 }
 
 /// The workspace's version and description, from `Cargo.toml`.
@@ -328,10 +370,9 @@ fn appimage(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<Path
     let icon = out.join(format!("{IDENTIFIER}.png"));
     copy(&icons.join("photon-256.png"), &icon)?;
     let linuxdeploy = std::env::var_os("LINUXDEPLOY").unwrap_or_else(|| "linuxdeploy".into());
-    // linuxdeploy carries the libraries the binary links - GStreamer's among them, never
-    // its plugins - and names the AppImage from these.
-    run_tool(
-        Command::new(linuxdeploy)
+    let deploy = |excluded: &[String], output: bool| {
+        let mut command = Command::new(&linuxdeploy);
+        command
             .arg("--appdir")
             .arg(&app_dir)
             .arg("--executable")
@@ -342,16 +383,66 @@ fn appimage(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<Path
             .arg(&icon)
             .arg("--custom-apprun")
             .arg(&runner)
-            .arg("--output")
-            .arg("appimage")
             .env("LINUXDEPLOY_OUTPUT_VERSION", &meta.version)
             .env("ARCH", "x86_64")
-            .current_dir(out),
-    )?;
+            .current_dir(out);
+        for name in excluded {
+            command.arg("--exclude-library").arg(name);
+        }
+        if output {
+            command.arg("--output").arg("appimage");
+        }
+        run_tool(&mut command)
+    };
+    // linuxdeploy carries the libraries the binary links - GStreamer's among them, never
+    // its plugins. They are moved off the runpath for `AppRun` to name only where the host
+    // has no GStreamer, and the second pass, which makes the AppImage (and names it from
+    // these), is told not to carry them again.
+    for name in linked(binary)? {
+        if name.starts_with("libgst") && !HOST_GSTREAMER.contains(&name.as_str()) {
+            return Err(format!(
+                "photon links {name}, which AppRun does not look for on the host"
+            ));
+        }
+    }
+    deploy(&[], false)?;
+    let lib = app_dir.join("usr/lib");
+    let fallback = app_dir.join(FALLBACK);
+    std::fs::create_dir_all(&fallback).map_err(|err| format!("{}: {err}", fallback.display()))?;
+    let mut carried = Vec::new();
+    for entry in std::fs::read_dir(&lib).map_err(|err| format!("{}: {err}", lib.display()))? {
+        let path = entry.map_err(|err| err.to_string())?.path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        std::fs::rename(&path, fallback.join(&name))
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        carried.push(name);
+    }
+    deploy(&carried, true)?;
     let made = out.join(format!("photon-{}-x86_64.AppImage", meta.version));
     let named = out.join(format!("photon_{}_amd64.AppImage", meta.version));
     std::fs::rename(&made, &named).map_err(|err| format!("{}: {err}", made.display()))?;
     Ok(named)
+}
+
+/// The libraries an ELF file names (`DT_NEEDED`), as `readelf -d` lists them.
+fn linked(binary: &Path) -> Result<Vec<String>, String> {
+    let said = Command::new("readelf")
+        .arg("-d")
+        .arg(binary)
+        .output()
+        .map_err(|err| format!("readelf could not start: {err}"))?;
+    if !said.status.success() {
+        return Err(format!("readelf failed: {}", said.status));
+    }
+    Ok(needed(&String::from_utf8_lossy(&said.stdout)))
+}
+
+fn needed(dynamic: &str) -> Vec<String> {
+    dynamic
+        .lines()
+        .filter(|line| line.contains("(NEEDED)"))
+        .filter_map(|line| Some(line.split_once('[')?.1.split_once(']')?.0.to_owned()))
+        .collect()
 }
 
 /// The size of a `.dmg`'s volume for `bytes` of files, in megabytes: a quarter more, and
@@ -614,11 +705,89 @@ mod tests {
     }
 
     #[test]
-    fn the_appimage_runs_photon_with_the_hosts_gstreamer_plugins() {
-        let run = app_run();
-        assert!(run.starts_with("#!/bin/sh\n"));
-        assert!(run.contains("GST_PLUGIN_SYSTEM_PATH"));
-        assert!(run.contains("exec \"$HERE/usr/bin/photon\" \"$@\""));
+    fn the_libraries_a_binary_names_are_read_off_readelf() {
+        let dynamic = " 0x0000000000000001 (NEEDED)             Shared library: [libgstvideo-1.0.so.0]\n \
+                       0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib]\n \
+                       0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n";
+        assert_eq!(needed(dynamic), ["libgstvideo-1.0.so.0", "libc.so.6"]);
+    }
+
+    /// `AppRun` in an AppDir of its own over a `photon` that says what it was given, on a
+    /// host whose loader's cache is `cache`, run with `LD_LIBRARY_PATH` set to `ld_path`.
+    #[cfg(target_os = "linux")]
+    fn app_run_on(test: &str, cache: &str, ld_path: Option<&str>) -> (PathBuf, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("photon-apprun-{}-{test}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let script = |path: PathBuf, text: &str| {
+            write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        script(dir.join("AppDir/AppRun"), &app_run());
+        script(
+            dir.join("AppDir/usr/bin/photon"),
+            "#!/bin/sh\necho \"lib=${LD_LIBRARY_PATH-unset}\"\n\
+             echo \"gst=${GST_PLUGIN_SYSTEM_PATH-unset}\"\necho \"args=$*\"\n",
+        );
+        script(
+            dir.join("bin/ldconfig"),
+            &format!("#!/bin/sh\ncat <<'END'\n{cache}END\n"),
+        );
+        let mut command = Command::new(dir.join("AppDir/AppRun"));
+        command.args(["a b", "c"]).env_clear().env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", dir.join("bin").display()),
+        );
+        if let Some(ld_path) = ld_path {
+            command.env("LD_LIBRARY_PATH", ld_path);
+        }
+        let said = command.output().unwrap();
+        assert!(
+            said.status.success(),
+            "{}",
+            String::from_utf8_lossy(&said.stderr)
+        );
+        let app_dir = std::fs::canonicalize(dir.join("AppDir")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        (app_dir, String::from_utf8(said.stdout).unwrap())
+    }
+
+    /// A loader's cache listing `libs` as 64-bit, and one 32-bit library beside them.
+    #[cfg(target_os = "linux")]
+    fn cache_of(libs: &[&str]) -> String {
+        let mut cache = String::from("5 libs found in cache `/etc/ld.so.cache'\n");
+        cache.push_str("\tlibgstapp-1.0.so.0 (libc6) => /usr/lib32/libgstapp-1.0.so.0\n");
+        for lib in libs {
+            cache.push_str(&format!("\t{lib} (libc6,x86-64) => /usr/lib/{lib}\n"));
+        }
+        cache
+    }
+
+    // A host with GStreamer runs photon on its own: the carried 1.20 refused Arch's 1.28
+    // plugins, and every video said GStreamer was missing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_appimage_uses_the_hosts_gstreamer_where_the_host_has_one() {
+        let (_, said) = app_run_on("host", &cache_of(&HOST_GSTREAMER), None);
+        assert_eq!(said, "lib=unset\ngst=unset\nargs=a b c\n");
+    }
+
+    // A host lacking any one of them - here with only a 32-bit libgstapp - runs photon on
+    // the carried libraries, the user's own path kept behind them, plugins looked for where
+    // distributions put them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_appimage_uses_its_own_gstreamer_where_the_host_lacks_one() {
+        let (app_dir, said) = app_run_on("lacks", &cache_of(&HOST_GSTREAMER[..3]), Some("/mine"));
+        let fallback = app_dir.join(FALLBACK);
+        assert_eq!(
+            said,
+            format!(
+                "lib={}:/mine\ngst=/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/lib64/gstreamer-1.0:\
+                 /usr/lib/gstreamer-1.0\nargs=a b c\n",
+                fallback.display()
+            )
+        );
     }
 
     // The MSI is photon's Tauri MSI's successor: its upgrade code (a UUID v5 of
