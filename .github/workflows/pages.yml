@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v5
       # Each `<!--release: …-->` comment becomes its text with {version}, {date} and {url}
       # filled in from the latest published release (`gh release view` passes over drafts
-      # and pre-releases), and the JSON-LD gains its "softwareVersion" (an HTML comment is
+      # and pre-releases), and the JSON-LD gains its "softwareVersion" and "datePublished" (an HTML comment is
       # no comment inside a script). A page that lost either fails the deploy rather than
       # quietly showing no version.
       - name: Write in the latest release
@@ -75,6 +75,7 @@ jobs:
           def versioned(m):
               data = json.loads(m.group(2))
               data["softwareVersion"] = release["tagName"].removeprefix("v")
+              data["datePublished"] = published.date().isoformat()
               return m.group(1) + "\n" + json.dumps(data, indent=2, ensure_ascii=False) + "\n" + m.group(3)
           text, scripts = re.subn(
               r'(<script type="application/ld\+json">)(.*?)(</script>)', versioned, text, flags=re.S
