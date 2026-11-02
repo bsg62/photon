@@ -47,13 +47,14 @@ jobs:
       # Each `<!--release: …-->` comment becomes its text with {version}, {date} and {url}
       # filled in from the latest published release (`gh release view` passes over drafts
       # and pre-releases), and the JSON-LD gains its "softwareVersion", "datePublished"
-      # and "releaseNotes" (an HTML comment is no comment inside a script). A page that
-      # lost either fails the deploy rather than quietly showing no version.
+      # and "releaseNotes", and its "downloadUrl" becomes the release's installers (an
+      # HTML comment is no comment inside a script). A page that lost either, or a release
+      # with no installer, fails the deploy rather than quietly showing no version.
       - name: Write in the latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view --repo "$GITHUB_REPOSITORY" --json tagName,publishedAt,url > "$RUNNER_TEMP/release.json"
+          gh release view --repo "$GITHUB_REPOSITORY" --json tagName,publishedAt,url,assets > "$RUNNER_TEMP/release.json"
           python3 - "$RUNNER_TEMP/release.json" site/index.html <<'PY'
           import datetime, html, json, re, sys
           release = json.load(open(sys.argv[1]))
@@ -63,6 +64,12 @@ jobs:
               "date": f"{published.day} {published:%B %Y}",
               "url": html.escape(release["url"]),
           }
+          installers = [
+              asset["url"] for asset in release["assets"]
+              if asset["name"].endswith((".dmg", ".deb", ".AppImage", ".msi"))
+          ]
+          if not installers:
+              sys.exit(f"{release['tagName']} has no installer")
           page = sys.argv[2]
           text, count = re.subn(
               r"<!--release: (.*?)-->",
@@ -77,6 +84,7 @@ jobs:
               data["softwareVersion"] = release["tagName"].removeprefix("v")
               data["datePublished"] = published.date().isoformat()
               data["releaseNotes"] = release["url"]
+              data["downloadUrl"] = installers
               return m.group(1) + "\n" + json.dumps(data, indent=2, ensure_ascii=False) + "\n" + m.group(3)
           text, scripts = re.subn(
               r'(<script type="application/ld\+json">)(.*?)(</script>)', versioned, text, flags=re.S
