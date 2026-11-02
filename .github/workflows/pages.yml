@@ -46,7 +46,8 @@ jobs:
       - uses: actions/checkout@v5
       # Each `<!--release: …-->` comment becomes its text with {version}, {date} and {url}
       # filled in from the latest published release (`gh release view` passes over drafts
-      # and pre-releases). A page that lost its comments fails the deploy rather than
+      # and pre-releases), and the JSON-LD gains its "softwareVersion" (an HTML comment is
+      # no comment inside a script). A page that lost either fails the deploy rather than
       # quietly showing no version.
       - name: Write in the latest release
         env:
@@ -71,6 +72,15 @@ jobs:
           )
           if count == 0:
               sys.exit(f"{page} has no <!--release: --> comment")
+          def versioned(m):
+              data = json.loads(m.group(2))
+              data["softwareVersion"] = release["tagName"].removeprefix("v")
+              return m.group(1) + "\n" + json.dumps(data, indent=2, ensure_ascii=False) + "\n" + m.group(3)
+          text, scripts = re.subn(
+              r'(<script type="application/ld\+json">)(.*?)(</script>)', versioned, text, flags=re.S
+          )
+          if scripts != 1:
+              sys.exit(f"{page} has {scripts} JSON-LD scripts, not one")
           open(page, "w", encoding="utf-8").write(text)
           print(f"{page}: {count} written in for {fields['version']}")
           PY
