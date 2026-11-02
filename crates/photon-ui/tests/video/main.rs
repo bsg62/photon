@@ -16,7 +16,7 @@
 //! test that passed, and a runner whose decoders went missing would pass every test here.
 
 use libtest_mimic::{Arguments, Failed, Trial};
-use photon_ui::video::{self, Failure, Picture, Player};
+use photon_ui::video::{self, Failure, Picture, Player, Stream, Videos};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -49,7 +49,16 @@ fn main() {
             "an_hevc_video_plays_or_the_system_says_it_cannot",
             hevc_player,
         ),
-        Trial::test("a_video_knows_its_length_and_its_end", length_and_end),
+        Trial::test("a_video_knows_its_length_and_its_end", || {
+            length_and_end(opened("h264.mp4")?)
+        }),
+        // Of the backend itself: a player on a thread of its own is read straight after
+        // what it was asked, and a seek back from the end must not still be the end there,
+        // or a looping video would loop twice (`Detached` answers for a seek only until it
+        // is made).
+        Trial::test("a_backends_own_player_knows_its_length_and_its_end", || {
+            length_and_end(opened_here("h264.mp4")?)
+        }),
         Trial::test("volume_and_mute_are_set_without_a_failure", sound),
         Trial::test("a_file_that_is_no_video_is_a_failure_not_a_panic", no_video),
         #[cfg(target_os = "linux")]
@@ -140,18 +149,33 @@ fn posters(file: &str) -> Result<(), Failed> {
     Ok(())
 }
 
-fn opened(file: &str) -> Result<Option<Player>, Failed> {
+/// A player of `file` as the window opens one (`video::System`): on Linux and Windows on a
+/// thread of its own (`video::Detached`), which the window reads the news of - so each test
+/// of a player is of the backend and of that thread's way with it.
+fn opened(file: &str) -> Result<Option<Box<dyn Stream>>, Failed> {
+    if !video::can_play() {
+        cannot("h264", "the system has no H.264 decoder")?;
+        return Ok(None);
+    }
+    let player =
+        (video::System.open(&media(file))).map_err(|failure| format!("{file}: {failure:?}"))?;
+    readied(&*player).map_err(|failure| format!("{file}: {failure:?}"))?;
+    Ok(Some(player))
+}
+
+/// A player of `file` opened by its backend on this thread, as the window does on a Mac.
+fn opened_here(file: &str) -> Result<Option<Box<dyn Stream>>, Failed> {
     if !video::can_play() {
         cannot("h264", "the system has no H.264 decoder")?;
         return Ok(None);
     }
     let player = Player::open(&media(file)).map_err(|failure| format!("{file}: {failure:?}"))?;
     readied(&player).map_err(|failure| format!("{file}: {failure:?}"))?;
-    Ok(Some(player))
+    Ok(Some(Box::new(player)))
 }
 
 /// Until `player` is ready, or says why it will not be: `open` waits for nothing.
-fn readied(player: &Player) -> Result<(), Failure> {
+fn readied(player: &dyn Stream) -> Result<(), Failure> {
     let until = Instant::now() + READY;
     while !player.ready() {
         if let Some(failure) = player.failure() {
@@ -176,7 +200,7 @@ const READY: Duration = Duration::from_secs(30);
 const BEGUN: Duration = Duration::from_secs(5);
 
 /// The frames a player hands over for `long`, each asked for every five milliseconds.
-fn frames_for(player: &Player, long: Duration) -> Vec<Picture> {
+fn frames_for(player: &dyn Stream, long: Duration) -> Vec<Picture> {
     let until = Instant::now() + long;
     let mut frames = Vec::new();
     while Instant::now() < until {
@@ -187,7 +211,7 @@ fn frames_for(player: &Player, long: Duration) -> Vec<Picture> {
 }
 
 /// The first frame handed over at or after `at` seconds, within `long`.
-fn frame_from(player: &Player, at: f64, long: Duration) -> Option<Picture> {
+fn frame_from(player: &dyn Stream, at: f64, long: Duration) -> Option<Picture> {
     let until = Instant::now() + long;
     while Instant::now() < until {
         if let Some(frame) = player.frame().filter(|frame| frame.at >= at) {
@@ -226,7 +250,7 @@ fn odd() -> Result<(), Failed> {
         return Ok(());
     };
     player.play();
-    let frame = frame_from(&player, 0.0, BEGUN).ok_or("no frame played")?;
+    let frame = frame_from(&*player, 0.0, BEGUN).ok_or("no frame played")?;
     check(
         (frame.width, frame.height) == (320, 184) && bottom(&frame) == "red",
         || format!("played {frame:?}, its last row {}", bottom(&frame)),
@@ -248,8 +272,8 @@ fn turned() -> Result<(), Failed> {
     };
     player.set_muted(true);
     player.play();
-    let first = frame_from(&player, 0.0, BEGUN).ok_or("no frame played")?;
-    let frames = frames_for(&player, Duration::from_millis(300));
+    let first = frame_from(&*player, 0.0, BEGUN).ok_or("no frame played")?;
+    let frames = frames_for(&*player, Duration::from_millis(300));
     let last = frames.last().unwrap_or(&first);
     check(
         (last.width, last.height) == (240, 320) && ends(last) == ("blue", "red"),
@@ -265,14 +289,14 @@ fn in_order() -> Result<(), Failed> {
     player.play();
     // Whatever comes first, of any time: the Media Engine's first frame is black and
     // stamped before nought, and is the backend's to drop, not this test's.
-    let first = frame_from(&player, f64::NEG_INFINITY, BEGUN).ok_or("no frame played")?;
+    let first = frame_from(&*player, f64::NEG_INFINITY, BEGUN).ok_or("no frame played")?;
     let mut frames = vec![first];
     // Until the second second has been seen, not for a time: the test is of order, and
     // macOS' runner played this file at a third of its speed now and then - 23 frames in
     // two and a half seconds, all red.
     let until = Instant::now() + 4 * BEGUN;
     while Instant::now() < until && !frames.iter().any(|frame| centre(frame) == "blue") {
-        frames.extend(frames_for(&player, Duration::from_millis(100)));
+        frames.extend(frames_for(&*player, Duration::from_millis(100)));
     }
     let seen: Vec<_> = frames
         .iter()
@@ -318,12 +342,12 @@ fn paused() -> Result<(), Failed> {
         if Instant::now() > until {
             return Err(format!("never under way, at {at}").into());
         }
-        frames_for(&player, Duration::from_millis(20));
+        frames_for(&*player, Duration::from_millis(20));
     };
     player.pause();
-    frames_for(&player, Duration::from_millis(100));
+    frames_for(&*player, Duration::from_millis(100));
     let stopped = player.position().ok_or("no position once paused")?;
-    frames_for(&player, Duration::from_millis(400));
+    frames_for(&*player, Duration::from_millis(400));
     let later = player.position().ok_or("no position later")?;
     check(stopped >= playing && (later - stopped).abs() < 0.05, || {
         format!("playing at {playing}, paused at {stopped}, then {later}")
@@ -337,7 +361,7 @@ fn seek() -> Result<(), Failed> {
     player.set_muted(true);
     player.play();
     player.seek(3.5);
-    let frame = frame_from(&player, 3.4, BEGUN).ok_or("no frame after 3.4 s")?;
+    let frame = frame_from(&*player, 3.4, BEGUN).ok_or("no frame after 3.4 s")?;
     check(centre(&frame) == "white", || {
         format!("{frame:?} is {}", centre(&frame))
     })
@@ -350,7 +374,7 @@ fn paused_seek() -> Result<(), Failed> {
         return Ok(());
     };
     player.seek(2.5);
-    let frame = frame_from(&player, 2.4, BEGUN).ok_or("no frame after 2.4 s")?;
+    let frame = frame_from(&*player, 2.4, BEGUN).ok_or("no frame after 2.4 s")?;
     check(centre(&frame) == "blue", || {
         format!("{frame:?} is {}", centre(&frame))
     })
@@ -360,8 +384,8 @@ fn hevc_player() -> Result<(), Failed> {
     if !video::can_play() {
         return cannot("h264", "the system has no H.264 decoder");
     }
-    let player = match Player::open(&media("hevc.mp4")).and_then(|player| {
-        readied(&player)?;
+    let player = match video::System.open(&media("hevc.mp4")).and_then(|player| {
+        readied(&*player)?;
         Ok(player)
     }) {
         Ok(player) => player,
@@ -370,7 +394,7 @@ fn hevc_player() -> Result<(), Failed> {
     };
     player.set_muted(true);
     player.play();
-    match frame_from(&player, 0.0, BEGUN) {
+    match frame_from(&*player, 0.0, BEGUN) {
         Some(frame) => check(centre(&frame) == "red", || {
             format!("{frame:?} is {}", centre(&frame))
         }),
@@ -381,8 +405,8 @@ fn hevc_player() -> Result<(), Failed> {
     }
 }
 
-fn length_and_end() -> Result<(), Failed> {
-    let Some(player) = opened("h264.mp4")? else {
+fn length_and_end(player: Option<Box<dyn Stream>>) -> Result<(), Failed> {
+    let Some(player) = player else {
         return Ok(());
     };
     let whole = player.duration().ok_or("no duration")?;
@@ -406,7 +430,7 @@ fn length_and_end() -> Result<(), Failed> {
     // had reached come back to say it has (a loop goes round this way).
     player.seek(1.0);
     check(!player.ended(), || "still ended after a seek back".into())?;
-    frames_for(&player, Duration::from_millis(300));
+    frames_for(&*player, Duration::from_millis(300));
     check(!player.ended(), || {
         format!("ended again at {:?}", player.position())
     })
@@ -419,10 +443,10 @@ fn sound() -> Result<(), Failed> {
     player.set_volume(0.3);
     player.set_muted(true);
     player.play();
-    let frames: Vec<_> = frame_from(&player, 0.0, BEGUN).into_iter().collect();
+    let frames: Vec<_> = frame_from(&*player, 0.0, BEGUN).into_iter().collect();
     player.set_muted(false);
     player.set_volume(0.0);
-    frames_for(&player, Duration::from_millis(100));
+    frames_for(&*player, Duration::from_millis(100));
     check(!frames.is_empty() && player.failure().is_none(), || {
         format!("{} frames, {:?}", frames.len(), player.failure())
     })
@@ -439,7 +463,7 @@ fn no_video() -> Result<(), Failed> {
         })?;
         // Refused at once, or failing on its way to ready - saying so, and not merely
         // never ready: that is a player that shows nothing and says nothing.
-        if let Ok(player) = Player::open(path) {
+        if let Ok(player) = video::System.open(path) {
             let until = Instant::now() + BEGUN;
             while player.failure().is_none() {
                 check(!player.ready(), || {

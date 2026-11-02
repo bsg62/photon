@@ -16,10 +16,18 @@ mod system;
 #[path = "mf.rs"]
 mod system;
 
+mod detached;
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use system::{Player, can_play, poster};
 
-use std::{path::Path, time::Duration};
+pub use detached::{Detached, Live};
+
+use std::{
+    path::Path,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 /// The system's video as the window uses it: the framework itself (`System`), or a test's
 /// stand-in - a test cannot count on a decoder, and the backends are tested on their own.
@@ -33,9 +41,15 @@ pub trait Videos: Send + Sync + 'static {
     fn patience(&self) -> Duration {
         JOB_TIMEOUT
     }
-    /// A player of the video at `path`, opened and on its way to ready, paused: on the
-    /// window's thread, which is the main one, as AVFoundation wants.
+    /// A player of the video at `path`, opened and on its way to ready, paused. Asked on
+    /// the window's thread, which is the main one, as AVFoundation wants; and so it waits
+    /// for nothing, there or later.
     fn open(&self, path: &Path) -> Result<Box<dyn Stream>, Failure>;
+    /// Whether every player let go of has finished going within `within`: the window
+    /// waits as it closes, so that none is still being let go of as the process ends.
+    fn finish(&self, _within: Duration) -> bool {
+        true
+    }
 }
 
 /// A poster that has not come in this long is a failure, not a slow disk: the web view's
@@ -44,6 +58,9 @@ pub const JOB_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The system's own framework.
 pub struct System;
+
+/// The system's players on threads of their own (`Detached`), until each has been let go of.
+static LIVE: LazyLock<Arc<Live>> = LazyLock::new(Default::default);
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Videos for System {
@@ -55,8 +72,24 @@ impl Videos for System {
         poster(path, at)
     }
 
+    /// On a thread of its own (`Detached`), but on a Mac: a GStreamer or Media Foundation
+    /// player on a share that has stopped answering held the window's thread as it was
+    /// opened, sought or let go of. AVFoundation's player item is made on the main thread,
+    /// so a Mac's stays there - and a share that stops answering can still hold that
+    /// window as a video opens (`isPlayable` reads the file's headers) or a paused frame
+    /// is made.
     fn open(&self, path: &Path) -> Result<Box<dyn Stream>, Failure> {
-        Ok(Box::new(Player::open(path)?))
+        if cfg!(target_os = "macos") {
+            return Ok(Box::new(Player::open(path)?));
+        }
+        let path = path.to_owned();
+        Ok(Box::new(Detached::open(&LIVE, move || {
+            Ok(Box::new(Player::open(&path)?) as Box<dyn Stream>)
+        })))
+    }
+
+    fn finish(&self, within: Duration) -> bool {
+        LIVE.finish(within)
     }
 }
 
@@ -79,6 +112,12 @@ pub trait Stream {
     fn failure(&self) -> Option<Failure>;
     /// The newest frame due, once.
     fn frame(&self) -> Option<Picture>;
+    /// How long it has been working at what it was asked - its opening, a seek - on a
+    /// thread of its own (`Detached`), without its answer; none once it has answered. A
+    /// player on the window's thread has answered by the time a call returns.
+    fn waiting(&self) -> Option<Duration> {
+        None
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

@@ -116,7 +116,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 64] = [
+    const STATE_MODULES: [(&str, &str); 65] = [
         ("animate.rs", include_str!("animate.rs")),
         ("face_crops.rs", include_str!("face_crops.rs")),
         ("people_page.rs", include_str!("people_page.rs")),
@@ -128,6 +128,7 @@ mod tests {
         ("settings.rs", include_str!("settings.rs")),
         ("args.rs", include_str!("args.rs")),
         ("video/mod.rs", include_str!("video/mod.rs")),
+        ("video/detached.rs", include_str!("video/detached.rs")),
         ("posters.rs", include_str!("posters.rs")),
         ("playback.rs", include_str!("playback.rs")),
         ("compare.rs", include_str!("compare.rs")),

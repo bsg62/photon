@@ -231,9 +231,11 @@ impl Drop for Player {
 }
 
 impl Player {
-    /// Opened, and on its way to being ready, paused at its start: nothing waits here -
-    /// it is called on the window's thread - and what goes wrong from here on is said by
-    /// `failure`.
+    /// Opened, and on its way to being ready, paused at its start: being ready is not
+    /// waited for - `ready` says when it is - and what goes wrong from here on is said by
+    /// `failure`. The file itself is opened in here, as the pipeline goes to `Paused`,
+    /// which on a share that has stopped answering waits: one of the reasons a player is
+    /// kept on a thread of its own (`Detached`).
     pub fn open(path: &Path) -> Result<Player, Failure> {
         let (playbin, sink) = pipeline(path, true, true)?;
         let player = Player {

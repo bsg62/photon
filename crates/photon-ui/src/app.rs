@@ -104,6 +104,9 @@ const WRITES_PATIENCE: Duration = Duration::from_secs(10);
 /// How long a closing window waits for the poster worker to answer the job it has: it
 /// hears it is to stop within a quarter of a second, whatever it is doing.
 const POSTERS_PATIENCE: Duration = Duration::from_secs(1);
+/// How long a closing window waits for the video players it has let go of to be gone: a
+/// moment for one that answers, and no more than this for one on a share that does not.
+const PLAYERS_PATIENCE: Duration = Duration::from_secs(2);
 
 pub struct App {
     engine: Arc<Engine>,
@@ -2486,10 +2489,9 @@ impl App {
         if playing.failure().is_some() {
             open.frame = None;
         }
-        // The next frame is the video's to say when: asked for at twice sixty a second,
-        // so that one is drawn within a refresh of its time, whatever its rate.
-        if playing.running() {
-            ctx.request_repaint_after(Duration::from_millis(8));
+        // The next frame is the video's to say when (`Playing::next_frame_in`).
+        if let Some(next) = playing.next_frame_in() {
+            ctx.request_repaint_after(next);
         }
     }
 
@@ -4815,6 +4817,15 @@ impl App {
                 && !worker.finish(POSTERS_PATIENCE)
             {
                 tracing::warn!("the window closed while a video's poster was being made");
+            }
+            // A player is let go of on its own thread (`video::Detached`): the one playing
+            // goes now, and each is waited for, so that none is still stopping its sound
+            // and its threads as the process ends.
+            if let Some(open) = self.viewer.as_mut() {
+                open.playing = None;
+            }
+            if !self.videos.finish(PLAYERS_PATIENCE) {
+                tracing::warn!("the window closed while a video's player was being let go of");
             }
             self.engine.shutdown();
         }
