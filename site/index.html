@@ -187,7 +187,12 @@
   .systems strong { font-size: 1.25rem; }
   /* The buttons stand on one line whatever the words above them wrap to. */
   .systems span { color: var(--text-dim); margin-bottom: .875rem; }
-  .systems .button { margin-top: auto; }
+  .systems > div > .button, .systems .files { margin-top: auto; }
+  /* Each installer its own full-width button, stacked: two side by side wrap unevenly
+     at some widths. The size stands at the far end. */
+  .systems .files { display: grid; gap: .5rem; }
+  .systems .files .button { justify-content: space-between; gap: 1rem; }
+  .button small { font-size: .8125rem; font-weight: 500; }
   .download .fine { max-width: 46rem; margin: 1.25rem auto 0; }
 
   /* Questions */
@@ -259,12 +264,13 @@
     <h1>A local photo manager for everyone who misses Picasa</h1>
     <p class="lede">photon is a free Picasa alternative for Linux, macOS and Windows. It shows the photos in your folders and leaves the files as they are.</p>
     <div class="actions">
-      <a class="button" id="get" href="https://github.com/bsg62/photon/releases/latest">Download</a>
+      <a class="button" id="get" href="#download">Download</a>
       <a class="button plain" href="#download">Other systems</a>
     </div>
-    <!-- The latest release's version is written in where these comments stand when the
-         site is deployed (pages.yml), which a published release also does. -->
-    <p class="fine"><!--release: <a href="{url}">Version {version}</a> · -->MIT licensed · No account or internet connection needed</p>
+    <!-- On deploy (pages.yml, which a published release also runs), each "release:"
+         comment and what stands between it and its "/release" comment give way to the
+         comment's text, filled in from the latest release. -->
+    <p class="fine"><!--release: <a href="{url}">Version {version}</a> · --><!--/release-->MIT licensed · No account or internet connection needed</p>
   </section>
 
   <div class="shot">
@@ -371,25 +377,25 @@
   <section class="download wrap" id="download">
     <h2 class="section">Download photon</h2>
     <p>Free and open source, for Linux, macOS and Windows.</p>
-    <!--release: <p class="fine">Version {version}, released {date} · <a href="{url}">What’s new</a></p>-->
+    <!--release: <p class="fine">Version {version}, released {date} · <a href="{url}">What’s new</a></p>--><!--/release-->
     <div class="systems">
       <div>
         <strong>Linux</strong>
         <span>AppImage, or .deb for Debian and Ubuntu</span>
-        <a class="button small" href="https://github.com/bsg62/photon/releases/latest">Download</a>
+        <!--release: <div class="files"><a class="button small" href="{appimage_url}">AppImage<small>{appimage_size}</small></a><a class="button small plain" href="{deb_url}">.deb<small>{deb_size}</small></a></div>--><a class="button small" href="https://github.com/bsg62/photon/releases/latest">Download</a><!--/release-->
       </div>
       <div>
         <strong>macOS</strong>
         <span>.dmg for Apple Silicon or Intel</span>
-        <a class="button small plain" href="https://github.com/bsg62/photon/releases/latest">Download</a>
+        <!--release: <div class="files"><a class="button small plain" href="{mac_arm_url}">Apple Silicon<small>{mac_arm_size}</small></a><a class="button small plain" href="{mac_intel_url}">Intel<small>{mac_intel_size}</small></a></div>--><a class="button small plain" href="https://github.com/bsg62/photon/releases/latest">Download</a><!--/release-->
       </div>
       <div>
         <strong>Windows</strong>
         <span>.msi installer</span>
-        <a class="button small plain" href="https://github.com/bsg62/photon/releases/latest">Download</a>
+        <!--release: <div class="files"><a class="button small plain" id="msi" href="{msi_url}">Download<small>{msi_size}</small></a></div>--><a class="button small plain" href="https://github.com/bsg62/photon/releases/latest">Download</a><!--/release-->
       </div>
     </div>
-    <p class="fine">Reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF; plays MP4, M4V, MOV and (but on a Mac) WebM. The installers are not code-signed, so macOS and Windows warn the first time — <a href="https://github.com/bsg62/photon#photon-is-not-code-signed">here is how to open them</a>.</p>
+    <p class="fine">Reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF; plays MP4, M4V, MOV and (but on a Mac) WebM. The installers are not code-signed, so macOS and Windows warn the first time — <a href="https://github.com/bsg62/photon#photon-is-not-code-signed">here is how to open them</a>. Each release lists its installers’ checksums in <a href="https://github.com/bsg62/photon/releases/latest/download/SHA256SUMS">SHA256SUMS</a> — <a href="faq.html#checksum">how to check a download</a>.</p>
   </section>
 
   <div class="band">
@@ -427,12 +433,17 @@
 </footer>
 
 <script>
-  // Names the visitor's system on the first button, where the browser says which it is;
-  // every download button leads to the same release page either way.
+  // Names the visitor's system on the first button, where the browser says which it is.
+  // The button leads to the download section, where Linux and macOS each have two
+  // installers to choose from; Windows has one, so its button fetches it (#msi, there
+  // once pages.yml has written in the release).
   (function () {
     var p = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent).toLowerCase();
     var name = /mac/.test(p) ? 'macOS' : /win/.test(p) ? 'Windows' : /linux|x11/.test(p) && !/android/.test(navigator.userAgent.toLowerCase()) ? 'Linux' : null;
-    if (name) document.getElementById('get').textContent = 'Download for ' + name;
+    var get = document.getElementById('get');
+    if (name) get.textContent = 'Download for ' + name;
+    var msi = document.getElementById('msi');
+    if (name === 'Windows' && msi) get.href = msi.href;
   })();
 </script>
 </body>

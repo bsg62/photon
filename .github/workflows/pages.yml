@@ -44,12 +44,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
-      # Each `<!--release: …-->` comment becomes its text with {version}, {date} and {url}
-      # filled in from the latest published release (`gh release view` passes over drafts
-      # and pre-releases), and the JSON-LD gains its "softwareVersion", "datePublished"
-      # and "releaseNotes", and its "downloadUrl" becomes the release's installers (an
-      # HTML comment is no comment inside a script). A page that lost either, or a release
-      # with no installer, fails the deploy rather than quietly showing no version.
+      # Each `<!--release: …-->…<!--/release-->` becomes the comment's text, filled in from
+      # the latest published release (`gh release view` passes over drafts and
+      # pre-releases): {version}, {date}, {url}, and each installer's {…_url} and {…_size}.
+      # The JSON-LD gains its "softwareVersion", "datePublished" and "releaseNotes", and its
+      # "downloadUrl" becomes the installers (an HTML comment is no comment inside a script).
+      # A page that lost either, a comment left unfilled, or a release missing one of the
+      # five installers fails the deploy rather than quietly showing a stale page.
       - name: Write in the latest release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,21 +65,35 @@ jobs:
               "date": f"{published.day} {published:%B %Y}",
               "url": html.escape(release["url"]),
           }
-          installers = [
-              asset["url"] for asset in release["assets"]
-              if asset["name"].endswith((".dmg", ".deb", ".AppImage", ".msi"))
-          ]
-          if not installers:
-              sys.exit(f"{release['tagName']} has no installer")
+          # The names `xtask package` gives them, which the page's buttons are named for.
+          INSTALLERS = {
+              "appimage": r"\.AppImage$",
+              "deb": r"\.deb$",
+              "mac_arm": r"_aarch64\.dmg$",
+              "mac_intel": r"_x64\.dmg$",
+              "msi": r"\.msi$",
+          }
+          installers = []
+          for key, pattern in INSTALLERS.items():
+              found = [a for a in release["assets"] if re.search(pattern, a["name"])]
+              if len(found) != 1:
+                  sys.exit(f"{release['tagName']} has {len(found)} assets matching {pattern}, not one")
+              installers.append(found[0]["url"])
+              fields[f"{key}_url"] = html.escape(found[0]["url"])
+              fields[f"{key}_size"] = f"{round(found[0]['size'] / 1e6)} MB"
           page = sys.argv[2]
           text, count = re.subn(
-              r"<!--release: (.*?)-->",
+              # What stands between the comments holds no comment of its own, so one that
+              # lost its "/release" cannot reach the next one's and swallow the page between.
+              r"<!--release: (.*?)-->(?:(?!<!--).)*?<!--/release-->",
               lambda m: m.group(1).format(**fields),
               open(page, encoding="utf-8").read(),
               flags=re.S,
           )
           if count == 0:
               sys.exit(f"{page} has no <!--release: --> comment")
+          if "<!--release" in text or "<!--/release" in text:
+              sys.exit(f"{page} has a <!--release: --> comment without its <!--/release-->")
           def versioned(m):
               data = json.loads(m.group(2))
               data["softwareVersion"] = release["tagName"].removeprefix("v")

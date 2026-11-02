@@ -219,7 +219,7 @@
   </ul>
 
   <h2 id="install">Which file do I download?</h2>
-  <p>Get the installer for your system from the <a href="https://github.com/bsg62/photon/releases/latest">latest release</a>.</p>
+  <p>Get the installer for your system from the <a href="./#download">download section</a>, or from the <a href="https://github.com/bsg62/photon/releases/latest">latest release</a> on GitHub.</p>
   <div class="table-wrap">
     <table>
       <tr><th>System</th><th>File</th></tr>
@@ -237,8 +237,30 @@
   <p>
     The installers are not code-signed, so macOS and Windows will warn the first time you open
     photon. The <a href="https://github.com/bsg62/photon#photon-is-not-code-signed">README</a>
-    explains how to get past that on each system, and how to check a download against its
-    <code>SHA256SUMS</code>.
+    explains how to get past that on each system. To make sure an installer is the one that
+    was released, <a href="#checksum">check it against its checksum</a>.
+  </p>
+
+  <h2 id="checksum">How do I check a download?</h2>
+  <p>
+    Each release lists the SHA-256 checksum of every installer in a file called
+    <a href="https://github.com/bsg62/photon/releases/latest/download/SHA256SUMS"><code>SHA256SUMS</code></a>.
+    Download it into the folder that holds the installer, open a terminal there and run the
+    line for your installer. It prints the file's name and <code>OK</code> when the two match.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Installer</th><th>Command</th></tr>
+      <tr><td>Linux AppImage</td><td><code>grep AppImage SHA256SUMS | sha256sum -c</code></td></tr>
+      <tr><td>Linux .deb</td><td><code>grep deb SHA256SUMS | sha256sum -c</code></td></tr>
+      <tr><td>macOS, Apple Silicon</td><td><code>grep aarch64 SHA256SUMS | shasum -a 256 -c</code></td></tr>
+      <tr><td>macOS, Intel</td><td><code>grep x64.dmg SHA256SUMS | shasum -a 256 -c</code></td></tr>
+    </table>
+  </div>
+  <p>
+    On Windows, run <code>Get-FileHash photon_*.msi</code> in PowerShell and compare its
+    <code>Hash</code> with the <code>.msi</code> line of <code>SHA256SUMS</code> (capitals
+    don't matter).
   </p>
 
   <h2 id="uninstall">How do I uninstall it?</h2>
