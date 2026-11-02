@@ -2489,10 +2489,9 @@ impl App {
         if playing.failure().is_some() {
             open.frame = None;
         }
-        // The next frame is the video's to say when: asked for at twice sixty a second,
-        // so that one is drawn within a refresh of its time, whatever its rate.
-        if playing.running() {
-            ctx.request_repaint_after(Duration::from_millis(8));
+        // The next frame is the video's to say when (`Playing::next_frame_in`).
+        if let Some(next) = playing.next_frame_in() {
+            ctx.request_repaint_after(next);
         }
     }
 

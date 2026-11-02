@@ -3,6 +3,7 @@
 //! video cannot be played - the web view's words (`Viewer.svelte`'s `videoIssue`).
 
 use crate::video::{Failure, Picture, Stream};
+use std::time::Duration;
 
 /// Shift with an arrow moves this far; the plain arrows stay the viewer's.
 pub const SEEK_STEP: f64 = 5.0;
@@ -29,8 +30,21 @@ impl Default for Prefs {
 }
 
 /// How many frames ask for a seek's frame before it is taken not to be coming: about half
-/// a second at the 8 ms they are asked at.
+/// a second at the 8 ms they are asked at - counted from when the player has made the seek
+/// (`Stream::waiting`), not from when it was asked: on a slow share the frame came after
+/// the window had stopped asking, and stood unseen until something else drew.
 const AWAIT_LIMIT: u32 = 60;
+
+/// How often frames are asked for while a video plays: twice sixty a second, so that one
+/// is drawn within a refresh of its time, whatever its rate.
+pub const FRAME_EVERY: Duration = Duration::from_millis(8);
+
+/// How long a player may work at one thing - its opening, a seek - before it is taken to
+/// be held by a share that has stopped answering, and asked after only every
+/// `HELD_EVERY`: drawn at `FRAME_EVERY` for as long as the share does not answer, a still
+/// window was redrawn a hundred and twenty times a second.
+pub const HELD: Duration = Duration::from_secs(1);
+pub const HELD_EVERY: Duration = Duration::from_millis(250);
 
 /// What the user does to a video: by its strip, its picture or its keys.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,8 +143,12 @@ impl Playing {
             return None;
         }
         let frame = stream.frame();
+        // A frame that comes while the player has not caught up is one on the way to the
+        // seek - a drag's earlier place - and not the seek's own.
+        let waiting = stream.waiting().is_some();
         self.awaiting = match self.awaiting {
-            _ if frame.is_some() || stream.ended() => None,
+            _ if (frame.is_some() && !waiting) || stream.ended() => None,
+            Some(asked) if waiting => Some(asked),
             Some(asked) if asked < AWAIT_LIMIT => Some(asked + 1),
             _ => None,
         };
@@ -167,6 +185,20 @@ impl Playing {
             return true;
         }
         !self.paused && !stream.ended()
+    }
+
+    /// When the next frame is to be asked for, if one is: while it runs, at `FRAME_EVERY`,
+    /// or `HELD_EVERY` while its player has been held at what it was asked for `HELD`.
+    pub fn next_frame_in(&mut self) -> Option<Duration> {
+        if !self.running() {
+            return None;
+        }
+        let waiting = self.stream.as_ref().and_then(|stream| stream.waiting());
+        Some(if waiting.is_some_and(|long| long >= HELD) {
+            HELD_EVERY
+        } else {
+            FRAME_EVERY
+        })
     }
 
     /// The session's prefs as this player has them, after what the user did.
@@ -342,6 +374,7 @@ mod tests {
         ended: Cell<bool>,
         failure: std::cell::RefCell<Option<Failure>>,
         frames: std::cell::RefCell<Vec<Picture>>,
+        waiting: Cell<Option<Duration>>,
     }
 
     struct Fake(Rc<Told>);
@@ -390,6 +423,9 @@ mod tests {
         }
         fn frame(&self) -> Option<Picture> {
             self.0.frames.borrow_mut().pop()
+        }
+        fn waiting(&self) -> Option<Duration> {
+            self.0.waiting.get()
         }
     }
 
@@ -485,6 +521,64 @@ mod tests {
         playing.act(Act::SeekBy(SEEK_STEP));
         playing.frame();
         assert!(!playing.running());
+    }
+
+    // A player on a thread of its own hands over frames on the way to a seek - a drag's
+    // earlier places - before it has caught up: the seek's own frame is the one after.
+    #[test]
+    fn a_frame_from_a_player_not_caught_up_is_not_the_seeks_own() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
+        playing.act(Act::Toggle);
+        playing.act(Act::SeekBy(-SEEK_STEP));
+        told.waiting.set(Some(Duration::ZERO));
+        told.frames.borrow_mut().push(frame(3.0));
+        assert_eq!(playing.frame().map(|frame| frame.at), Some(3.0));
+        assert!(playing.running(), "the seek's frame is still waited for");
+        told.waiting.set(None);
+        told.frames.borrow_mut().push(frame(0.0));
+        assert_eq!(playing.frame().map(|frame| frame.at), Some(0.0));
+        assert!(!playing.running());
+    }
+
+    // The limit counts from when the seek is made: on a slow share it took longer than the
+    // limit, and the frame came after the window had stopped asking for it.
+    #[test]
+    fn a_seeks_frame_is_waited_for_while_its_player_works_at_the_seek() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
+        playing.act(Act::Toggle);
+        playing.act(Act::SeekBy(-SEEK_STEP));
+        told.waiting.set(Some(Duration::from_millis(600)));
+        for _ in 0..=AWAIT_LIMIT * 2 {
+            playing.frame();
+        }
+        assert!(playing.running(), "its frame is waited for");
+        told.waiting.set(None);
+        for _ in 0..=AWAIT_LIMIT {
+            playing.frame();
+        }
+        assert!(!playing.running(), "and then for the limit only");
+    }
+
+    // A player held by a share that has stopped answering is asked after a few times a
+    // second, not at the rate of its frames: the window would draw a hundred and twenty
+    // times a second for as long as the share does not answer.
+    #[test]
+    fn a_player_held_at_what_it_was_asked_is_asked_after_less_often() {
+        let told = Rc::new(Told::default());
+        let mut playing = Playing::start(7, 70, Box::new(Fake(told.clone())), Prefs::default());
+        assert_eq!(playing.next_frame_in(), Some(FRAME_EVERY));
+        told.waiting.set(Some(Duration::from_millis(100)));
+        assert_eq!(playing.next_frame_in(), Some(FRAME_EVERY));
+        told.waiting.set(Some(HELD));
+        assert_eq!(playing.next_frame_in(), Some(HELD_EVERY));
+        playing.act(Act::Toggle);
+        assert_eq!(
+            playing.next_frame_in(),
+            None,
+            "a still window draws nothing"
+        );
     }
 
     // Under a drag Space does nothing: the drag gives the video back its playing.

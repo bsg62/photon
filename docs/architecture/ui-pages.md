@@ -111,9 +111,21 @@ Foundation's `Shutdown` waits: on the window's thread, a video on a share that h
 answering held the window. A thread held for good is left behind, as the poster worker
 leaves a decoder; the window waits for players being let go of when it closes, for at most
 `PLAYERS_PATIENCE`. **What is read lags what was asked**, so a seek on its way is answered
-for by `Detached` itself - its place for the position, no end, no frame from before it:
-read from the player, a video looped at its end would still be at its end, and loop again.
-A panic in a backend is the video's failure, not a dead thread. **Not on a Mac**:
+for by `Detached` itself - its place for the position, and no end: read from the player, a
+video looped at its end would still be at its end, and loop again. **A frame from before
+the last seek is handed over while that seek is on its way, and not once it is done**: a
+drag along the bar asks a seek a frame, and each frame read is from before the next - kept
+from the window, the picture stood still for the whole drag (the first version did, caught
+in review) - while once the seek is made, the frame due is its own, and a paused seek would
+stand on the place it left. So `Playing` takes a frame for the seek's own only once the
+player has caught up (`Stream::waiting`), and counts `AWAIT_LIMIT` from then, not from the
+asking: on a slow share the frame came after the window had stopped asking. A seek replaces
+one still queued. A player held at one thing for `HELD` is asked after every `HELD_EVERY`,
+not every 8 ms (`Playing::next_frame_in`): a window that no longer froze for a share drew a
+hundred and twenty times a second for it instead. A panic in a backend is the video's
+failure, not a dead thread. `tests/video` holds a backend's own player to what `Detached`
+leans on - no end straight after a seek back from it
+(`a_backends_own_player_knows_its_length_and_its_end`). **Not on a Mac**:
 AVFoundation's player item is made on the main thread, and `isPlayable` and a paused
 player's still read the file there, so a share that stops answering can still hold a Mac's
 window. Every test of a player in `tests/video` opens it through `System`, as the window

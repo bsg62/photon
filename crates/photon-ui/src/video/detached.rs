@@ -9,11 +9,14 @@
 //! Not on a Mac: AVFoundation's player item is made on the main thread, which is the
 //! window's (`System::open`).
 //!
-//! **What the window reads is the player as it was last asked**, and a request it has
-//! made is not in that yet: so a seek on its way is answered for here - the place it goes
-//! to, no end, and no frame from before it. Read from the player, a video looped at its end
-//! would still be at its end, and loop again, and a paused seek's frame could be a frame of
-//! the place it left.
+//! **What the window reads is the player as it was last read**, and a request it has made
+//! is not in that yet: so a seek on its way is answered for here - the place it goes to,
+//! and no end - or a video looped at its end would still be at its end, and loop again. A
+//! frame from before the last seek is handed over while that seek is on its way - a drag
+//! along the bar asks a seek a frame, and its frames are all from before the next - and
+//! not once it is done, when the frame due is the seek's own: a paused seek's frame would
+//! be a frame of the place it left. Whether the player has caught up is `waiting`, which
+//! is how the window tells a seek's frame from one on the way to it.
 
 use super::{Failure, Picture, Stream};
 use std::{
@@ -83,6 +86,8 @@ enum Ask {
 /// The player as it was last read, on its thread.
 #[derive(Default)]
 struct News {
+    /// Whether opening it is over, opened or not.
+    opened: bool,
     /// How many requests had been done when it was read.
     done: u64,
     ready: bool,
@@ -120,6 +125,8 @@ pub struct Detached {
     sent: Cell<u64>,
     /// The last seek asked for: its number among the requests, and where it goes.
     sought: Cell<Option<(u64, f64)>>,
+    /// Since when the player has been working at the oldest thing it has not answered.
+    since: Cell<Instant>,
 }
 
 impl Detached {
@@ -140,22 +147,41 @@ impl Detached {
             });
         // The closure, `alive` with it, is dropped with the error.
         if let Err(err) = spawned {
-            lock(&shared.inner).news.failure =
-                Some(Failure::Broken(format!("no thread for the player: {err}")));
+            let mut inner = lock(&shared.inner);
+            inner.news.failure = Some(Failure::Broken(format!("no thread for the player: {err}")));
+            inner.news.opened = true;
         }
         Detached {
             shared,
             sent: Cell::new(0),
             sought: Cell::new(None),
+            since: Cell::new(Instant::now()),
         }
     }
 
+    /// The request's number. **A seek replaces one still queued** - a drag along the bar
+    /// asks one a frame, and on a share that has stopped answering they would all be made
+    /// once it answers - and takes its number.
     fn ask(&self, ask: Ask) -> u64 {
+        let mut inner = lock(&self.shared.inner);
+        if let (Ask::Seek(at), Some(Ask::Seek(queued))) = (&ask, inner.asks.back_mut()) {
+            *queued = *at;
+            return self.sent.get();
+        }
+        if !self.behind(&inner.news) {
+            self.since.set(Instant::now());
+        }
         let number = self.sent.get() + 1;
         self.sent.set(number);
-        lock(&self.shared.inner).asks.push_back(ask);
+        inner.asks.push_back(ask);
+        drop(inner);
         self.shared.wake.notify_one();
         number
+    }
+
+    /// Whether the player has not answered everything asked of it.
+    fn behind(&self, news: &News) -> bool {
+        !news.opened || news.done < self.sent.get()
     }
 
     /// What the news says, and fresher news asked for: the player is read when the window
@@ -177,14 +203,15 @@ impl Detached {
             .map(|(_, at)| at)
     }
 
-    /// Until the thread has nothing to do: what it was asked is done and read.
+    /// Until the thread has nothing to do: the player is opened, and what it was asked is
+    /// done and read.
     #[cfg(test)]
     fn quiet(&self) {
         let until = Instant::now() + Duration::from_secs(10);
         loop {
             {
                 let inner = lock(&self.shared.inner);
-                if !inner.busy && !inner.wanted && inner.asks.is_empty() {
+                if inner.news.opened && !inner.busy && !inner.wanted && inner.asks.is_empty() {
                     return;
                 }
             }
@@ -237,8 +264,13 @@ impl Stream for Detached {
         self.read(|news| news.failure.clone())
     }
     fn frame(&self) -> Option<Picture> {
-        let (done, frame) = self.read(|news| news.frame.take())?;
-        self.seeking(done).is_none().then_some(frame)
+        let (taken, done) = self.read(|news| (news.frame.take(), news.done));
+        let (read, frame) = taken?;
+        (self.seeking(read).is_none() || self.seeking(done).is_some()).then_some(frame)
+    }
+    fn waiting(&self) -> Option<Duration> {
+        self.read(|news| self.behind(news))
+            .then(|| self.since.get().elapsed())
     }
 }
 
@@ -249,10 +281,13 @@ fn run(shared: &Shared, open: impl FnOnce() -> Result<Box<dyn Stream>, Failure>)
     let stream = match catch_unwind(AssertUnwindSafe(open)).unwrap_or_else(|_| Err(panicked())) {
         Ok(stream) => stream,
         Err(failure) => {
-            lock(&shared.inner).news.failure = Some(failure);
+            let mut inner = lock(&shared.inner);
+            inner.news.failure = Some(failure);
+            inner.news.opened = true;
             return;
         }
     };
+    lock(&shared.inner).news.opened = true;
     // A player that panicked is a failure the window shows, not a thread that is gone and
     // a video that never begins.
     let served = catch_unwind(AssertUnwindSafe(|| serve(shared, stream.as_ref())));
@@ -297,6 +332,7 @@ fn serve(shared: &Shared, stream: &dyn Stream) {
         let failure = stream.failure();
         let frame = stream.frame();
         let news = News {
+            opened: true,
             done,
             ready: stream.ready(),
             position: stream.position(),
@@ -487,6 +523,7 @@ mod tests {
             player.set_muted(true);
             player.play();
             assert!(!player.ready());
+            assert!(player.waiting().is_some());
             assert_eq!(player.frame(), None);
             assert_eq!(player.failure(), None);
             drop(player);
@@ -565,21 +602,63 @@ mod tests {
         assert_eq!(player.duration(), Some(4.0));
     }
 
+    // A drag along the bar asks a seek a frame, and each frame read is from before the
+    // next: shown all the same, while the player has not caught up.
     #[test]
-    fn a_frame_from_before_a_seek_is_not_handed_over_after_it() {
+    fn a_frame_from_before_a_seek_is_handed_over_while_the_seek_is_on_its_way() {
         let rig = Rig::new();
         let player = rig.open(&["seek"]);
         lock(&rig.told).frames.push_back(picture(3.0));
         let _ = player.frame();
         player.quiet();
+        assert_eq!(player.waiting(), None);
         // The frame of 3 s is read and not yet taken, and a seek to 1 s is asked for,
-        // which its thread is held in: the frame read before it is all there is.
-        lock(&rig.told).frames.push_back(picture(1.0));
+        // which its thread is held in.
         player.seek(1.0);
-        assert_eq!(player.frame(), None);
+        assert_eq!(player.frame().map(|frame| frame.at), Some(3.0));
+        assert!(player.waiting().is_some(), "not the seek's own frame");
         rig.gate.open();
         player.quiet();
+        assert_eq!(player.waiting(), None);
+    }
+
+    // Once the seek is done, the frame due is the seek's own: one read before it is not
+    // handed over, or a paused seek would stand on the place it left.
+    #[test]
+    fn a_frame_from_before_a_seek_is_not_handed_over_once_it_is_done() {
+        let rig = Rig::new();
+        let player = rig.open(&[]);
+        lock(&rig.told).frames.push_back(picture(3.0));
+        let _ = player.frame();
+        player.quiet();
+        player.seek(1.0);
+        player.quiet();
+        assert_eq!(player.frame(), None);
+        player.quiet();
+        lock(&rig.told).frames.push_back(picture(1.0));
+        let _ = player.frame();
+        player.quiet();
         assert_eq!(player.frame().map(|frame| frame.at), Some(1.0));
+    }
+
+    #[test]
+    fn a_seek_replaces_one_still_queued() {
+        let rig = Rig::new();
+        let player = rig.open(&["seek"]);
+        player.quiet();
+        player.seek(1.0);
+        until("the first seek taken", || {
+            lock(&player.shared.inner).asks.is_empty()
+        });
+        // Held in the first: the second waits in the queue, and the third takes its place.
+        player.seek(2.0);
+        player.seek(3.0);
+        assert_eq!(player.position(), Some(3.0));
+        rig.gate.open();
+        player.quiet();
+        assert_eq!(lock(&rig.told).log, ["seek 1", "seek 3"]);
+        assert_eq!(player.position(), Some(3.0));
+        assert_eq!(player.waiting(), None);
     }
 
     #[test]

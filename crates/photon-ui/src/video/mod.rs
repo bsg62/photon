@@ -112,6 +112,12 @@ pub trait Stream {
     fn failure(&self) -> Option<Failure>;
     /// The newest frame due, once.
     fn frame(&self) -> Option<Picture>;
+    /// How long it has been working at what it was asked - its opening, a seek - on a
+    /// thread of its own (`Detached`), without its answer; none once it has answered. A
+    /// player on the window's thread has answered by the time a call returns.
+    fn waiting(&self) -> Option<Duration> {
+        None
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

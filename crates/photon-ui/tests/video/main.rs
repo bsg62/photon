@@ -49,7 +49,16 @@ fn main() {
             "an_hevc_video_plays_or_the_system_says_it_cannot",
             hevc_player,
         ),
-        Trial::test("a_video_knows_its_length_and_its_end", length_and_end),
+        Trial::test("a_video_knows_its_length_and_its_end", || {
+            length_and_end(opened("h264.mp4")?)
+        }),
+        // Of the backend itself: a player on a thread of its own is read straight after
+        // what it was asked, and a seek back from the end must not still be the end there,
+        // or a looping video would loop twice (`Detached` answers for a seek only until it
+        // is made).
+        Trial::test("a_backends_own_player_knows_its_length_and_its_end", || {
+            length_and_end(opened_here("h264.mp4")?)
+        }),
         Trial::test("volume_and_mute_are_set_without_a_failure", sound),
         Trial::test("a_file_that_is_no_video_is_a_failure_not_a_panic", no_video),
         #[cfg(target_os = "linux")]
@@ -152,6 +161,17 @@ fn opened(file: &str) -> Result<Option<Box<dyn Stream>>, Failed> {
         (video::System.open(&media(file))).map_err(|failure| format!("{file}: {failure:?}"))?;
     readied(&*player).map_err(|failure| format!("{file}: {failure:?}"))?;
     Ok(Some(player))
+}
+
+/// A player of `file` opened by its backend on this thread, as the window does on a Mac.
+fn opened_here(file: &str) -> Result<Option<Box<dyn Stream>>, Failed> {
+    if !video::can_play() {
+        cannot("h264", "the system has no H.264 decoder")?;
+        return Ok(None);
+    }
+    let player = Player::open(&media(file)).map_err(|failure| format!("{file}: {failure:?}"))?;
+    readied(&player).map_err(|failure| format!("{file}: {failure:?}"))?;
+    Ok(Some(Box::new(player)))
 }
 
 /// Until `player` is ready, or says why it will not be: `open` waits for nothing.
@@ -385,8 +405,8 @@ fn hevc_player() -> Result<(), Failed> {
     }
 }
 
-fn length_and_end() -> Result<(), Failed> {
-    let Some(player) = opened("h264.mp4")? else {
+fn length_and_end(player: Option<Box<dyn Stream>>) -> Result<(), Failed> {
+    let Some(player) = player else {
         return Ok(());
     };
     let whole = player.duration().ok_or("no duration")?;

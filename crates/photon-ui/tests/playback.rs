@@ -459,10 +459,12 @@ impl Videos for Held {
     }
 }
 
-// The window steps past a video whose player hangs, to another that hangs too, and out of
-// the viewer: it waits for neither. Once the share answers, both are let go of.
+// The window steps past a video whose player is held on its thread, to another held too,
+// and out of the viewer: it waits for neither. Once the share answers, both are let go of.
+// (That the system's players are kept so is `System::open`'s, which `tests/video` opens
+// every player through.)
 #[test]
-fn a_video_whose_player_hangs_holds_up_nothing_of_the_window() {
+fn a_player_held_on_its_thread_holds_up_nothing_of_the_window() {
     // A window that waits for the player waits for good: said, rather than left to
     // nextest's five minutes.
     let (alive, watched) = mpsc::channel::<()>();
@@ -497,7 +499,6 @@ fn a_video_whose_player_hangs_holds_up_nothing_of_the_window() {
     driver.until(&mut harness, "the viewer closed", |app| {
         app.viewer_item().is_none()
     });
-    assert_eq!(told.lock().unwrap().dropped, 0);
     // The share answers.
     *gate.0.lock().unwrap() = true;
     gate.1.notify_all();
