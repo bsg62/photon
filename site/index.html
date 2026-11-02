@@ -186,7 +186,8 @@
   .systems > div { display: flex; flex-direction: column; gap: .375rem; padding: 1.75rem; border: 1px solid var(--line); border-radius: 14px; }
   .systems strong { font-size: 1.25rem; }
   /* The buttons stand on one line whatever the words above them wrap to. */
-  .systems span { color: var(--text-dim); margin-bottom: .875rem; }
+  .systems span { color: var(--text-dim); }
+  .systems .needs { font-size: .875rem; margin-bottom: .875rem; }
   .systems > div > .button, .systems .files { margin-top: auto; }
   /* Each installer its own full-width button, stacked: two side by side wrap unevenly
      at some widths. The size stands at the far end. */
@@ -382,16 +383,19 @@
       <div>
         <strong>Linux</strong>
         <span>AppImage, or .deb for Debian and Ubuntu</span>
+        <span class="needs">64-bit; Ubuntu 22.04, Debian 12, Fedora 36 or newer</span>
         <!--release: <div class="files"><a class="button small" href="{appimage_url}">AppImage<small>{appimage_size}</small></a><a class="button small plain" href="{deb_url}">.deb<small>{deb_size}</small></a></div>--><a class="button small" href="https://github.com/bsg62/photon/releases/latest">Download</a><!--/release-->
       </div>
       <div>
         <strong>macOS</strong>
         <span>.dmg for Apple Silicon or Intel</span>
+        <span class="needs">macOS 10.15 Catalina or newer</span>
         <!--release: <div class="files"><a class="button small plain" href="{mac_arm_url}">Apple Silicon<small>{mac_arm_size}</small></a><a class="button small plain" href="{mac_intel_url}">Intel<small>{mac_intel_size}</small></a></div>--><a class="button small plain" href="https://github.com/bsg62/photon/releases/latest">Download</a><!--/release-->
       </div>
       <div>
         <strong>Windows</strong>
         <span>.msi installer</span>
+        <span class="needs">64-bit Windows 10 or 11</span>
         <!--release: <div class="files"><a class="button small plain" id="msi" href="{msi_url}">Download<small>{msi_size}</small></a></div>--><a class="button small plain" href="https://github.com/bsg62/photon/releases/latest">Download</a><!--/release-->
       </div>
     </div>

@@ -222,15 +222,16 @@
   <p>Get the installer for your system from the <a href="./#download">download section</a>, or from the <a href="https://github.com/bsg62/photon/releases/latest">latest release</a> on GitHub.</p>
   <div class="table-wrap">
     <table>
-      <tr><th>System</th><th>File</th></tr>
-      <tr><td>Linux</td><td><code>.AppImage</code>, or <code>.deb</code> for Debian and Ubuntu</td></tr>
-      <tr><td>macOS</td><td><code>.dmg</code> — <code>aarch64</code> for Apple Silicon, <code>x64</code> for Intel</td></tr>
-      <tr><td>Windows</td><td><code>.msi</code></td></tr>
+      <tr><th>System</th><th>File</th><th>Needs</th></tr>
+      <tr><td>Linux</td><td><code>.AppImage</code>, or <code>.deb</code> for Debian and Ubuntu</td><td>x86-64; glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later)</td></tr>
+      <tr><td>macOS</td><td><code>.dmg</code> — <code>aarch64</code> for Apple Silicon, <code>x64</code> for Intel</td><td>macOS 10.15 Catalina or newer</td></tr>
+      <tr><td>Windows</td><td><code>.msi</code></td><td>Windows 10 or 11, 64-bit (x64)</td></tr>
     </table>
   </div>
   <p>
     photon reads JPEG, PNG, GIF, WebP, TIFF, BMP and AVIF, and plays MP4, M4V, MOV and (but on a
-    Mac) WebM video through the system's own support.
+    Mac) WebM video through the system's own support. It draws its window on the graphics
+    card, or in software, more slowly, where there is none it can use.
   </p>
 
   <h2 id="unsigned">Why does my system warn about the installer?</h2>
