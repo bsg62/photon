@@ -20,8 +20,8 @@
 <meta property="og:image:alt" content="photon's main window: a sidebar of views, albums and folders beside a grid of photos grouped by folder">
 <meta property="og:url" content="https://photon.webcodr.io/">
 <meta name="twitter:card" content="summary_large_image">
-<!-- For search engines. No version number: a release changes nothing on the site
-     (pages.yml), so one written here would go stale. -->
+<!-- For search engines. No version number: pages.yml writes the release's in through
+     HTML comments, which are not comments inside a script. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -262,7 +262,9 @@
       <a class="button" id="get" href="https://github.com/bsg62/photon/releases/latest">Download</a>
       <a class="button plain" href="#download">Other systems</a>
     </div>
-    <p class="fine">MIT licensed · No account or internet connection needed</p>
+    <!-- The latest release's version is written in where these comments stand when the
+         site is deployed (pages.yml), which a published release also does. -->
+    <p class="fine"><!--release: <a href="{url}">Version {version}</a> · -->MIT licensed · No account or internet connection needed</p>
   </section>
 
   <div class="shot">
@@ -369,6 +371,7 @@
   <section class="download wrap" id="download">
     <h2 class="section">Download photon</h2>
     <p>Free and open source, for Linux, macOS and Windows.</p>
+    <!--release: <p class="fine">Version {version}, released {date} · <a href="{url}">What’s new</a></p>-->
     <div class="systems">
       <div>
         <strong>Linux</strong>
