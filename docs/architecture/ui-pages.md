@@ -27,8 +27,8 @@ preroll (and `try_pull_sample` throws the preroll away before it looks, so a pau
 asked for the preroll alone), and AVFoundation's video output not at all, as it vends what
 the player renders: a paused Mac player makes that frame as a still, as a poster is. **Nothing a player is asked turns the Mac's run loop**: in the window winit
 turns it, and turned again in `frame` it held the window five milliseconds a call; the
-tests turn it while they wait (`idle`). **`open` waits for nothing**: it is called on the
-window's thread (on a Mac it must be the main one), and Media Foundation's engine takes a
+tests turn it while they wait (`idle`). **`open` waits for nothing**: on a Mac it is called on
+the window's thread, which must be the main one, and Media Foundation's engine takes a
 second or two to know a video's size on a runner - the player says when it is `ready`, and
 what went wrong after it was opened by `failure`. A Windows "N" edition without the Media Feature Pack has no Media Foundation, and starts all
 the same: its DLLs are delay-loaded (below, the installers). Every backend lets go of
@@ -81,9 +81,8 @@ file something else.
 a test's stand-in (`App::with_videos`), and a player is a `video::Stream`. Whether the system
 plays at all is the poster worker's answer, put where the viewer reads it
 (`App::video_plays`): asked once, off the window's thread. The file is read off it too
-(`video_paths`, asked once a video), the player opened on the window's thread - which on a
-Mac is the one AVFoundation wants, and is why `open` waits for nothing - and told to play at
-once, with its sound, as the web view's `<video>` did. Each frame's newest picture is written
+(`video_paths`, asked once a video), and the player opened and told to play at once, with
+its sound, as the web view's `<video>` did. Each frame's newest picture is written
 into one texture in place (`TextureHandle::set`) and handed to the viewer as its one level,
 so a video's frame is drawn as a photo's picture is, fitted; until the first its poster - the
 preview - stands in its place. A frame is asked for every 8 ms while it plays (and once more
@@ -101,11 +100,24 @@ is made a `ColorImage` on this thread and uploaded from it - about a millisecond
 a release build once the needless unmultiplying pass was dropped, four at 4K, and ten times
 that in a debug build; and a player has no crash-loop guard, where a poster does - a file
 whose later frames crash a decoder takes the window down at each opening, which is not a
-loop, since each needs a click. And a player is opened and let go of on the window's thread (GStreamer's
-`Null` joins its streaming threads, Media Foundation's `Shutdown` waits), so a video on a share
-that has stopped answering can hold the window: the poster worker leaves such a decoder
-behind, the player cannot - on a Mac AVFoundation wants that thread. Not reproduced; found by
-the switch-over's whole-branch review.
+loop, since each needs a click.
+
+**On Linux and Windows a player lives on a thread of its own** (`video::Detached`, which
+`System::open` hands over): opened, played, sought, read and let go of there, the window
+only queuing what it asks and reading what the player said when it last read it - which it
+asks for by reading, so a still window keeps a paused player's thread asleep. GStreamer's
+`Null` joins its streaming threads, a flushing seek waits for the read under way, and Media
+Foundation's `Shutdown` waits: on the window's thread, a video on a share that had stopped
+answering held the window. A thread held for good is left behind, as the poster worker
+leaves a decoder; the window waits for players being let go of when it closes, for at most
+`PLAYERS_PATIENCE`. **What is read lags what was asked**, so a seek on its way is answered
+for by `Detached` itself - its place for the position, no end, no frame from before it:
+read from the player, a video looped at its end would still be at its end, and loop again.
+A panic in a backend is the video's failure, not a dead thread. **Not on a Mac**:
+AVFoundation's player item is made on the main thread, and `isPlayable` and a paused
+player's still read the file there, so a share that stops answering can still hold a Mac's
+window. Every test of a player in `tests/video` opens it through `System`, as the window
+does.
 
 **A video's controls are its strip, its keys and a click on its picture** (`Playing::act`,
 `playback::Act` - `createVideoPlayer` ported; drawn by `ViewerView::strip`, `VideoControls.

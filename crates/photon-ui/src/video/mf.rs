@@ -265,8 +265,8 @@ impl Drop for Player {
 
 impl Player {
     /// Opened, and on its way to being ready, paused at its start: nothing waits here -
-    /// it is called on the window's thread - and what goes wrong from here on is said by
-    /// `failure`.
+    /// the window reads it as it gets there, from the thread it is kept on (`Detached`) -
+    /// and what goes wrong from here on is said by `failure`.
     pub fn open(path: &Path) -> Result<Player, Failure> {
         started()?;
         unsafe {
@@ -308,7 +308,7 @@ impl Player {
 
     /// Whether it knows its size and length: `HAVE_METADATA` or more. The engine takes
     /// a second or two to get there on a runner, which is why `open` does not wait for
-    /// it on the window's thread.
+    /// it.
     pub fn ready(&self) -> bool {
         self.failure().is_none() && unsafe { self.engine.GetReadyState() } >= 1
     }

@@ -232,8 +232,8 @@ impl Drop for Player {
 
 impl Player {
     /// Opened, and on its way to being ready, paused at its start: nothing waits here -
-    /// it is called on the window's thread - and what goes wrong from here on is said by
-    /// `failure`.
+    /// the window reads it as it gets there, from the thread it is kept on (`Detached`) -
+    /// and what goes wrong from here on is said by `failure`.
     pub fn open(path: &Path) -> Result<Player, Failure> {
         let (playbin, sink) = pipeline(path, true, true)?;
         let player = Player {

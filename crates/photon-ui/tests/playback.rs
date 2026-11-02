@@ -9,12 +9,12 @@ use photon_engine::commands;
 use photon_ui::{
     app::App,
     playback::FAILED,
-    video::{Failure, Picture, Stream, Videos},
+    video::{Detached, Failure, Live, Picture, Stream, Videos},
 };
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex, mpsc},
     time::Duration,
 };
 
@@ -142,9 +142,13 @@ fn folder(dir: &Path) -> PathBuf {
 
 /// The application over `folder(dir)` with the stand-in, once its four are shown.
 fn launched<'a>(dir: &Path, told: &Arc<Mutex<Told>>) -> (Harness<'a>, Driver, PathBuf) {
+    launched_with(dir, Arc::new(StandIn(told.clone())))
+}
+
+fn launched_with<'a>(dir: &Path, videos: Arc<dyn Videos>) -> (Harness<'a>, Driver, PathBuf) {
     let folder = folder(dir);
     let dirs = photon_ui::dirs::within(&dir.join("data"), &dir.join("cache"));
-    let (pictures, videos) = (Some(folder.clone()), Arc::new(StandIn(told.clone())));
+    let pictures = Some(folder.clone());
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
@@ -417,4 +421,87 @@ fn press(pos: Pos2, button: PointerButton, pressed: bool) -> egui::Event {
         pressed,
         modifiers: Modifiers::NONE,
     }
+}
+
+/// The stand-in's players kept on threads of their own, as the system's are on Linux and
+/// Windows, each held as it opens until the test lets them go: a video on a share that has
+/// stopped answering.
+struct Held {
+    told: Arc<Mutex<Told>>,
+    gate: Arc<(Mutex<bool>, Condvar)>,
+    live: Arc<Live>,
+}
+
+impl Videos for Held {
+    fn can_play(&self) -> bool {
+        true
+    }
+
+    fn poster(&self, _: &Path, _: f64) -> Result<Picture, Failure> {
+        Ok(frame(0.0, [200, 30, 30]))
+    }
+
+    fn open(&self, path: &Path) -> Result<Box<dyn Stream>, Failure> {
+        let (told, gate, path) = (self.told.clone(), self.gate.clone(), path.to_owned());
+        Ok(Box::new(Detached::open(&self.live, move || {
+            told.lock().unwrap().opened.push(path);
+            let (open, opened) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = opened.wait(open).unwrap();
+            }
+            Ok(Box::new(Player(told.clone())) as Box<dyn Stream>)
+        })))
+    }
+
+    fn finish(&self, within: Duration) -> bool {
+        self.live.finish(within)
+    }
+}
+
+// The window steps past a video whose player hangs, to another that hangs too, and out of
+// the viewer: it waits for neither. Once the share answers, both are let go of.
+#[test]
+fn a_video_whose_player_hangs_holds_up_nothing_of_the_window() {
+    // A window that waits for the player waits for good: said, rather than left to
+    // nextest's five minutes.
+    let (alive, watched) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Err(mpsc::RecvTimeoutError::Timeout) = watched.recv_timeout(Duration::from_secs(60))
+        {
+            eprintln!("the window waited for a player that hangs");
+            std::process::exit(101);
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let told = Arc::new(Mutex::new(Told::default()));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let live = Arc::new(Live::default());
+    let videos = Held {
+        told: told.clone(),
+        gate: gate.clone(),
+        live: live.clone(),
+    };
+    let (mut harness, mut driver, _) = launched_with(dir.path(), Arc::new(videos));
+    open(&mut driver, &mut harness, "v.mp4");
+    driver.until(&mut harness, "its player opening", |_| {
+        told.lock().unwrap().opened.len() == 1
+    });
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the next one's opening", |_| {
+        told.lock().unwrap().opened.len() == 2
+    });
+    harness.key_press_modifiers(Modifiers::NONE, Key::Escape);
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the viewer closed", |app| {
+        app.viewer_item().is_none()
+    });
+    assert_eq!(told.lock().unwrap().dropped, 0);
+    // The share answers.
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    assert!(live.finish(Duration::from_secs(10)));
+    assert_eq!(told.lock().unwrap().dropped, 2);
+    drop(alive);
 }
