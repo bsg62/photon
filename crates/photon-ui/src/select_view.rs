@@ -264,7 +264,8 @@ impl SelectView {
         // A list that closed in this frame is drawn once more, deaf, for the shapes to
         // fade out from (egui keeps none from one frame to the next).
         let closing = !self.select.open() && self.list.is_some() && data.animations;
-        if self.select.open() || closing {
+        let drawn = self.select.open() || closing;
+        if drawn {
             let picked = self.list(ui, rect, data, &options, now_ms, closing);
             chosen = picked.filter(|_| !closing).or(chosen);
         }
@@ -274,9 +275,17 @@ impl SelectView {
                 self.fading = Some(of_layers(ui.ctx(), |l| l == layer, now_ms, FADE_OUT_MS));
                 ui.ctx().request_repaint();
             }
-            self.list = None;
-            self.opened = None;
-            self.growth = None;
+            // A list closed by a choice in this frame was drawn interactable, and its
+            // shapes are a frame old by the time anything can be kept: it is drawn once
+            // more in the next, deaf, and fades from there. Kept till then.
+            let by_choice = drawn && !closing && data.animations;
+            if by_choice {
+                ui.ctx().request_repaint();
+            } else {
+                self.list = None;
+                self.opened = None;
+                self.growth = None;
+            }
         }
         chosen
     }
@@ -443,6 +452,8 @@ impl SelectView {
         }
         egui::Area::new(list_layer(data.id).id)
             .order(Order::Foreground)
+            // A closing list takes no press, hover or hit test.
+            .interactable(!closing)
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
                 let mut draw = |ui: &mut egui::Ui| {

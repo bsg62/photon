@@ -149,6 +149,11 @@ impl Shell {
         self.controls.list_growth(id)
     }
 
+    /// Whether the list of the top bar's dropdown called `id` is fading out.
+    pub fn list_fading(&self, id: &str) -> bool {
+        self.controls.list_fading(id)
+    }
+
     /// Where the sidebar's list is.
     pub fn sidebar_position(&self) -> f64 {
         self.sidebar.position()

@@ -129,7 +129,12 @@ photo under it, and `Middle` keeps the fading menu under a new one opened by the
 click. egui empties the graphics at the end of the pass, so the afterimage is taken in the
 frame the menu was last *drawn*: `MenuView::show_in` and `SelectView::show` therefore draw the
 area once more in the frame that closes them (Escape, a press outside) and answer `Closed`
-after, deaf to presses; an early return before drawing would leave nothing to fade. The app's
+after, with the area `.interactable(false)`: drawn interactable, it stays visible to egui's
+`layer_id_at` and hit test in the next frame and takes the press meant for the photo under it
+(with the animations off it returns `Closed` before drawing, as it always did). An early
+return before drawing would leave nothing to fade. A dropdown closed by a *choice* is closed
+inside its own `list()`, after the frame's draw: it keeps `list` one frame more and is drawn
+deaf and kept in the next. The app's
 afterimages (`App::afterimages`) are painted and pruned before the menu is drawn, ahead of
 the viewer and compare's early returns; a dropdown keeps its own. A menu closed in a frame it
 was not drawn in (its photos gone) goes at once.

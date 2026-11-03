@@ -343,8 +343,15 @@ impl MenuView {
         // rests exactly where the menu opened, at its corner, and egui puts an area on
         // whole points - half a point away, the corner was outside the menu or inside
         // it by where on a point the pointer happened to be.
+        // Closed with the animations off: gone at once, as it always was.
+        if closed && !animations {
+            return Outcome::Closed;
+        }
         egui::Area::new(Id::new(AREA))
             .order(Order::Foreground)
+            // A closing menu, drawn for the last time to fade from, takes no press: egui
+            // would answer its layer over the old rectangle in the next frame.
+            .interactable(!closed)
             .fixed_pos(rect.min - Vec2::splat(RIM))
             // There at once, as a menu is: egui fades a new area in over a few frames,
             // each of them asked for.

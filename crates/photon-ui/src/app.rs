@@ -1747,6 +1747,11 @@ impl App {
         self.shell.list_growth(id)
     }
 
+    /// Whether the list of the top bar's dropdown called `id` is fading out.
+    pub fn list_fading(&self, id: &str) -> bool {
+        self.shell.list_fading(id)
+    }
+
     /// How many closed menus are fading out over the window.
     pub fn afterimages(&self) -> usize {
         self.afterimages.len()

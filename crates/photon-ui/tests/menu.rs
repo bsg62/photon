@@ -1155,20 +1155,108 @@ fn a_closed_menu_fades_and_takes_no_press() {
     let at = middle(&harness, 0);
     right_click_at(&mut driver, &mut harness, at);
     driver.frame(&mut harness, driver.now + 0.3);
+    let stood = harness.state().menu_growth().unwrap().rect;
+    // The photo next to the first lies under where the menu stood.
+    assert!(stood.contains(middle(&harness, 1)), "{stood:?}");
     assert_eq!(harness.state().afterimages(), 0);
-    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    let photo = middle(&harness, 1);
+    harness.event(egui::Event::PointerMoved(photo));
+    driver.act(&mut harness);
+    escape_down(&mut driver, &mut harness);
     assert!(!harness.state().menu_open());
     let closed = driver.now;
+    // A press in the next frame is that photo's, not the fading menu's.
+    press_next(&mut driver, &mut harness, photo);
+    assert_eq!(harness.state().selected(), [harness.state().shown()[1]]);
     driver.frame(&mut harness, closed + 0.05);
     assert_eq!(harness.state().afterimages(), 1);
     // What it painted is what fades: the words, half gone.
     let (_, faded) = drawn(&harness, "Star photo").expect("the closed menu is painted");
     assert!((0.0..0.5).contains(&faded), "{faded}");
-    // A click on a photo under where the menu stood is that photo's.
-    pick(&mut driver, &mut harness, 1, Modifiers::NONE);
-    assert_eq!(harness.state().selected(), [harness.state().shown()[1]]);
     driver.frame(&mut harness, closed + 0.11);
     assert_eq!(harness.state().afterimages(), 0);
+}
+
+/// Escape alone, in one frame (`key` is two: its release is the second).
+fn escape_down(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.event(egui::Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(harness);
+}
+
+/// A press at `at` in the very next frame, then its release: the frame after a menu or a
+/// list closed is the one that could still give the press to it.
+fn press_next(driver: &mut Driver, harness: &mut Harness<'_>, at: Pos2) {
+    harness.event(button(at, PointerButton::Primary, true, Modifiers::NONE));
+    driver.act(harness);
+    harness.event(button(at, PointerButton::Primary, false, Modifiers::NONE));
+    driver.act(harness);
+}
+
+/// Opens the sort dropdown, lets it grow, and answers where its list stands.
+fn sort_list(driver: &mut Driver, harness: &mut Harness<'_>) -> egui::Rect {
+    harness.get_by_label("Sort by: Date taken").click();
+    driver.act(harness);
+    driver.frame(harness, driver.now + 0.3);
+    harness.state().list_growth("sort").expect("the list").rect
+}
+
+#[test]
+fn a_closed_dropdown_takes_no_press_whether_escape_or_a_choice_closed_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    // A photo under the list, and a point of it inside the list.
+    let under = |harness: &Harness<'_>, stood: egui::Rect| {
+        (0..60)
+            .find_map(|offset| {
+                let tile = harness.state().tile_rect(offset)?;
+                let both = tile.intersect(stood);
+                (both.is_positive()).then(|| (offset, both.center()))
+            })
+            .expect("a photo under the list")
+    };
+
+    let stood = sort_list(&mut driver, &mut harness);
+    let (offset, at) = under(&harness, stood);
+    harness.event(egui::Event::PointerMoved(at));
+    driver.act(&mut harness);
+    escape_down(&mut driver, &mut harness);
+    assert!(harness.state().list_growth("sort").is_none());
+    press_next(&mut driver, &mut harness, at);
+    assert_eq!(
+        harness.state().selected(),
+        [harness.state().shown()[offset]]
+    );
+
+    // And closed by choosing an option with the pointer: faded, and deaf in the next frames.
+    let stood = sort_list(&mut driver, &mut harness);
+    // (The option held: choosing another would rebuild the grid under the press.)
+    harness.get_by_label("Date taken").click();
+    driver.act(&mut harness);
+    let (offset, at) = under(&harness, stood);
+    press_next(&mut driver, &mut harness, at);
+    assert_eq!(
+        harness.state().selected(),
+        [harness.state().shown()[offset]]
+    );
+}
+
+#[test]
+fn a_dropdown_closed_by_a_choice_fades() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    sort_list(&mut driver, &mut harness);
+    harness.get_by_label("Size").click();
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    assert!(harness.state().list_fading("sort"), "the list is kept");
+    driver.frame(&mut harness, driver.now + 0.3);
+    assert!(!harness.state().list_fading("sort"));
 }
 
 #[test]
@@ -1209,6 +1297,14 @@ fn without_animations_a_menu_is_there_at_once() {
     right_click_at(&mut driver, &mut harness, at);
     let growth = harness.state().menu_growth().expect("the menu is drawn");
     assert_eq!((growth.scale, growth.opacity), (1.0, 1.0));
-    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    let stood = growth.rect;
+    let photo = middle(&harness, 1);
+    assert!(stood.contains(photo), "{stood:?}");
+    harness.event(egui::Event::PointerMoved(photo));
+    driver.act(&mut harness);
+    escape_down(&mut driver, &mut harness);
     assert_eq!(harness.state().afterimages(), 0);
+    // And a press where it stood is the photo's.
+    press_next(&mut driver, &mut harness, photo);
+    assert_eq!(harness.state().selected(), [harness.state().shown()[1]]);
 }

@@ -134,6 +134,14 @@ impl ControlsBar {
         }
     }
 
+    pub fn list_fading(&self, id: &str) -> bool {
+        match id {
+            "sort" => self.sort.fading(),
+            "group" => self.group.fading(),
+            _ => false,
+        }
+    }
+
     /// Closes the lists, for controls that are not drawn.
     pub fn close(&mut self) {
         self.sort.close();
