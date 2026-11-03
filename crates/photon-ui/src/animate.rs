@@ -6,10 +6,30 @@
 /// How long a slide takes, whatever its distance.
 pub const DURATION_MS: f64 = 200.0;
 
+/// How long a closing menu, dropdown or dialog fades.
+pub const FADE_OUT_MS: f64 = 100.0;
+
+/// How long the viewer's controls take to fade in once the photo has landed.
+pub const CONTROLS_MS: f64 = 100.0;
+
+/// The size a menu, dropdown or dialog starts growing from, as a share of its own.
+pub const GROW_FROM: f32 = 0.92;
+
 /// Fast at the start and settling at the end, a cubic: 0.875 at the half.
 pub fn ease_out(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
+}
+
+/// How far a motion of `duration_ms` has come `since_ms` after its start, on the slide's
+/// curve: 0 before the start, 1 after the end.
+pub fn eased(since_ms: f64, duration_ms: f64) -> f64 {
+    ease_out(since_ms / duration_ms)
+}
+
+/// The scale of a growth `k` of the way along (`eased`'s result).
+pub fn grown(k: f64) -> f32 {
+    GROW_FROM + (1.0 - GROW_FROM) * k as f32
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +86,19 @@ impl Slide {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eased_is_the_slides_curve_over_any_time() {
+        assert_eq!(eased(50.0, 100.0), 0.875);
+        assert_eq!(eased(-5.0, 100.0), 0.0);
+        assert_eq!(eased(250.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn a_growth_starts_at_ninety_two_hundredths() {
+        assert_eq!(grown(0.0), 0.92);
+        assert_eq!(grown(1.0), 1.0);
+    }
 
     #[test]
     fn a_slide_eases_out_over_its_time() {
