@@ -1,6 +1,7 @@
 //! One tile: a square, the photo covering it, and its marks.
 
 use super::labels::format_duration;
+use crate::viewer_motion::crop_uv;
 use crate::{
     icons::Icon,
     theme::{
@@ -23,22 +24,8 @@ const PROBLEM: f32 = 28.0;
 /// The part of a `width` by `height` picture that covers a square, centred: what
 /// `object-fit: cover` shows. In texture coordinates, 0 to 1.
 pub fn cover_uv(width: f32, height: f32) -> Rect {
-    if width <= 0.0 || height <= 0.0 {
-        return Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-    }
-    if width > height {
-        let shown = height / width;
-        Rect::from_min_max(
-            pos2((1.0 - shown) / 2.0, 0.0),
-            pos2((1.0 + shown) / 2.0, 1.0),
-        )
-    } else {
-        let shown = width / height;
-        Rect::from_min_max(
-            pos2(0.0, (1.0 - shown) / 2.0),
-            pos2(1.0, (1.0 + shown) / 2.0),
-        )
-    }
+    let (left, top, right, bottom) = crop_uv((width, height), (1.0, 1.0));
+    Rect::from_min_max(pos2(left, top), pos2(right, bottom))
 }
 
 /// How wide the ring of a selected tile is, and the line that sets it off the photo.
