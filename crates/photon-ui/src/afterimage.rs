@@ -3,10 +3,15 @@
 //! (it names egui types), so it is not in `STATE_MODULES`.
 
 use crate::animate::eased;
-use eframe::egui::{self, epaint::ClippedShape};
+use eframe::egui::{self, Shape, epaint::ClippedShape};
 
 pub struct Afterimage {
     shapes: Vec<ClippedShape>,
+    /// The textures the shapes draw from, held for as long as they are painted. The view
+    /// that drew them may let go of them in the very frame they were kept - compare does,
+    /// as the viewer opens from it - and a shape naming a texture that is gone is drawn by
+    /// the GPU as nothing, with a warning in every frame.
+    _held: Vec<egui::TextureHandle>,
     started_ms: f64,
     duration_ms: f64,
 }
@@ -22,7 +27,7 @@ pub fn of_layers(
     // The ids first and the graphics after: both lock the context, so neither may run
     // inside the other's closure.
     let layers: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().filter(|l| keep(*l)).collect());
-    let shapes = ctx.graphics(|g| {
+    let shapes: Vec<ClippedShape> = ctx.graphics(|g| {
         layers
             .iter()
             .filter_map(|l| g.get(*l))
@@ -30,10 +35,40 @@ pub fn of_layers(
             .collect()
     });
     Afterimage {
+        _held: held(ctx, &shapes),
         shapes,
         started_ms: now_ms,
         duration_ms,
     }
+}
+
+/// A handle of its own to every texture egui manages that `shapes` draw from, but the
+/// font's, which is never let go of: each is retained once here and let go of when its
+/// handle is dropped, as a cloned `TextureHandle` is.
+fn held(ctx: &egui::Context, shapes: &[ClippedShape]) -> Vec<egui::TextureHandle> {
+    fn each(shape: &Shape, ids: &mut Vec<egui::TextureId>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, ids)),
+            shape => ids.push(shape.texture_id()),
+        }
+    }
+    let mut ids = Vec::new();
+    for kept in shapes {
+        each(&kept.shape, &mut ids);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    let manager = ctx.tex_manager();
+    let mut textures = manager.write();
+    let font = egui::TextureId::default();
+    (ids.into_iter())
+        .filter(|id| matches!(id, egui::TextureId::Managed(_)) && *id != font)
+        .filter_map(|id| {
+            textures.meta(id)?;
+            textures.retain(id);
+            Some(egui::TextureHandle::new(manager.clone(), id))
+        })
+        .collect()
 }
 
 impl Afterimage {

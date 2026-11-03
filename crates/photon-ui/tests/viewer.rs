@@ -3559,3 +3559,76 @@ fn the_zoom_heads_for_the_picture_it_has_and_not_the_shape_the_index_gives() {
     assert!(near(motion(&harness).photo, band, 1.0));
     drop(rendering);
 }
+
+/// Every texture the last frame drew from, as egui's texture ids: the font's left out.
+fn textures_drawn(harness: &Harness<'_>) -> Vec<egui::TextureId> {
+    fn each(shape: &egui::Shape, found: &mut Vec<egui::TextureId>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, found)),
+            shape if shape.texture_id() != egui::TextureId::default() => {
+                found.push(shape.texture_id());
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, &mut found);
+    }
+    found
+}
+
+// Opened from compare, the viewer fades in over compare as it stood - whose panes' pictures
+// compare lets go of as it closes, at that press. The picture under the viewer holds them
+// for as long as it is drawn: nothing a frame draws names a texture that is gone, which a
+// GPU would draw as nothing.
+#[test]
+fn the_window_under_an_opening_keeps_the_pictures_it_draws() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let at = tile(&harness, 1);
+    let adding = if cfg!(target_os = "macos") {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    harness.event(egui::Event::ModifiersChanged(adding));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: adding,
+        });
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::C);
+    driver.until(&mut harness, "compare open", |app| app.compare().is_some());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let panes = textures_drawn(&harness);
+    assert!(panes.len() >= 2, "{panes:?} pictures in compare");
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    for at in [p, p + 0.1] {
+        driver.frame(&mut harness, at);
+        assert!(!motion(&harness).zoom, "opened from compare, it fades");
+        let manager = harness.ctx.tex_manager();
+        let manager = manager.read();
+        let gone: Vec<_> = (textures_drawn(&harness).into_iter())
+            .filter(|id| manager.meta(*id).is_none())
+            .collect();
+        assert!(gone.is_empty(), "{gone:?} drawn and let go of, at {at}");
+    }
+    // And let go of once the viewer has come.
+    driver.frame(&mut harness, p + 0.3);
+    driver.act(&mut harness);
+    assert_eq!(harness.state().viewer_motion(), None);
+    let manager = harness.ctx.tex_manager();
+    let kept: Vec<_> = (panes.iter())
+        .filter(|id| manager.read().meta(**id).is_some())
+        .collect();
+    assert!(kept.is_empty(), "{kept:?} of compare's still held");
+}
