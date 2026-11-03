@@ -47,6 +47,15 @@ impl Afterimage {
         }
     }
 
+    /// How many shapes are kept.
+    pub fn len(&self) -> usize {
+        self.shapes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shapes.is_empty()
+    }
+
     /// 1 at the start, 0 at the end, on the slide's curve.
     pub fn opacity(&self, now_ms: f64) -> f32 {
         1.0 - eased(now_ms - self.started_ms, self.duration_ms) as f32

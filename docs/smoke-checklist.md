@@ -838,3 +838,4 @@ library, a file changed in the file manager, or Picasa will do.
 - [ ] `H` in a long folder (and unstar in Starred): the photos close the gap by gliding, the one that left fades where it stood.
 - [ ] Settings → animations off: the sidebar and panel change at once, the grid does not glide, and a thumbnail arriving late does not fade. Back on: all of it moves again.
 - [ ] Right-click near each corner of the window: the menu grows out of the pointer. Escape fades it in a blink; a click on a photo where it stood selects that photo. Open the sort dropdown: its list grows down from its middle; choosing an option fades it. In the viewer the menu does the same in the dark palette.
+- [ ] Open Settings and press Escape: it grows from its middle with the backdrop darkening, and fades with it in a blink; a click on a photo where it stood selects that photo. Open the keyword picker: it grows from the middle of its first frame and does not move as it is typed in.

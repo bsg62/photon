@@ -7,7 +7,7 @@ use crate::{
     compare_view::{self, CompareAction, CompareData, CompareView, PaneData},
     copies::{self, CopiesOf},
     crop_tool::CropTool,
-    dialog_view::{DialogView, Done},
+    dialog_view::{self, DialogView, Done},
     dialogs::{Confirm, Dialog, Subject},
     dirs::Dirs,
     drop_card,
@@ -1752,9 +1752,24 @@ impl App {
         self.shell.list_fading(id)
     }
 
-    /// How many closed menus are fading out over the window.
+    /// How the open dialog was last drawn growing; none while none is drawn.
+    pub fn dialog_growth(&self) -> Option<Growth> {
+        self.dialog.as_ref().and(self.dialog_view.growth())
+    }
+
+    /// The colour the window's backdrop was last drawn in, for the dialog over it.
+    pub fn backdrop(&self) -> Option<egui::Color32> {
+        self.dialog.as_ref().and(self.dialog_view.backdrop())
+    }
+
+    /// How many closed menus and dialogs are fading out over the window.
     pub fn afterimages(&self) -> usize {
         self.afterimages.len()
+    }
+
+    /// How many shapes the fading menus and dialogs have kept between them.
+    pub fn afterimage_shapes(&self) -> usize {
+        self.afterimages.iter().map(Afterimage::len).sum()
     }
 
     /// Whether a menu is open.
@@ -2067,17 +2082,13 @@ impl App {
         }
     }
 
-    /// Keeps the menu that closed in this frame, drawn in it, to fade out over the window.
-    /// On the `Middle` layer, under a menu opened by the same click and not an area, which
-    /// would take the next press.
-    fn fade_menu(&mut self, ctx: &egui::Context, now: f64) {
+    /// Keeps the menu or dialog `layer` that closed in this frame, drawn in it, to fade out
+    /// over the window. On the `Middle` layer, under a menu opened by the same click and not
+    /// an area, which would take the next press.
+    fn fade(&mut self, ctx: &egui::Context, now: f64, layer: egui::LayerId) {
         if self.animations {
-            self.afterimages.push(of_layers(
-                ctx,
-                |layer| layer == menu_view::layer(),
-                now,
-                FADE_OUT_MS,
-            ));
+            self.afterimages
+                .push(of_layers(ctx, |kept| kept == layer, now, FADE_OUT_MS));
             ctx.request_repaint();
         }
     }
@@ -2232,7 +2243,14 @@ impl App {
             | Dialog::Shortcuts => Vec::new(),
         };
         let tags = &self.held.collections().tags;
-        let done = (self.dialog_view).show(ui, dialog, &keywords, tags, self.named.as_deref());
+        let done = (self.dialog_view).show(
+            ui,
+            dialog,
+            &keywords,
+            tags,
+            self.named.as_deref(),
+            self.animations,
+        );
         match (done, &mut self.dialog) {
             (Done::Open, _) => {}
             (Done::Closed, _) => {
@@ -2324,6 +2342,11 @@ impl App {
                 | Done::Settings(_),
                 _,
             ) => {}
+        }
+        // Closed by this frame's answer: drawn in it, so it fades out from what it drew.
+        if self.dialog.is_none() {
+            let now = ui.ctx().input(|input| input.time) * 1000.0;
+            self.fade(ui.ctx(), now, dialog_view::layer());
         }
     }
 
@@ -5106,11 +5129,11 @@ impl eframe::App for App {
                         Outcome::Open => {}
                         Outcome::Closed => {
                             self.menu = None;
-                            self.fade_menu(ui.ctx(), now);
+                            self.fade(ui.ctx(), now, menu_view::layer());
                         }
                         Outcome::Picked(picked) => {
                             self.menu = None;
-                            self.fade_menu(ui.ctx(), now);
+                            self.fade(ui.ctx(), now, menu_view::layer());
                             self.overlay_closed = Some(now);
                             match picked {
                                 Picked::Tile(action) => self.pick(action),

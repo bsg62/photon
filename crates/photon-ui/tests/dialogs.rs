@@ -4,7 +4,9 @@
 //! Every write here goes into a library the test made, in a temporary directory, and
 //! none of them outside `library.db`: a keyword is the library's, never the photo's.
 
-use crate::common::{Driver, Harness, library, opened, photo_ids};
+use crate::common::{
+    Driver, Harness, escape_down, library, opened, opened_animated, photo_ids, press_next,
+};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::{grid::GridView, library::Library};
@@ -1013,4 +1015,170 @@ fn the_message_says_how_many_of_the_photos_the_keyword_reached() {
     key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
     driver.until(&mut harness, "the message", |app| !app.toasts().is_empty());
     assert_eq!(said(&harness), ["Added “beach” to 2 of 3 photos"]);
+}
+
+// The dialogs grow in from their middle and fade out (`dialog_view.rs`, `afterimage.rs`).
+
+fn animated<'a>(dir: &std::path::Path) -> (Harness<'a>, Driver) {
+    let library = library(dir, 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    // Let the library's own repaints be done with before a motion is timed.
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    (harness, driver)
+}
+
+/// `?` pressed, in one frame with what it types, and let go of.
+fn question_mark(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        },
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(harness);
+    harness.event(egui::Event::Key {
+        key: Key::Questionmark,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::SHIFT,
+    });
+    driver.act(harness);
+}
+
+#[test]
+fn a_dialog_grows_from_its_middle_and_its_ground_fades_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    let scrim = photon_ui::theme::apply::color(photon_ui::theme::tokens::SCRIM);
+    // The frame `?` is pressed in is the dialog's first.
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        },
+        egui::Event::Text("?".to_owned()),
+    ]);
+    driver.act(&mut harness);
+    let first = driver.now;
+    assert!(matches!(harness.state().dialog(), Some(Dialog::Shortcuts)));
+    let growth = harness.state().dialog_growth().expect("the dialog");
+    assert!(growth.scale < 0.93, "{growth:?}");
+    assert_eq!(growth.origin, growth.rect.center());
+    let backdrop = harness.state().backdrop().expect("the backdrop");
+    assert!(backdrop.a() < scrim.a() / 4, "{backdrop:?}");
+
+    driver.frame(&mut harness, first + 0.2);
+    let growth = harness.state().dialog_growth().unwrap();
+    assert_eq!(growth.scale, 1.0);
+    assert_eq!(harness.state().backdrop(), Some(scrim));
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
+}
+
+#[test]
+fn a_closed_dialog_fades_with_its_ground() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    question_mark(&mut driver, &mut harness);
+    driver.frame(&mut harness, driver.now + 0.3);
+    let stood = harness.state().dialog_growth().expect("the dialog").rect;
+    // A photo under the dialog, and a point of it inside the dialog's old rectangle.
+    let (offset, at) = (0..60)
+        .find_map(|offset| {
+            let tile = harness.state().tile_rect(offset)?;
+            let both = tile.intersect(stood);
+            both.is_positive().then(|| (offset, both.center()))
+        })
+        .expect("a photo under the dialog");
+    assert!(stood.contains(at));
+    escape_down(&mut driver, &mut harness);
+    let closed = driver.now;
+    assert!(harness.state().dialog().is_none());
+    assert_eq!(harness.state().afterimages(), 1);
+    assert!(
+        harness.state().afterimage_shapes() > 0,
+        "the dialog is kept"
+    );
+    // A press in the very next frame lands on the photo under where the dialog stood.
+    press_next(&mut driver, &mut harness, at);
+    assert_eq!(
+        harness.state().selected(),
+        [harness.state().shown()[offset]]
+    );
+    assert_eq!(harness.state().afterimages(), 1);
+    driver.frame(&mut harness, closed + 0.11);
+    assert_eq!(harness.state().afterimages(), 0);
+}
+
+#[test]
+fn a_growing_dialog_is_pressed_at_its_full_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    let at = middle(&harness, 0);
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Secondary, true, Modifiers::NONE));
+    harness.event(button(at, PointerButton::Secondary, false, Modifiers::NONE));
+    driver.act(&mut harness);
+    driver.act(&mut harness);
+    harness.get_by_label("Export photo…").click();
+    driver.act(&mut harness);
+    // Measured unseen in its first frame; clicked in the next, still small.
+    driver.act(&mut harness);
+    assert!(matches!(harness.state().dialog(), Some(Dialog::Export(_))));
+    assert!(harness.state().dialog_growth().unwrap().scale < 1.0);
+    // A press so soon after the dialog opened is the second of a double click on what
+    // opened it and does nothing (`DialogView::deaf`); this one is about where the button
+    // is while the dialog is small, so the double click is made impossible.
+    harness
+        .ctx
+        .options_mut(|options| options.input_options.max_double_click_delay = 0.0);
+    // (The cross is called "Cancel" too: the button is the first.) Pressed at its corner,
+    // which a button drawn smaller, or placed smaller, would not reach.
+    let cancel = harness.get_all_by_label("Cancel").next().unwrap().rect();
+    let corner = cancel.max - egui::vec2(2.0, 2.0);
+    harness.event(egui::Event::PointerMoved(corner));
+    driver.act(&mut harness);
+    press_next(&mut driver, &mut harness, corner);
+    assert!(harness.state().dialog().is_none());
+}
+
+#[test]
+fn without_animations_a_dialog_is_there_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 60);
+    question_mark(&mut driver, &mut harness);
+    let growth = harness.state().dialog_growth().expect("the dialog");
+    assert_eq!((growth.scale, growth.opacity), (1.0, 1.0));
+    assert_eq!(
+        harness.state().backdrop(),
+        Some(photon_ui::theme::apply::color(
+            photon_ui::theme::tokens::SCRIM
+        ))
+    );
+    let stood = growth.rect;
+    let at = (0..60)
+        .find_map(|offset| {
+            let tile = harness.state().tile_rect(offset)?;
+            let both = tile.intersect(stood);
+            both.is_positive().then(|| (offset, both.center()))
+        })
+        .expect("a photo under the dialog");
+    escape_down(&mut driver, &mut harness);
+    assert!(harness.state().dialog().is_none());
+    assert_eq!(harness.state().afterimages(), 0);
+    press_next(&mut driver, &mut harness, at.1);
+    assert_eq!(harness.state().selected(), [harness.state().shown()[at.0]]);
 }

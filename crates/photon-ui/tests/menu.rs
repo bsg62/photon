@@ -5,7 +5,8 @@
 //! Every write here goes into a library the test made, in a temporary directory.
 
 use crate::common::{
-    Driver, Harness, REFRESH, click, library, opened, opened_animated, photo_ids, sources,
+    Driver, Harness, REFRESH, click, escape_down, library, opened, opened_animated, photo_ids,
+    press_next, sources,
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
@@ -1175,27 +1176,6 @@ fn a_closed_menu_fades_and_takes_no_press() {
     assert!((0.0..0.5).contains(&faded), "{faded}");
     driver.frame(&mut harness, closed + 0.11);
     assert_eq!(harness.state().afterimages(), 0);
-}
-
-/// Escape alone, in one frame (`key` is two: its release is the second).
-fn escape_down(driver: &mut Driver, harness: &mut Harness<'_>) {
-    harness.event(egui::Event::Key {
-        key: Key::Escape,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: Modifiers::NONE,
-    });
-    driver.act(harness);
-}
-
-/// A press at `at` in the very next frame, then its release: the frame after a menu or a
-/// list closed is the one that could still give the press to it.
-fn press_next(driver: &mut Driver, harness: &mut Harness<'_>, at: Pos2) {
-    harness.event(button(at, PointerButton::Primary, true, Modifiers::NONE));
-    driver.act(harness);
-    harness.event(button(at, PointerButton::Primary, false, Modifiers::NONE));
-    driver.act(harness);
 }
 
 /// Opens the sort dropdown, lets it grow, and answers where its list stands.

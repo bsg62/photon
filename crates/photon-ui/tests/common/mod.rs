@@ -551,3 +551,34 @@ pub fn no_videos() -> std::sync::Arc<dyn photon_ui::video::Videos> {
     }
     std::sync::Arc::new(Nothing)
 }
+
+/// Escape alone, in one frame (`key` is two: its release is the second).
+pub fn escape_down(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.event(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.act(harness);
+}
+
+/// A press at `at` in the very next frame, then its release: the frame after a menu or a
+/// list closed is the one that could still give the press to it.
+pub fn press_next(driver: &mut Driver, harness: &mut Harness<'_>, at: egui::Pos2) {
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.act(harness);
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.act(harness);
+}
