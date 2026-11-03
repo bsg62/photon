@@ -1,7 +1,8 @@
 //! The application: the engine, the shell around the grid, and the order of a frame.
 
 use crate::{
-    animate::Slide,
+    afterimage::{Afterimage, of_layers},
+    animate::{FADE_OUT_MS, Slide},
     compare::{self, Compare},
     compare_view::{self, CompareAction, CompareData, CompareView, PaneData},
     copies::{self, CopiesOf},
@@ -24,7 +25,7 @@ use crate::{
     },
     icons,
     menu::{self, Item},
-    menu_view::{MenuView, Outcome},
+    menu_view::{self, Growth, MenuView, Outcome},
     nav::{self, Landed, LastFolder, Nav, Place, Step, Target},
     people_page::{self, PeoplePage},
     people_view::{PeopleData, PeopleView},
@@ -140,6 +141,9 @@ pub struct App {
     menu_on_header: bool,
     menu: Option<Open>,
     menu_view: MenuView,
+    /// The layers of menus that closed, fading out: painted over the window until done
+    /// (`afterimage.rs`).
+    afterimages: Vec<Afterimage>,
     /// The name being typed in the sidebar.
     rename: Rename,
     /// The dialog that is open: one at a time, over the whole window.
@@ -1387,6 +1391,7 @@ impl App {
             menu: None,
             menu_on_header: false,
             menu_view: MenuView::default(),
+            afterimages: Vec::new(),
             rename: Rename::default(),
             dialog: None,
             dialog_view: DialogView::default(),
@@ -1732,6 +1737,21 @@ impl App {
             .collect()
     }
 
+    /// How the open menu was last drawn growing; none while none is drawn.
+    pub fn menu_growth(&self) -> Option<Growth> {
+        self.menu.and(self.menu_view.growth())
+    }
+
+    /// How the list of the top bar's dropdown called `id` was last drawn growing.
+    pub fn list_growth(&self, id: &str) -> Option<Growth> {
+        self.shell.list_growth(id)
+    }
+
+    /// How many closed menus are fading out over the window.
+    pub fn afterimages(&self) -> usize {
+        self.afterimages.len()
+    }
+
     /// Whether a menu is open.
     pub fn menu_open(&self) -> bool {
         self.menu.is_some()
@@ -2039,6 +2059,21 @@ impl App {
             }
             ViewerPick::Reveal => self.open_with_system(open::Opening::RevealPhoto(photo)),
             ViewerPick::OpenInApp => self.open_with_system(open::Opening::OpenPhoto(photo)),
+        }
+    }
+
+    /// Keeps the menu that closed in this frame, drawn in it, to fade out over the window.
+    /// On the `Middle` layer, under a menu opened by the same click and not an area, which
+    /// would take the next press.
+    fn fade_menu(&mut self, ctx: &egui::Context, now: f64) {
+        if self.animations {
+            self.afterimages.push(of_layers(
+                ctx,
+                |layer| layer == menu_view::layer(),
+                now,
+                FADE_OUT_MS,
+            ));
+            ctx.request_repaint();
         }
     }
 
@@ -5038,6 +5073,17 @@ impl eframe::App for App {
         // The menu, before anything else is drawn: while it is open the keys are its
         // own, and it takes them out of the frame before the search box, the sidebar
         // or the grid can read them (`menu_view.rs`).
+        self.afterimages.retain(|image| image.running(now));
+        if !self.afterimages.is_empty() {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("fading"),
+            ));
+            for image in &self.afterimages {
+                image.paint(&painter, image.opacity(now));
+            }
+            ui.ctx().request_repaint();
+        }
         if let Some(open) = self.menu {
             // The viewer's menu is dark in both themes, as the viewer is.
             let palette = match open.of {
@@ -5050,20 +5096,26 @@ impl eframe::App for App {
                 // none to land on - or its album, search or folder is no longer listed,
                 // or the viewer shows nothing the library has said anything of.
                 None => self.menu = None,
-                Some(items) => match (self.menu_view).show_in(ui, open.at, &items, palette) {
-                    Outcome::Open => {}
-                    Outcome::Closed => self.menu = None,
-                    Outcome::Picked(picked) => {
-                        self.menu = None;
-                        self.overlay_closed = Some(now);
-                        match picked {
-                            Picked::Tile(action) => self.pick(action),
-                            Picked::Side(action) => self.side(action),
-                            Picked::Viewer(pick) => self.viewer_pick(pick),
-                            Picked::Merge(into) => self.merge_into(open.of, into),
+                Some(items) => {
+                    match (self.menu_view).show_in(ui, open.at, &items, palette, self.animations) {
+                        Outcome::Open => {}
+                        Outcome::Closed => {
+                            self.menu = None;
+                            self.fade_menu(ui.ctx(), now);
+                        }
+                        Outcome::Picked(picked) => {
+                            self.menu = None;
+                            self.fade_menu(ui.ctx(), now);
+                            self.overlay_closed = Some(now);
+                            match picked {
+                                Picked::Tile(action) => self.pick(action),
+                                Picked::Side(action) => self.side(action),
+                                Picked::Viewer(pick) => self.viewer_pick(pick),
+                                Picked::Merge(into) => self.merge_into(open.of, into),
+                            }
                         }
                     }
-                },
+                }
             }
         }
 

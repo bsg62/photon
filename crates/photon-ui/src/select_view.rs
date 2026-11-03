@@ -14,7 +14,10 @@
 //! scrolled to.
 
 use crate::{
+    afterimage::{Afterimage, of_layers},
+    animate::{DURATION_MS, FADE_OUT_MS, eased, grown},
     icons::Icon,
+    menu_view::Growth,
     select::{Options, Select, SelectKey},
     text::paint_line,
     theme::{
@@ -25,7 +28,7 @@ use crate::{
 };
 use eframe::egui::{
     self, Event, EventFilter, Id, Key, Modifiers, Order, PointerButton, Rect, Sense, Stroke,
-    StrokeKind, WidgetInfo, WidgetType, pos2, vec2,
+    StrokeKind, WidgetInfo, WidgetType, emath::TSTransform, pos2, vec2,
 };
 
 /// The closed control, as tall as the top bar's buttons.
@@ -54,6 +57,8 @@ pub struct SelectData<'a> {
     /// The colours it is drawn in, where they are not the window's theme's: on the
     /// viewer's glass, which is dark in both.
     pub palette: Option<&'a Palette>,
+    /// Whether its list grows in and fades out; off, it is there and gone in a frame.
+    pub animations: bool,
 }
 
 #[derive(Default)]
@@ -61,6 +66,17 @@ pub struct SelectView {
     select: Select,
     /// Where the list was last drawn, for a press outside it.
     list: Option<Rect>,
+    /// When the list was first drawn since it last opened, on the window's clock in ms.
+    opened: Option<f64>,
+    /// What the last frame drew of the list's growth.
+    growth: Option<Growth>,
+    /// The list of the frame it closed in, fading out over the window.
+    fading: Option<Afterimage>,
+}
+
+/// A list's area layer, by its control's name.
+fn list_layer(id: &str) -> egui::LayerId {
+    egui::LayerId::new(Order::Foreground, Id::new(("select-list", id)))
 }
 
 /// How wide the closed control is for these options: the longest of them, the chevron and
@@ -100,15 +116,30 @@ impl SelectView {
         self.select.open()
     }
 
-    /// Closes the list, for a control that is not drawn.
+    /// Closes the list, for a control that is not drawn: at once, without a fade.
     pub fn close(&mut self) {
         self.select.close();
+        self.list = None;
+        self.opened = None;
+        self.growth = None;
+    }
+
+    /// How the last frame drew the list's growth; none while it is not drawn.
+    pub fn growth(&self) -> Option<Growth> {
+        self.growth
+    }
+
+    /// Whether a list is fading out.
+    pub fn fading(&self) -> bool {
+        self.fading.is_some()
     }
 
     /// Draws the control in `rect` and, while it is open, its list under it. Answers the
     /// option chosen, when it is another than the one held.
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect, data: &SelectData<'_>) -> Option<usize> {
         let palette = data.palette.unwrap_or_else(|| palette(ui.ctx()));
+        let now_ms = ui.input(|input| input.time) * 1000.0;
+        self.fade(ui.ctx(), now_ms);
         let options = Options {
             labels: data.options,
             selected: data.selected,
@@ -230,12 +261,41 @@ impl SelectView {
                 response.surrender_focus();
             }
         }
-        if self.select.open() {
-            chosen = self.list(ui, rect, data, &options, palette).or(chosen);
-        } else {
+        // A list that closed in this frame is drawn once more, deaf, for the shapes to
+        // fade out from (egui keeps none from one frame to the next).
+        let closing = !self.select.open() && self.list.is_some() && data.animations;
+        if self.select.open() || closing {
+            let picked = self.list(ui, rect, data, &options, now_ms, closing);
+            chosen = picked.filter(|_| !closing).or(chosen);
+        }
+        if !self.select.open() {
+            if closing {
+                let layer = list_layer(data.id);
+                self.fading = Some(of_layers(ui.ctx(), |l| l == layer, now_ms, FADE_OUT_MS));
+                ui.ctx().request_repaint();
+            }
             self.list = None;
+            self.opened = None;
+            self.growth = None;
         }
         chosen
+    }
+
+    /// Paints the list that is fading out, over the window and under whatever is opened
+    /// after it, and lets it go when it is done.
+    fn fade(&mut self, ctx: &egui::Context, now_ms: f64) {
+        let Some(image) = &self.fading else {
+            return;
+        };
+        if !image.running(now_ms) {
+            self.fading = None;
+            return;
+        }
+        image.paint(
+            &ctx.layer_painter(egui::LayerId::new(Order::Middle, Id::new("fading-list"))),
+            image.opacity(now_ms),
+        );
+        ctx.request_repaint();
     }
 
     /// Reads the keys of this frame for the control. One the list used is taken out of
@@ -334,8 +394,10 @@ impl SelectView {
         rect: Rect,
         data: &SelectData<'_>,
         options: &Options<'_>,
-        palette: &Palette,
+        now_ms: f64,
+        closing: bool,
     ) -> Option<usize> {
+        let palette = data.palette.unwrap_or_else(|| palette(ui.ctx()));
         // As wide as the control at least, and as its longest option needs in a row: the
         // mark's room is more than the chevron's, and a list as wide as a control that
         // just fits its options printed the longest of them short.
@@ -352,68 +414,104 @@ impl SelectView {
         };
         let mut chosen = None;
         let mut hovered = None;
-        egui::Area::new(Id::new(("select-list", data.id)))
+        // Grown out of the middle of the edge the control is at.
+        let opened = *self.opened.get_or_insert(now_ms);
+        let k = if data.animations && !closing {
+            eased(now_ms - opened, DURATION_MS)
+        } else if closing {
+            self.growth.map_or(1.0, |growth| f64::from(growth.opacity))
+        } else {
+            1.0
+        };
+        let scale = grown(k);
+        let full = Rect::from_min_size(at, size);
+        let origin = if data.above {
+            full.center_bottom()
+        } else {
+            full.center_top()
+        };
+        if !closing {
+            self.growth = Some(Growth {
+                rect: full,
+                origin,
+                scale,
+                opacity: k as f32,
+            });
+            if k < 1.0 {
+                ui.ctx().request_repaint();
+            }
+        }
+        egui::Area::new(list_layer(data.id).id)
             .order(Order::Foreground)
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
-                let (list, _) = ui.allocate_exact_size(size, Sense::hover());
-                let painter = ui.painter();
-                painter.add(menu_shadow().as_shape(list, R[2]));
-                painter.rect_filled(list, R[2], color(palette.raised));
-                painter.rect_stroke(
-                    list,
-                    R[2],
-                    Stroke::new(1.0, color(palette.line)),
-                    StrokeKind::Outside,
-                );
-                for (index, option) in data.options.iter().enumerate() {
-                    let row = Rect::from_min_size(
-                        pos2(
-                            list.left() + S[0],
-                            list.top() + S[0] + OPTION * index as f32,
-                        ),
-                        vec2(inner, OPTION),
+                let mut draw = |ui: &mut egui::Ui| {
+                    let (list, _) = ui.allocate_exact_size(size, Sense::hover());
+                    let painter = ui.painter();
+                    painter.add(menu_shadow().as_shape(list, R[2]));
+                    painter.rect_filled(list, R[2], color(palette.raised));
+                    painter.rect_stroke(
+                        list,
+                        R[2],
+                        Stroke::new(1.0, color(palette.line)),
+                        StrokeKind::Outside,
                     );
-                    // Pressed, never focused: the keys are read on the control.
-                    let response = ui.interact(row, ui.id().with(index), Sense::CLICK);
-                    response.widget_info(|| {
-                        WidgetInfo::selected(
-                            WidgetType::SelectableLabel,
-                            true,
-                            data.selected == Some(index),
-                            *option,
-                        )
-                    });
-                    // The pointer over an option makes it the active one, as a native
-                    // list does - when it moves, not while it rests where the list
-                    // happened to open under it, or the keys could not leave that row.
-                    let moved = ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO);
-                    if response.hovered() && moved {
-                        hovered = Some(index);
+                    for (index, option) in data.options.iter().enumerate() {
+                        let row = Rect::from_min_size(
+                            pos2(
+                                list.left() + S[0],
+                                list.top() + S[0] + OPTION * index as f32,
+                            ),
+                            vec2(inner, OPTION),
+                        );
+                        // Pressed, never focused: the keys are read on the control.
+                        let response = ui.interact(row, ui.id().with(index), Sense::CLICK);
+                        response.widget_info(|| {
+                            WidgetInfo::selected(
+                                WidgetType::SelectableLabel,
+                                true,
+                                data.selected == Some(index),
+                                *option,
+                            )
+                        });
+                        // The pointer over an option makes it the active one, as a native
+                        // list does - when it moves, not while it rests where the list
+                        // happened to open under it, or the keys could not leave that row.
+                        let moved = ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO);
+                        if response.hovered() && moved {
+                            hovered = Some(index);
+                        }
+                        if response.clicked() {
+                            chosen = Some(index);
+                        }
+                        if index == self.select.active() {
+                            painter.rect_filled(row, R[1], color(palette.hover));
+                        }
+                        let mark = Rect::from_center_size(
+                            pos2(row.left() + OPTION_LEAD / 2.0, row.center().y),
+                            vec2(ICON, ICON),
+                        );
+                        if data.selected == Some(index) {
+                            Icon::Check.paint(ui, mark, ICON, false, color(palette.accent));
+                        }
+                        let left = row.left() + OPTION_LEAD;
+                        paint_line(
+                            ui,
+                            painter,
+                            (left, row.center().y),
+                            row.right() - OPTION_TRAIL - left,
+                            option,
+                            fonts::regular(T[2]),
+                            color(palette.text),
+                        );
                     }
-                    if response.clicked() {
-                        chosen = Some(index);
-                    }
-                    if index == self.select.active() {
-                        painter.rect_filled(row, R[1], color(palette.hover));
-                    }
-                    let mark = Rect::from_center_size(
-                        pos2(row.left() + OPTION_LEAD / 2.0, row.center().y),
-                        vec2(ICON, ICON),
-                    );
-                    if data.selected == Some(index) {
-                        Icon::Check.paint(ui, mark, ICON, false, color(palette.accent));
-                    }
-                    let left = row.left() + OPTION_LEAD;
-                    paint_line(
-                        ui,
-                        painter,
-                        (left, row.center().y),
-                        row.right() - OPTION_TRAIL - left,
-                        option,
-                        fonts::regular(T[2]),
-                        color(palette.text),
-                    );
+                };
+                if k < 1.0 {
+                    ui.multiply_opacity(k as f32);
+                    let from = TSTransform::new(origin.to_vec2() * (1.0 - scale), scale);
+                    ui.with_visual_transform(from, draw);
+                } else {
+                    draw(ui);
                 }
             });
         self.list = Some(Rect::from_min_size(at, size));
@@ -451,6 +549,7 @@ mod tests {
         at: Rect,
         disabled: bool,
         above: bool,
+        animations: bool,
         palette: Option<&'static Palette>,
         chosen: Vec<usize>,
         time: f64,
@@ -474,6 +573,7 @@ mod tests {
                 at: AT,
                 disabled: false,
                 above: false,
+                animations: false,
                 palette: None,
                 chosen: Vec::new(),
                 time: 0.0,
@@ -502,6 +602,7 @@ mod tests {
                 hint: None,
                 above: self.above,
                 palette: self.palette,
+                animations: self.animations,
             };
             let (view, at) = (&mut self.view, self.at);
             let (mut chosen, mut down_left, mut typed_left) = (None, false, false);
@@ -707,6 +808,31 @@ mod tests {
 
     // The keys are the control's while it has the keyboard, and the list's own while it
     // is open: an arrow that moved through the list must not scroll the grid as well.
+    // The list that closes is drawn once more, whatever closed it before it was drawn, and
+    // kept: it fades out over the window, a hundred milliseconds, and takes no press.
+    #[test]
+    fn a_list_that_closes_fades_out_over_the_window() {
+        let mut f = Fixture::new(0);
+        f.animations = true;
+        f.frame(Vec::new());
+        f.click(AT.center());
+        assert!(f.view.open());
+        // Past its growth.
+        f.time += 0.5;
+        f.frame(Vec::new());
+        assert!(!f.view.fading());
+        f.key(Key::Escape);
+        assert!(!f.view.open());
+        assert!(f.view.fading(), "kept for the fade");
+        // Painted, faintly, in the frames after.
+        f.frame(Vec::new());
+        assert_eq!(f.drew("Size").len(), 1, "the closed list is painted");
+        f.time += 0.2;
+        f.frame(Vec::new());
+        assert!(!f.view.fading());
+        assert!(f.drew("Size").is_empty());
+    }
+
     #[test]
     fn the_keys_move_through_the_list_and_do_not_reach_what_is_drawn_after() {
         let mut f = Fixture::new(0);

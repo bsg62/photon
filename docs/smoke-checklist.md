@@ -837,3 +837,4 @@ library, a file changed in the file manager, or Picasa will do.
 - [ ] Open the viewer on a zoomed photo and press `I`: the panel slides in, the photo is refitted beside it, the panel never crosses the close button.
 - [ ] `H` in a long folder (and unstar in Starred): the photos close the gap by gliding, the one that left fades where it stood.
 - [ ] Settings → animations off: the sidebar and panel change at once, the grid does not glide, and a thumbnail arriving late does not fade. Back on: all of it moves again.
+- [ ] Right-click near each corner of the window: the menu grows out of the pointer. Escape fades it in a blink; a click on a photo where it stood selects that photo. Open the sort dropdown: its list grows down from its middle; choosing an option fades it. In the viewer the menu does the same in the dark palette.

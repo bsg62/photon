@@ -789,6 +789,8 @@ impl ViewerView {
                 above: true,
                 // On the viewer's glass, which is dark in both themes.
                 palette: Some(&DARK),
+                // The crop tool's bar is not animated.
+                animations: false,
             },
         );
         if let Some(index) = chosen {

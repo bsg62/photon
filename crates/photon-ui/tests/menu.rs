@@ -4,7 +4,9 @@
 //!
 //! Every write here goes into a library the test made, in a temporary directory.
 
-use crate::common::{Driver, Harness, REFRESH, click, library, opened, photo_ids, sources};
+use crate::common::{
+    Driver, Harness, REFRESH, click, library, opened, opened_animated, photo_ids, sources,
+};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::{
@@ -108,15 +110,23 @@ fn pictures(dir: &Path) -> PathBuf {
 /// The application over a library of its own making that watches `pictures`, once its
 /// five photos are shown: `d`, `e`, then `a`, `b`, `c`.
 fn over_files<'a>(dir: &Path, pictures: &Path) -> (Harness<'a>, Driver, Dirs) {
+    over_files_with(dir, pictures, false)
+}
+
+/// `over_files`, with the animations on when `animated`.
+fn over_files_with<'a>(dir: &Path, pictures: &Path, animated: bool) -> (Harness<'a>, Driver, Dirs) {
     let made = dirs::within(&dir.join("data"), &dir.join("cache"));
     let (dirs, pictures) = (made.clone(), pictures.to_owned());
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
         .with_step_dt(REFRESH as f32)
         .build_eframe(move |cc| {
-            App::new(cc, dirs, Some(pictures))
-                .unwrap()
-                .without_animations()
+            let app = App::new(cc, dirs, Some(pictures)).unwrap();
+            if animated {
+                app
+            } else {
+                app.without_animations()
+            }
         });
     let mut driver = Driver::new(&harness);
     driver.until(&mut harness, "the five photos shown", |app| {
@@ -1020,4 +1030,185 @@ fn a_window_with_a_menu_open_draws_nothing() {
     driver.settle(&mut harness);
     assert!(harness.state().menu_open());
     assert_eq!(driver.frames_in(&mut harness, 5.0), 0);
+}
+
+// The motion of menus and dropdowns (`menu_view.rs`, `select_view.rs`): launched with the
+// animations on, since every other test is not.
+
+/// A click of the other button at `at`, and the frame it is drawn in: the menu's first.
+fn right_click_at(driver: &mut Driver, harness: &mut Harness<'_>, at: Pos2) {
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Secondary, true, Modifiers::NONE));
+    harness.event(button(at, PointerButton::Secondary, false, Modifiers::NONE));
+    driver.act(harness);
+}
+
+/// Where the last frame drew `words`, and at what opacity: the position of its text shape
+/// (a menu grown by a visual transform is drawn at its scale, and pressed at full size).
+fn drawn(harness: &Harness<'_>, words: &str) -> Option<(Pos2, f32)> {
+    fn each(shape: &egui::Shape, words: &str) -> Option<(Pos2, f32)> {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| each(shape, words)),
+            egui::Shape::Text(text) if text.galley.text() == words => {
+                // Opacity is multiplied into the shape's colours.
+                let alpha = text.fallback_color.a();
+                Some((text.pos, f32::from(alpha) / 255.0))
+            }
+            _ => None,
+        }
+    }
+    (harness.output().shapes.iter()).find_map(|clipped| each(&clipped.shape, words))
+}
+
+/// Where a point at `whole` stands when its menu is `scale` grown from `origin`.
+fn growth_at(origin: Pos2, whole: Pos2, scale: f32) -> Pos2 {
+    origin + (whole - origin) * scale
+}
+
+/// The application with sixty photos and the animations on, settled.
+fn animated<'a>(dir: &Path) -> (Harness<'a>, Driver) {
+    let library = library(dir, 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    // Let the library's own repaints be done with before a motion is timed.
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    (harness, driver)
+}
+
+#[test]
+fn a_menu_grows_from_where_it_was_opened_and_then_asks_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    let p = middle(&harness, 0);
+    right_click_at(&mut driver, &mut harness, p);
+    let first = driver.now;
+    let growth = harness.state().menu_growth().expect("the menu is drawn");
+    assert_eq!(growth.origin, p);
+    assert!(growth.scale < 0.93, "{growth:?}");
+    assert!(growth.opacity < 0.2, "{growth:?}");
+    // A new area is measured unseen in its first frame: the next is the first on screen,
+    // drawn smaller, towards the click, and faint - the transform is applied.
+    driver.act(&mut harness);
+    let seen = harness.state().menu_growth().unwrap();
+    let (small, faint) = drawn(&harness, "Star photo").expect("the menu is drawn");
+    assert!(
+        (faint - seen.opacity).abs() < 0.01 && faint < 0.5,
+        "{faint}"
+    );
+
+    driver.frame(&mut harness, first + 0.1);
+    let growth = harness.state().menu_growth().unwrap();
+    assert!((0.98..1.0).contains(&growth.scale), "{growth:?}");
+
+    driver.frame(&mut harness, first + 0.2);
+    let growth = harness.state().menu_growth().unwrap();
+    assert_eq!((growth.scale, growth.opacity), (1.0, 1.0));
+    let (whole, solid) = drawn(&harness, "Star photo").unwrap();
+    assert_eq!(solid, 1.0);
+    let wanted = growth_at(p, whole, seen.scale);
+    assert!((small - wanted).length() < 1.0, "{small:?} {wanted:?}");
+
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0);
+}
+
+#[test]
+fn a_menu_flipped_at_the_corner_grows_from_the_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    // The tile that stands lowest and furthest right in the window.
+    let corner = (0..60)
+        .filter_map(|offset| harness.state().tile_rect(offset))
+        .filter(|rect| rect.max.x < 1000.0 && rect.max.y < 700.0)
+        .max_by(|a, b| (a.max.x + a.max.y).total_cmp(&(b.max.x + b.max.y)))
+        .expect("a tile in the window");
+    let click = corner.max - egui::vec2(1.0, 1.0);
+    right_click_at(&mut driver, &mut harness, click);
+    let growth = harness.state().menu_growth().expect("the menu is drawn");
+    // It opened up and to the left of the click.
+    assert!((growth.rect.max - click).length() < 1.0, "{growth:?}");
+    assert_eq!(growth.origin, growth.rect.max);
+}
+
+#[test]
+fn a_growing_menu_is_pressed_at_its_full_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = pictures(dir.path());
+    let (mut harness, mut driver, _) = over_files_with(dir.path(), &root, true);
+    driver.settle(&mut harness);
+    let at = middle(&harness, 3);
+    right_click_at(&mut driver, &mut harness, at);
+    assert!(harness.state().menu_growth().unwrap().scale < 0.93);
+    harness.get_by_label("Star photo").click();
+    driver.act(&mut harness);
+    assert!(!harness.state().menu_open());
+    until_starred(&mut driver, &mut harness, &[3]);
+}
+
+#[test]
+fn a_closed_menu_fades_and_takes_no_press() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    let at = middle(&harness, 0);
+    right_click_at(&mut driver, &mut harness, at);
+    driver.frame(&mut harness, driver.now + 0.3);
+    assert_eq!(harness.state().afterimages(), 0);
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    assert!(!harness.state().menu_open());
+    let closed = driver.now;
+    driver.frame(&mut harness, closed + 0.05);
+    assert_eq!(harness.state().afterimages(), 1);
+    // What it painted is what fades: the words, half gone.
+    let (_, faded) = drawn(&harness, "Star photo").expect("the closed menu is painted");
+    assert!((0.0..0.5).contains(&faded), "{faded}");
+    // A click on a photo under where the menu stood is that photo's.
+    pick(&mut driver, &mut harness, 1, Modifiers::NONE);
+    assert_eq!(harness.state().selected(), [harness.state().shown()[1]]);
+    driver.frame(&mut harness, closed + 0.11);
+    assert_eq!(harness.state().afterimages(), 0);
+}
+
+#[test]
+fn a_dropdown_grows_down_from_its_control() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    let control = harness.get_by_label("Sort by: Date taken").rect();
+    harness.get_by_label("Sort by: Date taken").click();
+    driver.act(&mut harness);
+    let first = driver.now;
+    let growth = harness.state().list_growth("sort").expect("the list");
+    assert_eq!(growth.origin.x, growth.rect.center().x);
+    assert_eq!(growth.origin.y, growth.rect.top());
+    assert!((growth.rect.top() - control.bottom()).abs() < 8.0);
+    assert!(growth.scale < 0.93, "{growth:?}");
+    driver.act(&mut harness);
+    let seen = harness.state().list_growth("sort").unwrap();
+    let (small, faint) = drawn(&harness, "Name").expect("the list is drawn");
+    assert!(
+        (faint - seen.opacity).abs() < 0.01 && faint < 0.5,
+        "{faint}"
+    );
+
+    driver.frame(&mut harness, first + 0.2);
+    let growth = harness.state().list_growth("sort").unwrap();
+    assert_eq!(growth.scale, 1.0);
+    let (whole, _) = drawn(&harness, "Name").unwrap();
+    let wanted = growth_at(growth.origin, whole, seen.scale);
+    assert!((small - wanted).length() < 1.0, "{small:?} {wanted:?}");
+}
+
+#[test]
+fn without_animations_a_menu_is_there_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 60);
+    let at = middle(&harness, 0);
+    right_click_at(&mut driver, &mut harness, at);
+    let growth = harness.state().menu_growth().expect("the menu is drawn");
+    assert_eq!((growth.scale, growth.opacity), (1.0, 1.0));
+    key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
+    assert_eq!(harness.state().afterimages(), 0);
 }

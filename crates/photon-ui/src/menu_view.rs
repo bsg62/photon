@@ -15,6 +15,7 @@
 //! nothing more.
 
 use crate::{
+    animate::{DURATION_MS, eased, grown},
     menu::{Item, Look, MENU_MARGIN, MenuKey, menu_step, place_menu},
     text::paint_line,
     theme::{
@@ -25,7 +26,7 @@ use crate::{
 };
 use eframe::egui::{
     self, Event, Id, Key, LayerId, Modifiers, Order, PointerButton, Pos2, Rect, Sense, Stroke,
-    StrokeKind, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    StrokeKind, Vec2, WidgetInfo, WidgetType, emath::TSTransform, pos2, vec2,
 };
 
 /// The least a menu is wide.
@@ -84,8 +85,28 @@ pub enum Outcome<A> {
     Closed,
 }
 
+/// What a menu's last frame drew of its growth: where it will stand in full, the point it
+/// grows from, and how far along it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Growth {
+    pub rect: Rect,
+    pub origin: Pos2,
+    pub scale: f32,
+    pub opacity: f32,
+}
+
+/// The menu's area layer: what is kept of it when it closes (`afterimage.rs`).
+pub fn layer() -> LayerId {
+    LayerId::new(Order::Foreground, Id::new(AREA))
+}
+
 #[derive(Default)]
 pub struct MenuView {
+    /// When the menu was first drawn since `reset`, on the window's clock in ms: its growth
+    /// starts there, as a dialog's does from `opened_at`.
+    opened: Option<f64>,
+    /// What the last frame drew.
+    growth: Option<Growth>,
     /// The item the keys are on, counted among the items that work; none while they are
     /// on the menu itself, as when it has just opened.
     active: Option<usize>,
@@ -126,7 +147,12 @@ impl MenuView {
 
     /// Draws `items` as a menu opened at `at`, and answers what the frame came to.
     pub fn show<A: Clone>(&mut self, ui: &egui::Ui, at: Pos2, items: &[Item<A>]) -> Outcome<A> {
-        self.show_in(ui, at, items, palette(ui.ctx()))
+        self.show_in(ui, at, items, palette(ui.ctx()), false)
+    }
+
+    /// How the last frame drew the menu's growth; none before it is drawn.
+    pub fn growth(&self) -> Option<Growth> {
+        self.growth
     }
 
     /// The same, in `palette` whatever the window's theme: the viewer is dark in both,
@@ -137,6 +163,7 @@ impl MenuView {
         at: Pos2,
         items: &[Item<A>],
         palette: &Palette,
+        animations: bool,
     ) -> Outcome<A> {
         let ctx = ui.ctx();
         let measure = |text: &str, size: f32| {
@@ -219,13 +246,20 @@ impl MenuView {
         ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         let mut picked = None;
         let mut stepped = false;
+        // Closed in this frame: it is drawn all the same, once more, so that the window
+        // has its shapes to fade out from (`afterimage.rs`) - egui keeps none from a
+        // frame to the next - and answers `Closed` after.
+        let mut closed = false;
         for key in pressed {
             let step = match key {
                 Key::ArrowDown => MenuKey::Down,
                 Key::ArrowUp => MenuKey::Up,
                 Key::Home => MenuKey::Home,
                 Key::End => MenuKey::End,
-                Key::Escape => return Outcome::Closed,
+                Key::Escape => {
+                    closed = true;
+                    break;
+                }
                 Key::Enter | Key::Space => {
                     picked = self.active.map(|active| working[active]);
                     continue;
@@ -247,7 +281,7 @@ impl MenuView {
         // of egui there, a press where the menu had opened was inside the menu and the
         // photo's under it as well, egui putting an area on whole points whatever it is
         // asked for.
-        let layer = LayerId::new(Order::Foreground, Id::new(AREA));
+        let layer = layer();
         let on_menu = |at: Pos2| ctx.layer_id_at(at) == Some(layer);
         // (Asked after the input is let go of: egui's memory is another lock.)
         let pressed = ctx.input(|input| {
@@ -256,9 +290,7 @@ impl MenuView {
                 .flatten()
         });
         let outside = pressed.is_some_and(|pointer| !on_menu(pointer));
-        if outside {
-            return Outcome::Closed;
-        }
+        closed |= outside;
 
         // The wheel over a menu taller than the window scrolls the menu. (Nothing under
         // it does: what scrolls asks egui whether the pointer is over its own layer.)
@@ -280,6 +312,33 @@ impl MenuView {
 
         let moved = ctx.input(|input| input.pointer.delta() != Vec2::ZERO);
         let mut hovered = None;
+
+        // The growth: from the first frame the menu is drawn, out of the point it was
+        // asked at - clamped into the rectangle it was placed in, so that a menu that
+        // opened up and to the left grows out of its corner at the pointer. Only a visual
+        // transform: what is pressed is where the menu will stand.
+        let now_ms = ctx.input(|input| input.time) * 1000.0;
+        let opened = *self.opened.get_or_insert(now_ms);
+        let k = if animations {
+            eased(now_ms - opened, DURATION_MS)
+        } else {
+            1.0
+        };
+        let scale = grown(k);
+        let origin = pos2(
+            at.x.clamp(rect.min.x, rect.max.x),
+            at.y.clamp(rect.min.y, rect.max.y),
+        );
+        self.growth = Some(Growth {
+            rect,
+            origin,
+            scale,
+            opacity: k as f32,
+        });
+        if k < 1.0 {
+            ctx.request_repaint();
+        }
+
         // The area is a point larger all round than the menu drawn in it: the pointer
         // rests exactly where the menu opened, at its corner, and egui puts an area on
         // whole points - half a point away, the corner was outside the menu or inside
@@ -291,127 +350,139 @@ impl MenuView {
             // each of them asked for.
             .fade_in(false)
             .show(ctx, |ui| {
-                let (ground, _) =
-                    ui.allocate_exact_size(size + Vec2::splat(2.0 * RIM), Sense::hover());
-                let menu = ground.shrink(RIM);
-                let painter = ui.painter().clone();
-                painter.add(menu_shadow().as_shape(menu, R[2]));
-                painter.rect_filled(menu, R[2], color(palette.raised));
-                // The hairline is what tells a white menu from a white grid.
-                painter.rect_stroke(
-                    menu,
-                    R[2],
-                    Stroke::new(1.0, color(palette.line)),
-                    StrokeKind::Outside,
-                );
-                let inside = menu.shrink(S[0]);
-                let painter = painter.with_clip_rect(inside.intersect(ui.clip_rect()));
-                let mut top = inside.top() - self.scrolled;
-                let mut place = 0;
-                for (index, item) in items.iter().enumerate() {
-                    let row = Rect::from_min_size(
-                        pos2(inside.left(), top),
-                        vec2(inside.width(), height(item)),
+                let mut draw = |ui: &mut egui::Ui| {
+                    let (ground, _) =
+                        ui.allocate_exact_size(size + Vec2::splat(2.0 * RIM), Sense::hover());
+                    let menu = ground.shrink(RIM);
+                    let painter = ui.painter().clone();
+                    painter.add(menu_shadow().as_shape(menu, R[2]));
+                    painter.rect_filled(menu, R[2], color(palette.raised));
+                    // The hairline is what tells a white menu from a white grid.
+                    painter.rect_stroke(
+                        menu,
+                        R[2],
+                        Stroke::new(1.0, color(palette.line)),
+                        StrokeKind::Outside,
                     );
-                    top += row.height();
-                    match item {
-                        Item::Pick {
-                            label,
-                            hint,
-                            works,
-                            look,
-                            ..
-                        } => {
-                            let shown = row.intersect(inside);
-                            // Pressed, never given the keyboard: the keys are the
-                            // menu's because it is open.
-                            // By its words as well as its place: a press on an item
-                            // that is another by the time the button comes up is no
-                            // click of the new one.
-                            let id = ui.id().with(("item", index, label));
-                            let response = ui.interact(shown, id, Sense::CLICK);
-                            response.widget_info(|| {
-                                WidgetInfo::labeled(WidgetType::Button, *works, label)
-                            });
-                            if *works {
-                                // The pointer makes an item the active one when it
-                                // moves, not while it rests where the menu opened
-                                // under it, or the keys could not leave that item.
-                                if response.hovered() && moved {
-                                    hovered = Some(place);
+                    let inside = menu.shrink(S[0]);
+                    let painter = painter.with_clip_rect(inside.intersect(ui.clip_rect()));
+                    let mut top = inside.top() - self.scrolled;
+                    let mut place = 0;
+                    for (index, item) in items.iter().enumerate() {
+                        let row = Rect::from_min_size(
+                            pos2(inside.left(), top),
+                            vec2(inside.width(), height(item)),
+                        );
+                        top += row.height();
+                        match item {
+                            Item::Pick {
+                                label,
+                                hint,
+                                works,
+                                look,
+                                ..
+                            } => {
+                                let shown = row.intersect(inside);
+                                // Pressed, never given the keyboard: the keys are the
+                                // menu's because it is open.
+                                // By its words as well as its place: a press on an item
+                                // that is another by the time the button comes up is no
+                                // click of the new one.
+                                let id = ui.id().with(("item", index, label));
+                                let response = ui.interact(shown, id, Sense::CLICK);
+                                response.widget_info(|| {
+                                    WidgetInfo::labeled(WidgetType::Button, *works, label)
+                                });
+                                if *works {
+                                    // The pointer makes an item the active one when it
+                                    // moves, not while it rests where the menu opened
+                                    // under it, or the keys could not leave that item.
+                                    if response.hovered() && moved {
+                                        hovered = Some(place);
+                                    }
+                                    if response.clicked() {
+                                        picked = Some(index);
+                                    }
+                                    if self.active == Some(place) {
+                                        painter.rect_filled(row, R[1], color(palette.hover));
+                                    }
+                                    place += 1;
                                 }
-                                if response.clicked() {
-                                    picked = Some(index);
+                                let tint = match (works, look) {
+                                    (false, _) => palette.text_dim,
+                                    (true, Look::Danger) => palette.danger,
+                                    (true, _) => palette.text,
+                                };
+                                let lead = if *look == Look::Sub { SUB_LEAD } else { LEAD };
+                                let mut right = row.right() - LEAD;
+                                if let Some(hint) = hint {
+                                    let drawn = painter.text(
+                                        pos2(right, row.center().y),
+                                        egui::Align2::RIGHT_CENTER,
+                                        hint,
+                                        fonts::regular(T[1]),
+                                        color(palette.text_dim),
+                                    );
+                                    right = drawn.left() - S[1];
                                 }
-                                if self.active == Some(place) {
-                                    painter.rect_filled(row, R[1], color(palette.hover));
-                                }
-                                place += 1;
+                                let left = row.left() + lead;
+                                paint_line(
+                                    ui,
+                                    &painter,
+                                    (left, row.center().y),
+                                    right - left,
+                                    label,
+                                    fonts::regular(T[2]),
+                                    color(tint),
+                                );
                             }
-                            let tint = match (works, look) {
-                                (false, _) => palette.text_dim,
-                                (true, Look::Danger) => palette.danger,
-                                (true, _) => palette.text,
-                            };
-                            let lead = if *look == Look::Sub { SUB_LEAD } else { LEAD };
-                            let mut right = row.right() - LEAD;
-                            if let Some(hint) = hint {
-                                let drawn = painter.text(
-                                    pos2(right, row.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    hint,
+                            Item::Separator => {
+                                painter.hline(
+                                    row.x_range(),
+                                    row.center().y,
+                                    (1.0, color(palette.line)),
+                                );
+                            }
+                            Item::Heading(heading) => {
+                                painter.hline(
+                                    row.x_range(),
+                                    row.top() + S[0] + 0.5,
+                                    (1.0, color(palette.line)),
+                                );
+                                painter.text(
+                                    pos2(row.left() + LEAD, row.bottom() - 2.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    heading,
+                                    fonts::semibold(ui.ctx(), T[0]),
+                                    color(palette.text_dim),
+                                );
+                            }
+                            Item::Note(note) => {
+                                let left = row.left() + SUB_LEAD;
+                                paint_line(
+                                    ui,
+                                    &painter,
+                                    (left, row.top() + S[0] + 7.5),
+                                    row.right() - SUB_LEAD - left,
+                                    note,
                                     fonts::regular(T[1]),
                                     color(palette.text_dim),
                                 );
-                                right = drawn.left() - S[1];
                             }
-                            let left = row.left() + lead;
-                            paint_line(
-                                ui,
-                                &painter,
-                                (left, row.center().y),
-                                right - left,
-                                label,
-                                fonts::regular(T[2]),
-                                color(tint),
-                            );
-                        }
-                        Item::Separator => {
-                            painter.hline(
-                                row.x_range(),
-                                row.center().y,
-                                (1.0, color(palette.line)),
-                            );
-                        }
-                        Item::Heading(heading) => {
-                            painter.hline(
-                                row.x_range(),
-                                row.top() + S[0] + 0.5,
-                                (1.0, color(palette.line)),
-                            );
-                            painter.text(
-                                pos2(row.left() + LEAD, row.bottom() - 2.0),
-                                egui::Align2::LEFT_BOTTOM,
-                                heading,
-                                fonts::semibold(ui.ctx(), T[0]),
-                                color(palette.text_dim),
-                            );
-                        }
-                        Item::Note(note) => {
-                            let left = row.left() + SUB_LEAD;
-                            paint_line(
-                                ui,
-                                &painter,
-                                (left, row.top() + S[0] + 7.5),
-                                row.right() - SUB_LEAD - left,
-                                note,
-                                fonts::regular(T[1]),
-                                color(palette.text_dim),
-                            );
                         }
                     }
+                };
+                if k < 1.0 {
+                    ui.multiply_opacity(k as f32);
+                    let from = TSTransform::new(origin.to_vec2() * (1.0 - scale), scale);
+                    ui.with_visual_transform(from, draw);
+                } else {
+                    draw(ui);
                 }
             });
+        if closed {
+            return Outcome::Closed;
+        }
         if let Some(hovered) = hovered {
             self.active = Some(hovered);
         }
@@ -530,7 +601,7 @@ mod tests {
             let dark = self.dark;
             let mut full = self.ctx.run_ui(input, |ui| {
                 outcome = if dark {
-                    view.show_in(ui, at, items, &DARK)
+                    view.show_in(ui, at, items, &DARK, false)
                 } else {
                     view.show(ui, at, items)
                 };

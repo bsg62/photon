@@ -12,6 +12,7 @@ use crate::{
         with_grouping, with_key,
     },
     icons::Icon,
+    menu_view::Growth,
     select_view::{self, SelectData, SelectView},
     theme::{
         apply::{color, palette},
@@ -34,6 +35,7 @@ pub struct ControlsData {
     /// The sort the user is going to.
     pub sort: Sort,
     pub size: GridTile,
+    pub animations: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -123,6 +125,15 @@ impl ControlsBar {
         self.sort.open() || self.group.open()
     }
 
+    /// How the last frame drew the list of the control called `id`.
+    pub fn list_growth(&self, id: &str) -> Option<Growth> {
+        match id {
+            "sort" => self.sort.growth(),
+            "group" => self.group.growth(),
+            _ => None,
+        }
+    }
+
     /// Closes the lists, for controls that are not drawn.
     pub fn close(&mut self) {
         self.sort.close();
@@ -153,6 +164,7 @@ impl ControlsBar {
                 hint: None,
                 above: false,
                 palette: None,
+                animations: data.animations,
             },
         );
         if let Some(index) = chosen {
@@ -175,6 +187,7 @@ impl ControlsBar {
                 hint: (!applies).then_some(GROUPING_IDLE),
                 above: false,
                 palette: None,
+                animations: data.animations,
             },
         );
         if let Some(index) = chosen {
@@ -304,6 +317,7 @@ mod tests {
             let data = ControlsData {
                 sort: self.sort,
                 size: self.size,
+                animations: false,
             };
             let bar = &mut self.bar;
             let (mut actions, mut found) = (Vec::new(), None);

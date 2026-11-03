@@ -12,6 +12,7 @@ use crate::{
     empty_panel,
     grid::labels::grouped,
     icons::Icon,
+    menu_view::Growth,
     search_bar::{SearchAction, SearchBar, SearchBarData},
     settings_view::line_height,
     sidebar::{
@@ -141,6 +142,11 @@ impl Shell {
     /// Whether a dropdown of the top bar's controls is open: its keys are its own.
     pub fn lists_open(&self) -> bool {
         self.controls.open()
+    }
+
+    /// How the last frame drew the list of the top bar's dropdown called `id`.
+    pub fn list_growth(&self, id: &str) -> Option<Growth> {
+        self.controls.list_growth(id)
     }
 
     /// Where the sidebar's list is.
@@ -417,6 +423,7 @@ impl Shell {
         let controls = ControlsData {
             sort: data.sort,
             size: data.size,
+            animations: data.animations,
         };
         let done = self.controls.show(ui, controls_left, middle, &controls);
         actions.extend(done.into_iter().map(|action| match action {
