@@ -63,7 +63,10 @@ use crate::{
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout, viewer_levels,
     viewer_menu::{self, ViewerPick},
-    viewer_view::{Cropped, Level, Message, Showing, ViewerAction, ViewerData, ViewerView},
+    viewer_motion::Way,
+    viewer_view::{
+        Arriving, Cropped, Level, Message, Showing, ViewerAction, ViewerData, ViewerView,
+    },
     viewer_zoom::Zoom,
     window,
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
@@ -84,10 +87,12 @@ use photon_engine::{
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
 mod copy;
+pub mod motion;
 mod open;
 mod people;
 mod pick;
 mod settings_dialog;
+use motion::MotionSeen;
 use settings_dialog::{SettingWrite, SettingWrote};
 
 /// How long a thumbnail that has not been built is waited for, as `protocol.rs`'s
@@ -171,6 +176,10 @@ pub struct App {
     /// The viewer, while it is open: the shell is not drawn then.
     viewer: Option<Viewing>,
     viewer_view: ViewerView,
+    /// The viewer opening out of its tile, while it does (`app/motion.rs`).
+    motion: Option<motion::Motion>,
+    /// What the last frame drew of it, for a test.
+    motion_seen: Option<MotionSeen>,
     /// The previews the viewer shows until a photo's full picture is made: the cache's
     /// larger thumbnails, held apart from the grid's.
     previews: Thumbs,
@@ -1403,6 +1412,8 @@ impl App {
             deleting: Vec::new(),
             viewer: None,
             viewer_view: ViewerView::default(),
+            motion: None,
+            motion_seen: None,
             previews: Thumbs::previews(preview_loader),
             viewer_items,
             pictures,
@@ -1980,6 +1991,13 @@ impl App {
         open.within.map(|(within, _)| within)
     }
 
+    /// Where the viewer's last frame drew the photo, cut off at the photo's area, the part
+    /// of its picture drawn there, and the size of that picture.
+    pub fn viewer_photo(&self) -> Option<(egui::Rect, egui::Rect, egui::Vec2)> {
+        self.viewer.as_ref()?;
+        (self.viewer_view.photo_drawn()).map(|photo| (photo.at, photo.uv, photo.image))
+    }
+
     /// The size, in pixels, of the copy of the full picture that was scaled to fit the
     /// window: none until it is made, or for a photo no larger than the window.
     pub fn viewer_fitted(&self) -> Option<[usize; 2]> {
@@ -2397,7 +2415,7 @@ impl App {
     /// click on a photo does. No menu is open and no button is held either, which is
     /// the grid's to see to: it answers no Enter in a frame with a mouse button in it,
     /// nor while a press on the photos is held (`grid/view.rs`).
-    fn open_viewer(&mut self, id: i64) {
+    fn open_viewer(&mut self, id: i64, tile: Option<egui::Rect>) {
         let Some(viewer) = Viewer::open(id, &self.index) else {
             return;
         };
@@ -2426,6 +2444,7 @@ impl App {
             open_failed: None,
             name_copied: None,
         });
+        self.begin_opening(id, tile);
     }
 
     /// Closes the viewer and hands its photo back to the grid: selected, alone, and
@@ -2568,6 +2587,7 @@ impl App {
             self.fullscreen(false);
         }
         self.viewer = None;
+        self.motion = None;
         self.previews.clear();
         self.viewer_view.let_go();
         // And the dialog that stands over it, which is of its photo - "Who is this?",
@@ -3135,6 +3155,21 @@ impl App {
                 })
                 .collect(),
         };
+        // The opening is of the photo it opened on: a step, by hand or by a show, ends it
+        // at once, and the viewer shows the next photo as it always has - a zoom that
+        // lands on another photo than it left is wrong either way. And the crop tool,
+        // which takes the whole window in the frame it opens, ends it too.
+        if (self.motion.as_ref()).is_some_and(|motion| motion.passage.id() != id)
+            || open.crop.is_some()
+        {
+            self.motion = None;
+        }
+        let passage = self.motion.as_ref().map(|motion| motion.passage);
+        self.paint_frozen(ui);
+        let thumb = match passage {
+            Some(_) => self.thumbs.texture(key).cloned(),
+            None => None,
+        };
         let len = self.index.len();
         let collections = self.held.collections();
         let faces = (open.item.as_ref()).map_or(Vec::new(), viewer_faces::drawn);
@@ -3180,6 +3215,11 @@ impl App {
             outgoing: (open.outgoing.as_ref())
                 .map(|out| (&out.texture, out.at, seen.unwrap_or(1.0) as f32)),
             strip: open.playing.as_ref().and_then(Playing::strip),
+            arriving: passage.as_ref().map(|passage| Arriving {
+                passage,
+                now_ms: now,
+                thumb: thumb.as_ref(),
+            }),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
@@ -3196,9 +3236,17 @@ impl App {
             part,
             busy: *sent,
         });
+        // A fade is the whole viewer's, at the ground's opacity, over the window it was
+        // opened from; it is pressed as usual.
+        let opacity = ui.opacity();
+        if let Some(passage) = passage.filter(|passage| passage.way() == Way::Fade) {
+            ui.multiply_opacity(passage.ground(now));
+        }
         let mut actions = self.viewer_view.show(ui, &data, &mut zoom, cropped);
+        ui.set_opacity(opacity);
         drop(levels);
         drop(faces);
+        self.opening_drawn(&ctx, now);
         *open.viewer.zoom_mut() = zoom;
         if let (Some(crop), Some((tool, ..))) = (&mut open.crop, tool) {
             crop.tool = tool;
@@ -3758,7 +3806,7 @@ impl App {
             self.previews.clear();
             self.compare_view = CompareView::default();
             if let Some(id) = opening {
-                self.open_viewer(id);
+                self.open_viewer(id, None);
             }
             return;
         }
@@ -4996,6 +5044,8 @@ impl eframe::App for App {
         }
         let reported = self.take_events() || touched;
         let now = ui.input(|input| input.time) * 1000.0;
+        // Said of the frame that draws one.
+        self.motion_seen = None;
         // A task's answer asked for this frame as an engine's report does: the frame is
         // not one the grid drew by itself.
         let reported = self.take_answers(now) || reported;
@@ -5335,7 +5385,8 @@ impl eframe::App for App {
         }
         // Enter on the photo the keys are on, or a double click: the viewer.
         if let Some(id) = open {
-            self.open_viewer(id);
+            let tile = self.view.drawn_place(id);
+            self.open_viewer(id, tile);
         }
         self.ask_for_search(ui.ctx(), now);
 

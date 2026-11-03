@@ -30,14 +30,23 @@ pub struct Passage {
 }
 
 impl Passage {
-    /// A photo opening from `from` (its tile; for a fade, its landing place).
-    pub fn opening(id: i64, way: Way, from: Frame, from_ground: f32, now_ms: f64) -> Self {
+    /// A photo opening from `from` (its tile; for a fade, its landing place); `from_uv`
+    /// is the part of it that was drawn when that was not the crop of its frame - a
+    /// closing from a zoomed photo, turned round.
+    pub fn opening(
+        id: i64,
+        way: Way,
+        from: Frame,
+        from_uv: Option<Uv>,
+        from_ground: f32,
+        now_ms: f64,
+    ) -> Self {
         Passage {
             id,
             way,
             opening: true,
             from,
-            from_uv: None,
+            from_uv,
             from_ground,
             started_ms: now_ms,
         }
@@ -91,6 +100,23 @@ impl Passage {
             Way::Zoom => lerp_frame(self.from, to, self.progress(now_ms)),
             Way::Fade => self.from,
         }
+    }
+
+    /// Where the photo is drawn at `now_ms`, given where it was drawn at `drawn_ms`: each
+    /// frame covers the share of what was left of the way that the curve covers of what
+    /// was left of it. Towards a landing that stays, that is `photo_at`; a landing that
+    /// moves on the way - a window resized, a picture of another shape arrived - is
+    /// followed from where the photo stands, where `photo_at` would jump by as much of
+    /// the move as the curve has come.
+    pub fn follow(&self, drawn: Frame, drawn_ms: f64, to: Frame, now_ms: f64) -> Frame {
+        if self.way == Way::Fade {
+            return self.from;
+        }
+        let (was, now) = (self.progress(drawn_ms), self.progress(now_ms));
+        if was >= 1.0 || now >= 1.0 {
+            return to;
+        }
+        lerp_frame(drawn, to, (now - was) / (1.0 - was))
     }
 
     /// The part of the picture drawn into `drawn`.
@@ -203,7 +229,7 @@ mod tests {
     };
 
     fn opening() -> Passage {
-        Passage::opening(1, Way::Zoom, TILE, 0.0, 1000.0)
+        Passage::opening(1, Way::Zoom, TILE, None, 0.0, 1000.0)
     }
 
     #[test]
@@ -245,7 +271,7 @@ mod tests {
 
     #[test]
     fn a_fade_stays_where_it_lands() {
-        let p = Passage::opening(1, Way::Fade, LANDING, 0.0, 1000.0);
+        let p = Passage::opening(1, Way::Fade, LANDING, None, 0.0, 1000.0);
         for now in [1000.0, 1050.0, 1100.0, 1200.0, 1500.0] {
             assert_eq!(p.photo_at(TILE, now), LANDING);
             assert_eq!(p.controls(now), p.ground(now));
@@ -277,6 +303,84 @@ mod tests {
         let image = (256.0, 128.0);
         assert_eq!(p.uv_at(image, LANDING, 1000.0), zoomed);
         assert_eq!(p.uv_at(image, TILE, 1200.0), (0.25, 0.0, 0.75, 1.0));
+    }
+
+    // Followed frame by frame towards a landing that stays where it is, the photo is
+    // where the curve puts it.
+    #[test]
+    fn followed_to_a_landing_that_stays_the_photo_is_where_the_curve_puts_it() {
+        let p = opening();
+        let mut drawn = (TILE, 1000.0);
+        for now in [1016.0, 1050.0, 1100.0, 1150.0, 1199.0] {
+            let at = p.follow(drawn.0, drawn.1, LANDING, now);
+            let curve = p.photo_at(LANDING, now);
+            for (a, b) in [
+                (at.left, curve.left),
+                (at.top, curve.top),
+                (at.width, curve.width),
+                (at.height, curve.height),
+            ] {
+                assert!((a - b).abs() < 1e-3, "{at:?} against {curve:?} at {now}");
+            }
+            drawn = (at, now);
+        }
+        assert_eq!(p.follow(drawn.0, drawn.1, LANDING, 1200.0), LANDING);
+    }
+
+    // A landing that moves - a window resized, a picture of another shape arrived - is
+    // followed from where the photo was last drawn: no jump, the curve's share of what is
+    // left of the way in each frame, and the new place reached on time.
+    #[test]
+    fn a_landing_that_moves_is_followed_from_where_the_photo_was_drawn() {
+        let p = opening();
+        let at = p.photo_at(LANDING, 1100.0);
+        let moved = frame(100.0, 50.0, 800.0, 600.0);
+        assert_eq!(p.follow(at, 1100.0, moved, 1100.0), at);
+        // 0.875 of the way at 100 ms, 0.984375 at 150: seven eighths of what was left.
+        let later = p.follow(at, 1100.0, moved, 1150.0);
+        assert_eq!(later, lerp_frame(at, moved, 0.875));
+        assert_eq!(p.follow(later, 1150.0, moved, 1200.0), moved);
+        assert_eq!(p.follow(later, 1150.0, moved, 1300.0), moved);
+    }
+
+    // A fade does not travel, whatever it is told of a landing.
+    #[test]
+    fn a_fade_followed_stays_where_it_stands() {
+        let p = Passage::opening(1, Way::Fade, LANDING, None, 0.0, 1000.0);
+        assert_eq!(p.follow(TILE, 1050.0, TILE, 1100.0), LANDING);
+    }
+
+    // A passage turned round in the middle is a new one started from what the old one
+    // drew at that moment: its place, the part of the picture and the ground go on from
+    // there with no jump - a zoomed photo's closing opened again as much as an opening
+    // closed.
+    #[test]
+    fn a_passage_turned_round_goes_on_from_what_was_drawn() {
+        let image = (256.0, 128.0);
+        type Turn = fn(Frame, Option<Uv>, f32, f64) -> Passage;
+        let turned = |old: Passage, old_to: Frame, turn: Turn, new_to: Frame| {
+            let at = 1100.0;
+            let drawn = old.photo_at(old_to, at);
+            let uv = old.uv_at(image, drawn, at);
+            let ground = old.ground(at);
+            let new = turn(drawn, Some(uv), ground, at);
+            assert_eq!(new.photo_at(new_to, at), drawn);
+            assert_eq!(new.uv_at(image, drawn, at), uv);
+            assert_eq!(new.ground(at), ground);
+        };
+        let zoomed = (0.2, 0.3, 0.4, 0.5);
+        turned(
+            Passage::closing(1, Way::Zoom, LANDING, Some(zoomed), 1.0, 1000.0),
+            TILE,
+            |from, uv, ground, now| Passage::opening(1, Way::Zoom, from, uv, ground, now),
+            LANDING,
+        );
+        turned(
+            opening(),
+            LANDING,
+            |from, uv, ground, now| Passage::closing(1, Way::Zoom, from, uv, ground, now),
+            TILE,
+        );
     }
 
     #[test]
