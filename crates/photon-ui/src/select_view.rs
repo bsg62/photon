@@ -28,7 +28,7 @@ use crate::{
 };
 use eframe::egui::{
     self, Event, EventFilter, Id, Key, Modifiers, Order, PointerButton, Rect, Sense, Stroke,
-    StrokeKind, WidgetInfo, WidgetType, emath::TSTransform, pos2, vec2,
+    StrokeKind, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// The closed control, as tall as the top bar's buttons.
@@ -439,13 +439,14 @@ impl SelectView {
         } else {
             full.center_top()
         };
+        let growth = Growth {
+            rect: full,
+            origin,
+            scale,
+            opacity: k as f32,
+        };
         if !closing {
-            self.growth = Some(Growth {
-                rect: full,
-                origin,
-                scale,
-                opacity: k as f32,
-            });
+            self.growth = Some(growth);
             if k < 1.0 {
                 ui.ctx().request_repaint();
             }
@@ -456,7 +457,7 @@ impl SelectView {
             .interactable(!closing)
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
-                let mut draw = |ui: &mut egui::Ui| {
+                let draw = |ui: &mut egui::Ui| {
                     let (list, _) = ui.allocate_exact_size(size, Sense::hover());
                     let painter = ui.painter();
                     painter.add(menu_shadow().as_shape(list, R[2]));
@@ -517,13 +518,7 @@ impl SelectView {
                         );
                     }
                 };
-                if k < 1.0 {
-                    ui.multiply_opacity(k as f32);
-                    let from = TSTransform::new(origin.to_vec2() * (1.0 - scale), scale);
-                    ui.with_visual_transform(from, draw);
-                } else {
-                    draw(ui);
-                }
+                growth.draw(ui, draw);
             });
         self.list = Some(Rect::from_min_size(at, size));
         if let Some(index) = hovered {

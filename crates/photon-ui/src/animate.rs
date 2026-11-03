@@ -27,6 +27,16 @@ pub fn eased(since_ms: f64, duration_ms: f64) -> f64 {
     ease_out(since_ms / duration_ms)
 }
 
+/// How far a menu, dropdown or dialog that opened `since_ms` ago has come: 1 from the
+/// start with the animations off.
+pub fn opening(since_ms: f64, animations: bool) -> f64 {
+    if animations {
+        eased(since_ms, DURATION_MS)
+    } else {
+        1.0
+    }
+}
+
 /// The scale of a growth `k` of the way along (`eased`'s result).
 pub fn grown(k: f64) -> f32 {
     GROW_FROM + (1.0 - GROW_FROM) * k as f32

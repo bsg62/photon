@@ -15,7 +15,7 @@
 //! nothing more.
 
 use crate::{
-    animate::{DURATION_MS, eased, grown},
+    animate::{grown, opening},
     menu::{Item, Look, MENU_MARGIN, MenuKey, menu_step, place_menu},
     text::paint_line,
     theme::{
@@ -93,6 +93,21 @@ pub struct Growth {
     pub origin: Pos2,
     pub scale: f32,
     pub opacity: f32,
+}
+
+impl Growth {
+    /// Draws `draw` grown: faded in and scaled about the origin by a visual transform only,
+    /// so that what is pressed stays where it will stand. Nothing is added once it has
+    /// grown. The menus, the lists and the dialogs draw by it.
+    pub fn draw(&self, ui: &mut egui::Ui, draw: impl FnOnce(&mut egui::Ui)) {
+        if self.opacity < 1.0 {
+            ui.multiply_opacity(self.opacity);
+            let from = TSTransform::new(self.origin.to_vec2() * (1.0 - self.scale), self.scale);
+            ui.with_visual_transform(from, draw);
+        } else {
+            draw(ui);
+        }
+    }
 }
 
 /// The menu's area layer: what is kept of it when it closes (`afterimage.rs`).
@@ -319,22 +334,18 @@ impl MenuView {
         // transform: what is pressed is where the menu will stand.
         let now_ms = ctx.input(|input| input.time) * 1000.0;
         let opened = *self.opened.get_or_insert(now_ms);
-        let k = if animations {
-            eased(now_ms - opened, DURATION_MS)
-        } else {
-            1.0
-        };
-        let scale = grown(k);
+        let k = opening(now_ms - opened, animations);
         let origin = pos2(
             at.x.clamp(rect.min.x, rect.max.x),
             at.y.clamp(rect.min.y, rect.max.y),
         );
-        self.growth = Some(Growth {
+        let growth = Growth {
             rect,
             origin,
-            scale,
+            scale: grown(k),
             opacity: k as f32,
-        });
+        };
+        self.growth = Some(growth);
         if k < 1.0 {
             ctx.request_repaint();
         }
@@ -357,7 +368,7 @@ impl MenuView {
             // each of them asked for.
             .fade_in(false)
             .show(ctx, |ui| {
-                let mut draw = |ui: &mut egui::Ui| {
+                let draw = |ui: &mut egui::Ui| {
                     let (ground, _) =
                         ui.allocate_exact_size(size + Vec2::splat(2.0 * RIM), Sense::hover());
                     let menu = ground.shrink(RIM);
@@ -479,13 +490,7 @@ impl MenuView {
                         }
                     }
                 };
-                if k < 1.0 {
-                    ui.multiply_opacity(k as f32);
-                    let from = TSTransform::new(origin.to_vec2() * (1.0 - scale), scale);
-                    ui.with_visual_transform(from, draw);
-                } else {
-                    draw(ui);
-                }
+                growth.draw(ui, draw);
             });
         if closed {
             return Outcome::Closed;
