@@ -3309,7 +3309,9 @@ fn the_viewer_grows_out_of_its_tile_and_then_asks_for_nothing() {
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
         0.01
     ));
-    assert_eq!(landed.controls, 0.0);
+    // At the landing the controls' fade is at its start: nought, but for the rounding of
+    // the clock's seconds into milliseconds, which on macOS left 1e-15 of it.
+    assert!(landed.controls < 1e-9, "{}", landed.controls);
     assert_eq!(landed.ground, 1.0);
     driver.frame(&mut harness, p + 0.3);
     assert_eq!(motion(&harness).controls, 1.0);
