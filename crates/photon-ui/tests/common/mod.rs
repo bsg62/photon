@@ -453,6 +453,31 @@ pub fn said(harness: &Harness<'_>) -> Vec<String> {
         .collect()
 }
 
+/// How opaque the last frame drew the picture standing at `place`, 0 to 255: the alpha of
+/// the last picture it drew there (the viewer's photo, or the photo of a closing). None
+/// where it drew none.
+pub fn picture_alpha_at(harness: &Harness<'_>, place: egui::Rect) -> Option<u8> {
+    fn each(shape: &egui::Shape, place: egui::Rect, found: &mut Option<u8>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, place, found)),
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                let bounds = mesh.calc_bounds();
+                let near = (bounds.min - place.min).length() <= 2.0
+                    && (bounds.max - place.max).length() <= 2.0;
+                if near && let Some(vertex) = mesh.vertices.first() {
+                    *found = Some(vertex.color.a());
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = None;
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, place, &mut found);
+    }
+    found
+}
+
 /// The ids of `library`'s photos, in grid order: the newest folder first.
 pub fn photo_ids(library: &fixture::Fixture) -> Vec<i64> {
     let lib = Library::open(&library.dirs().db_path).unwrap();
@@ -550,4 +575,35 @@ pub fn no_videos() -> std::sync::Arc<dyn photon_ui::video::Videos> {
         }
     }
     std::sync::Arc::new(Nothing)
+}
+
+/// Escape alone, in one frame (`key` is two: its release is the second).
+pub fn escape_down(driver: &mut Driver, harness: &mut Harness<'_>) {
+    harness.event(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.act(harness);
+}
+
+/// A press at `at` in the very next frame, then its release: the frame after a menu or a
+/// list closed is the one that could still give the press to it.
+pub fn press_next(driver: &mut Driver, harness: &mut Harness<'_>, at: egui::Pos2) {
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.act(harness);
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.act(harness);
 }

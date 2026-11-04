@@ -15,9 +15,11 @@
 //! taken out of the frame's input.
 
 use crate::{
+    animate::{grown, opening},
     dialogs::{CANCEL, Confirm, Dialog},
     export_view,
     icons::Icon,
+    menu_view::Growth,
     person_picker::{self, PersonPicker},
     settings::Asked,
     settings_view::SettingsView,
@@ -31,8 +33,8 @@ use crate::{
     },
 };
 use eframe::egui::{
-    self, Event, Id, Key, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
-    WidgetInfo, WidgetType, pos2, vec2,
+    self, Color32, Event, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
+    UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use photon_core::library::{NamedPerson, TagCount};
 
@@ -95,6 +97,15 @@ pub struct DialogView {
     opened: bool,
     /// When the dialog was first drawn, on egui's clock.
     opened_at: Option<f64>,
+    /// The point every dialog grows about: the middle of where it stood in its first
+    /// frame, kept for the whole of its growth. Its height may change while it grows - a
+    /// picker's with its list, the export's with what is said under its field - and the
+    /// point it grows about does not move with it.
+    grows_from: Option<Pos2>,
+    /// What the last frame drew of the dialog's growth.
+    growth: Option<Growth>,
+    /// The backdrop the last frame drew.
+    backdrop: Option<Color32>,
     /// A button went down so soon after that it is the second press of a double click
     /// on whatever opened the dialog: until it comes up, nothing is done in the dialog.
     deaf: bool,
@@ -102,6 +113,12 @@ pub struct DialogView {
     settings: SettingsView,
     /// And the shortcut sheet: how far its list is.
     sheet: SheetView,
+}
+
+/// The dialog's area layer: what is kept of it, and of its backdrop, when it closes
+/// (`afterimage.rs`).
+pub fn layer() -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Foreground, Id::new("dialog"))
 }
 
 fn field_id() -> Id {
@@ -238,6 +255,16 @@ impl DialogView {
         *self = Self::default();
     }
 
+    /// How the last frame drew the dialog's growth; none before it is drawn.
+    pub fn growth(&self) -> Option<Growth> {
+        self.growth
+    }
+
+    /// The colour the last frame drew the window's backdrop in.
+    pub fn backdrop(&self) -> Option<Color32> {
+        self.backdrop
+    }
+
     /// Draws `dialog` over the window and answers what the frame came to. `keywords`
     /// are the library's, in its order, for the picker's list; `people` those the user
     /// has named, for the person dialog's - none until they have been read.
@@ -248,6 +275,7 @@ impl DialogView {
         keywords: &[String],
         tags: &[TagCount],
         people: Option<&[NamedPerson]>,
+        animations: bool,
     ) -> Done {
         let ctx = ui.ctx();
         let palette = palette(ctx);
@@ -257,9 +285,16 @@ impl DialogView {
         // Settings has a use for: a question in a row, a field's own Escape.
         let claimed = matches!(dialog, Dialog::Settings(settings)
             if self.settings.claims_escape(ctx, settings));
+        // Closed in this frame with the animations on, it is drawn once more, so that the
+        // window has its shapes to fade out from (`afterimage.rs`), and answers `Closed`
+        // after. With them off it is gone before it is drawn.
+        let mut closed = false;
         if !claimed && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
             take_keys(ctx);
-            return Done::Closed;
+            if !animations {
+                return Done::Closed;
+            }
+            closed = true;
         }
         // A key held when the dialog opens presses nothing in it: egui presses the
         // button the keyboard is on at every Enter and Space, repeats among them, and
@@ -345,17 +380,44 @@ impl DialogView {
         let stands = picker
             .as_ref()
             .map_or(height, |picker| picker.tallest(window.height()));
+        // Where it stands, which the growth is about before the dialog is drawn.
+        let place = Rect::from_min_size(
+            window.center() - vec2(width, stands) / 2.0,
+            vec2(width, height),
+        );
+        let opened_at = *self.opened_at.get_or_insert(now);
+        let k = opening((now - opened_at) * 1000.0, animations);
+        // About the middle of where it stood in its first frame, whatever kind of dialog
+        // it is (`grows_from`).
+        let origin = *self.grows_from.get_or_insert(place.center());
+        let growth = Growth {
+            rect: place,
+            origin,
+            scale: grown(k),
+            opacity: k as f32,
+        };
+        self.growth = Some(growth);
+        // The backdrop fades and never scales: it is the window's.
+        let backdrop = if k < 1.0 {
+            color(SCRIM).gamma_multiply(k as f32)
+        } else {
+            color(SCRIM)
+        };
+        self.backdrop = Some(backdrop);
+        if k < 1.0 {
+            ctx.request_repaint();
+        }
         let area = egui::Area::new(id)
             .order(egui::Order::Foreground)
+            // A closing dialog, drawn for the last time to fade from, takes no press:
+            // egui would answer its layer over the old rectangle in the next frame.
+            .interactable(!closed)
             .fixed_pos(window.center() - vec2(width, stands) / 2.0)
             // There at once, as a dialog is: egui fades a new area in over a few
             // frames, each of them asked for.
             .fade_in(false);
-        egui::Modal::new(id)
-            .area(area)
-            .backdrop_color(color(SCRIM))
-            .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
+        let mut draw = |ui: &mut egui::Ui| {
+            growth.draw(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
                 ground = rect;
@@ -386,7 +448,22 @@ impl DialogView {
                     (Dialog::Shortcuts, _) => sheet.show(ui, rect, palette),
                     (Dialog::Tags(_) | Dialog::Person(_), None) => Done::Open,
                 };
+            })
+        };
+        if closed {
+            // Not a `Modal`: that one makes its layer the one the next frame's presses
+            // answer to, over the place where the dialog stood.
+            area.show(ctx, |ui| {
+                ui.painter().rect_filled(ctx.content_rect(), 0.0, backdrop);
+                draw(ui);
             });
+        } else {
+            egui::Modal::new(id)
+                .area(area)
+                .backdrop_color(backdrop)
+                .frame(egui::Frame::NONE)
+                .show(ctx, draw);
+        }
         // A press on the scrim closes it, at the press and not at the click, as a menu
         // closes: a press that becomes a drag is never a click.
         let pressed = ctx.input(|input| {
@@ -421,7 +498,7 @@ impl DialogView {
             };
         }
         take_keys(ctx);
-        done
+        if closed { Done::Closed } else { done }
     }
 }
 
@@ -887,7 +964,7 @@ pub(crate) mod tests {
             let (mut left_over, mut typed, mut presses) = (Vec::new(), false, 0);
             let mut full = self.ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
-                done = view.show(ui, dialog, keywords, tags, people);
+                done = view.show(ui, dialog, keywords, tags, people, false);
                 egui::CentralPanel::default().show(ui, |ui| {
                     let at = Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 40.0));
                     clicked = ui.put(at, egui::Button::new("behind")).clicked();
@@ -1748,7 +1825,7 @@ pub(crate) mod tests {
             let mut full = ctx.run_ui(input, |ui| {
                 crate::icons::install(ui.ctx());
                 if open {
-                    done = view.show(ui, &dialog, &[], &[], None);
+                    done = view.show(ui, &dialog, &[], &[], None, false);
                 }
                 egui::Area::new(Id::new("floating"))
                     .order(egui::Order::Foreground)

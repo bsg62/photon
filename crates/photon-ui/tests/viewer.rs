@@ -3,7 +3,8 @@
 //! that directory's own `.picasa.ini`, and nowhere else.
 
 use crate::common::{
-    Driver, Harness, hold_over, library, opened, over, over_animated, photo_ids, said,
+    Driver, Harness, hold_over, library, opened, opened_animated, over, over_animated, photo_ids,
+    picture_alpha_at, said,
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -16,7 +17,11 @@ use photon_core::{
     thumbs::ThumbSize,
 };
 use photon_engine::{commands, engine::RENDERING};
-use photon_ui::{folder_drop::CARD, grid::scroll::Notch};
+use photon_ui::{
+    folder_drop::CARD,
+    grid::scroll::Notch,
+    viewer_layout::{self, CLOSE, EDGE, Frame},
+};
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
@@ -3126,4 +3131,1216 @@ fn the_slider_held_when_the_list_opens_zooms_nothing_under_it() {
         held,
         "the slider followed again after the list"
     );
+}
+
+/// Opens the viewer on the photo at `offset` by a double click, and answers the moment of
+/// its second press: what the viewer's opening is timed from.
+fn double_click(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize) -> f64 {
+    click(driver, harness, offset);
+    click(driver, harness, offset);
+    assert!(harness.state().viewer().is_some(), "the viewer is open");
+    driver.now
+}
+
+/// What the last frame drew of the viewer's opening.
+fn motion(harness: &Harness<'_>) -> photon_ui::app::motion::MotionSeen {
+    harness.state().viewer_motion().expect("the opening drawn")
+}
+
+/// How far an opening begun at `pressed` has come at `at`, on the slide's curve.
+fn opened_by(pressed: f64, at: f64) -> f32 {
+    photon_ui::animate::eased((at - pressed) * 1000.0, photon_ui::animate::DURATION_MS) as f32
+}
+
+fn near(a: egui::Rect, b: egui::Rect, by: f32) -> bool {
+    (a.min - b.min).length() <= by && (a.max - b.max).length() <= by
+}
+
+fn edges(rect: egui::Rect) -> [f32; 4] {
+    [rect.left(), rect.top(), rect.right(), rect.bottom()]
+}
+
+/// Where the viewer fits the picture it drew in the last frame: in the photo's area, by
+/// the picture's own shape.
+fn fit(harness: &Harness<'_>) -> egui::Rect {
+    let (width, height) = harness.state().viewer_box().expect("the viewer drawn");
+    let (_, _, image) = harness.state().viewer_photo().expect("a picture drawn");
+    let area = Frame {
+        left: 0.0,
+        top: 0.0,
+        width: width as f32,
+        height: height as f32,
+    };
+    let fit = viewer_layout::contained(image.x, image.y, area);
+    egui::Rect::from_min_size(
+        egui::pos2(fit.left, fit.top),
+        egui::vec2(fit.width, fit.height),
+    )
+}
+
+/// Every picture the last frame drew, and where.
+fn pictures_drawn(harness: &Harness<'_>) -> Vec<egui::Rect> {
+    fn each(shape: &egui::Shape, found: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, found)),
+            egui::Shape::Rect(rect) if rect.brush.is_some() => found.push(rect.rect),
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                found.push(mesh.calc_bounds());
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, &mut found);
+    }
+    found
+}
+
+/// Whether the last thing the last frame filled exactly over `place` is a picture: a
+/// photo's tile, and not the empty place it leaves. (A selected tile's ring is an
+/// outline, and fills nothing.)
+fn picture_on_top_at(harness: &Harness<'_>, place: egui::Rect) -> Option<bool> {
+    fn each(shape: &egui::Shape, place: egui::Rect, last: &mut Option<bool>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, place, last)),
+            egui::Shape::Rect(rect)
+                if near(rect.rect, place, 0.5) && rect.fill != egui::Color32::TRANSPARENT =>
+            {
+                *last = Some(rect.brush.is_some());
+            }
+            egui::Shape::Mesh(mesh)
+                if mesh.texture_id != egui::TextureId::default()
+                    && near(mesh.calc_bounds(), place, 0.5) =>
+            {
+                *last = Some(true);
+            }
+            _ => {}
+        }
+    }
+    let mut last = None;
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, place, &mut last);
+    }
+    last
+}
+
+/// How opaque the black ground over the whole window was drawn in the last frame.
+fn ground_drawn(harness: &Harness<'_>) -> u8 {
+    let window = harness.ctx.content_rect();
+    (harness.output().shapes.iter())
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect)
+                if rect.rect == window && rect.fill.r() == 0 && rect.fill.g() == 0 =>
+            {
+                Some(rect.fill.a())
+            }
+            _ => None,
+        })
+        .expect("the ground drawn")
+}
+
+/// A click at `at`, drawn in a frame at `when`.
+fn click_when(driver: &mut Driver, harness: &mut Harness<'_>, at: Pos2, when: f64) {
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(at, PointerButton::Primary, true));
+    harness.event(button(at, PointerButton::Primary, false));
+    driver.frame(harness, when);
+}
+
+// The viewer grows out of the photo's tile: from the tile's place, in the frame drawn at
+// the press, to the place the viewer fits it in, over 200 ms on the slide's curve, while
+// the ground comes from clear to black; the controls come in the 100 ms after it has
+// landed, and then the window is still.
+#[test]
+fn the_viewer_grows_out_of_its_tile_and_then_asks_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    let t = harness.state().tile_rect(0).unwrap();
+    let p = double_click(&mut driver, &mut harness, 0);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(first.zoom && first.opening, "{first:?}");
+    assert!(
+        near(first.photo, t, 2.0),
+        "{:?} from the tile {t:?}",
+        first.photo
+    );
+    assert!(first.ground < 0.2, "{first:?}");
+    // The tile's own cut of its picture, which opens out to the whole of it on the way.
+    let (_, uv, image) = harness.state().viewer_photo().unwrap();
+    let (left, top, right, bottom) =
+        photon_ui::viewer_motion::crop_uv((image.x, image.y), (t.width(), t.height()));
+    let tiles = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
+    assert!(
+        near(uv, tiles, 0.01),
+        "{uv:?} of the picture, the tile's {tiles:?}"
+    );
+    driver.frame(&mut harness, p + 0.1);
+    let half = motion(&harness);
+    assert!(
+        t.width() < half.photo.width() && half.photo.width() < 1000.0,
+        "{half:?}"
+    );
+    assert!(0.8 < half.ground && half.ground < 0.95, "{half:?}");
+    let black = ground_drawn(&harness);
+    assert!(
+        (f32::from(black) - half.ground * 255.0).abs() <= 2.0,
+        "{black} of black for {}",
+        half.ground
+    );
+    // While it moves it asks for its frames itself, as an event loop would draw them.
+    let drawn = driver.frames_in(&mut harness, 0.09);
+    assert!(
+        drawn >= 3,
+        "{drawn} frames in the zoom's last ninety milliseconds"
+    );
+    driver.frame(&mut harness, p + 0.2);
+    let landed = motion(&harness);
+    let fit = fit(&harness);
+    assert!(
+        near(landed.photo, fit, 1.0),
+        "{:?} at {fit:?}",
+        landed.photo
+    );
+    let (_, uv, _) = harness.state().viewer_photo().unwrap();
+    assert!(near(
+        uv,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        0.01
+    ));
+    // At the landing the controls' fade is at its start: nought, but for the rounding of
+    // the clock's seconds into milliseconds, which on macOS left 1e-15 of it.
+    assert!(landed.controls < 1e-9, "{}", landed.controls);
+    assert_eq!(landed.ground, 1.0);
+    driver.frame(&mut harness, p + 0.3);
+    assert_eq!(motion(&harness).controls, 1.0);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0);
+    assert_eq!(harness.state().viewer_motion(), None);
+}
+
+// The grid stands under the growing photo as it stood at the press - its other photos in
+// their places, the one that grows an empty place - and takes no press: a click on another
+// photo's place selects nothing and opens nothing.
+#[test]
+fn the_grid_stands_under_the_growing_photo_and_takes_no_press() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    let (own, other) = (harness.state().tile_rect(0), harness.state().tile_rect(2));
+    let (own, other) = (own.unwrap(), other.unwrap());
+    let p = double_click(&mut driver, &mut harness, 0);
+    let selected = harness.state().selected();
+    driver.frame(&mut harness, p);
+    click_when(&mut driver, &mut harness, other.center(), p + 0.05);
+    assert!(
+        (pictures_drawn(&harness).iter()).any(|drawn| near(*drawn, other, 0.5)),
+        "the third photo's tile under the viewer"
+    );
+    assert_eq!(
+        picture_on_top_at(&harness, own),
+        Some(false),
+        "the tile the photo grew out of stands empty"
+    );
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    assert_eq!(harness.state().selected(), selected);
+    driver.frame(&mut harness, p + 0.4);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    assert_eq!(harness.state().selected(), selected);
+}
+
+// The viewer's keys are its own from the press that opens it: an arrow while the photo
+// grows steps to the next photo - not the grid's selection - and ends the zoom at once.
+#[test]
+fn the_viewers_keys_are_its_own_from_the_press() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    driver.frame(&mut harness, p);
+    assert!(motion(&harness).zoom);
+    harness.event(egui::Event::Key {
+        key: Key::ArrowRight,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.frame(&mut harness, p + 0.05);
+    assert_eq!(viewing(&harness), Some(ids[1]));
+    assert_eq!(harness.state().selected(), [ids[0]]);
+    driver.act(&mut harness);
+    assert_eq!(harness.state().viewer_motion(), None);
+}
+
+// A press where a control will stand, while the photo grows, is nobody's: a click on the
+// close button's place leaves the viewer open. Once the controls have come, it closes.
+#[test]
+fn a_press_where_a_button_will_be_does_nothing_while_the_photo_grows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    let window = harness.ctx.content_rect();
+    let close = egui::pos2(
+        window.right() - EDGE - CLOSE / 2.0,
+        window.top() + EDGE + CLOSE / 2.0,
+    );
+    let p = double_click(&mut driver, &mut harness, 0);
+    driver.frame(&mut harness, p);
+    click_when(&mut driver, &mut harness, close, p + 0.05);
+    assert!(harness.state().viewer().is_some(), "closed while it grew");
+    driver.frame(&mut harness, p + 0.22);
+    assert!(motion(&harness).controls > 0.0);
+    click_when(&mut driver, &mut harness, close, p + 0.25);
+    assert!(harness.state().viewer().is_none(), "the cross, once drawn");
+}
+
+// Nor is a press on the growing photo the first half of a double click: the second, once
+// the photo has landed, zooms nothing.
+#[test]
+fn a_click_while_the_photo_grows_is_no_half_of_a_double_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    let middle = harness.ctx.content_rect().center();
+    let p = double_click(&mut driver, &mut harness, 0);
+    driver.frame(&mut harness, p);
+    click_when(&mut driver, &mut harness, middle, p + 0.15);
+    driver.frame(&mut harness, p + 0.21);
+    click_when(&mut driver, &mut harness, middle, p + 0.25);
+    assert_eq!(
+        zoom(&harness),
+        1.0,
+        "zoomed by a double click begun while it grew"
+    );
+}
+
+// The window resized while the photo grows: it lands where the viewer fits it in the new
+// window, and no frame on the way moves it by more than the curve's share of what was left
+// of the way there.
+#[test]
+fn a_resize_during_the_zoom_lands_where_the_viewer_fits_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    let mut seen = Vec::new();
+    for at in [p, p + 0.05, p + 0.08] {
+        driver.frame(&mut harness, at);
+        seen.push((at, motion(&harness).photo));
+    }
+    harness.set_size(egui::vec2(800.0, 600.0));
+    let mut at = p + 0.1;
+    while at < p + 0.2 {
+        driver.frame(&mut harness, at);
+        seen.push((at, motion(&harness).photo));
+        at += 0.016;
+    }
+    driver.frame(&mut harness, p + 0.2);
+    let landed = motion(&harness).photo;
+    seen.push((p + 0.2, landed));
+    let fit = fit(&harness);
+    assert_eq!(harness.state().viewer_box(), Some((800, 600)));
+    assert!(near(landed, fit, 1.0), "{landed:?} at {fit:?}");
+    // From the last frame drawn in the window as it was: before it, the photo was on its
+    // way to where that window fitted it.
+    for pair in seen.windows(2).skip(2) {
+        let ((was_at, was), (now_at, now)) = (pair[0], pair[1]);
+        let (k0, k1) = (opened_by(p, was_at), opened_by(p, now_at));
+        let share = (k1 - k0) / (1.0 - k0);
+        for ((from, to), end) in edges(was).iter().zip(edges(now)).zip(edges(landed)) {
+            let most = share * (end - from).abs() + 1.0;
+            assert!(
+                (to - from).abs() <= most,
+                "{was:?} to {now:?} between {was_at} and {now_at}: {} past {most}",
+                (to - from).abs()
+            );
+        }
+    }
+}
+
+// A photo whose tile has no thumbnail to grow fades in where it lands: in the first frame
+// it is already at its place - in the middle of the window, as large as the window lets
+// it be - and stays there while the ground comes.
+#[test]
+fn a_photo_whose_tile_has_no_thumbnail_fades_in_where_it_lands() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = pictures(dir.path());
+    std::fs::write(folder.join("d.jpg"), b"not a picture").unwrap();
+    let (mut harness, mut driver, _) = over_animated(dir.path(), Some(&folder));
+    driver.until(&mut harness, "the four photos shown", |app| {
+        app.photos() == 4 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    let engine = harness.state().engine().clone();
+    let ids = harness.state().shown();
+    let broken = (ids.iter())
+        .position(|id| commands::viewer_item(&engine, *id).unwrap().file_name == "d.jpg")
+        .unwrap();
+    let p = double_click(&mut driver, &mut harness, broken);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(!first.zoom, "{first:?}");
+    assert!(first.ground < 0.2, "{first:?}");
+    let window = harness.ctx.content_rect();
+    let photo = first.photo;
+    assert!(
+        (photo.center() - window.center()).length() < 0.5,
+        "{photo:?}"
+    );
+    assert!(
+        (photo.width() - window.width()).abs() < 0.5
+            || (photo.height() - window.height()).abs() < 0.5,
+        "{photo:?} as large as {window:?} lets it be"
+    );
+    driver.frame(&mut harness, p + 0.1);
+    let half = motion(&harness);
+    assert_eq!(half.photo, photo);
+    // The whole viewer comes at the ground's opacity, its black with it.
+    let black = ground_drawn(&harness);
+    assert!(
+        (f32::from(black) - half.ground * 255.0).abs() <= 2.0,
+        "{black} of black for {}",
+        half.ground
+    );
+}
+
+// Without the animations the viewer is there in the frame after the press, whole.
+#[test]
+fn without_animations_the_viewer_opens_in_one_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    let p = double_click(&mut driver, &mut harness, 0);
+    driver.frame(&mut harness, p);
+    assert_eq!(harness.state().viewer_motion(), None);
+}
+
+/// A library of three photos the index takes for 4:3, 3:4 and 3:2, whose pictures are all
+/// three times as wide as they are high: the index has their shapes wrong.
+fn misshapen<'a>(dir: &Path) -> (Harness<'a>, Driver) {
+    let picture = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        96,
+        32,
+        image::Rgb([200, 120, 40]),
+    ));
+    let mut bytes = Vec::new();
+    picture
+        .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg)
+        .unwrap();
+    let source = dir.join("wide.jpg");
+    std::fs::write(&source, bytes).unwrap();
+    let library = photon_ui::fixture::build(&dir.join("library"), 3, &[source]).unwrap();
+    opened_animated(&library, 3)
+}
+
+// The photo grows towards where the viewer fits the picture it has, not where the index's
+// shape would put it: a picture three times as wide as high, which the index takes for
+// 4:3, is on its way to a band across the window, not to a box as high as the window.
+#[test]
+fn the_zoom_heads_for_the_picture_it_has_and_not_the_shape_the_index_gives() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = misshapen(dir.path());
+    let t = harness.state().tile_rect(0).unwrap();
+    // The files are on a drive that is not there: their full pictures cannot be made, and
+    // said so before a preview had come, the photo would be a message and not grow at all.
+    let rendering = RENDERING.lock();
+    let p = double_click(&mut driver, &mut harness, 0);
+    driver.frame(&mut harness, p);
+    driver.frame(&mut harness, p + 0.1);
+    let half = motion(&harness).photo;
+    let window = harness.ctx.content_rect();
+    let band = egui::Rect::from_center_size(
+        window.center(),
+        egui::vec2(window.width(), window.width() / 3.0),
+    );
+    let k = opened_by(p, p + 0.1);
+    let heading = egui::Rect::from_min_max(t.min.lerp(band.min, k), t.max.lerp(band.max, k));
+    assert!(near(half, heading, 1.0), "{half:?} on its way to {band:?}");
+    driver.frame(&mut harness, p + 0.2);
+    assert!(near(motion(&harness).photo, band, 1.0));
+    drop(rendering);
+}
+
+/// Every texture the last frame drew from, as egui's texture ids: the font's left out.
+fn textures_drawn(harness: &Harness<'_>) -> Vec<egui::TextureId> {
+    fn each(shape: &egui::Shape, found: &mut Vec<egui::TextureId>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, found)),
+            shape if shape.texture_id() != egui::TextureId::default() => {
+                found.push(shape.texture_id());
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, &mut found);
+    }
+    found
+}
+
+// Opened from compare, the viewer fades in over compare as it stood - whose panes' pictures
+// compare lets go of as it closes, at that press. The picture under the viewer holds them
+// for as long as it is drawn: nothing a frame draws names a texture that is gone, which a
+// GPU would draw as nothing.
+#[test]
+fn the_window_under_an_opening_keeps_the_pictures_it_draws() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let at = tile(&harness, 1);
+    let adding = if cfg!(target_os = "macos") {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    harness.event(egui::Event::ModifiersChanged(adding));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: adding,
+        });
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::C);
+    driver.until(&mut harness, "compare open", |app| app.compare().is_some());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let panes = textures_drawn(&harness);
+    assert!(panes.len() >= 2, "{panes:?} pictures in compare");
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    for at in [p, p + 0.1] {
+        driver.frame(&mut harness, at);
+        assert!(!motion(&harness).zoom, "opened from compare, it fades");
+        let manager = harness.ctx.tex_manager();
+        let manager = manager.read();
+        let gone: Vec<_> = (textures_drawn(&harness).into_iter())
+            .filter(|id| manager.meta(*id).is_none())
+            .collect();
+        assert!(gone.is_empty(), "{gone:?} drawn and let go of, at {at}");
+    }
+    // And let go of once the viewer has come.
+    driver.frame(&mut harness, p + 0.3);
+    driver.act(&mut harness);
+    assert_eq!(harness.state().viewer_motion(), None);
+    let manager = harness.ctx.tex_manager();
+    let kept: Vec<_> = (panes.iter())
+        .filter(|id| manager.read().meta(**id).is_some())
+        .collect();
+    assert!(kept.is_empty(), "{kept:?} of compare's still held");
+}
+
+/// The viewer opened on the photo at `offset` with the animations on, once its opening
+/// has ended and its picture is in: a photo that stands still in its place.
+fn resting(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize) {
+    open(driver, harness, offset);
+    driver.until(harness, "the photo's picture", |app| {
+        app.viewer_photo().is_some()
+    });
+    rest(driver, harness, 0.5);
+    assert_eq!(harness.state().viewer_motion(), None);
+}
+
+/// Which part of its picture the last picture drawn in the last frame shows.
+fn last_picture_uv(harness: &Harness<'_>) -> egui::Rect {
+    fn each(shape: &egui::Shape, found: &mut egui::Rect) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, found)),
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                *found = egui::Rect::from_points(
+                    &(mesh.vertices.iter())
+                        .map(|vertex| vertex.uv)
+                        .collect::<Vec<_>>(),
+                );
+            }
+            _ => {}
+        }
+    }
+    let mut found = egui::Rect::NOTHING;
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, &mut found);
+    }
+    found
+}
+
+/// Whether the last frame drew the empty place of a photo out of its tile.
+fn hollowed(harness: &Harness<'_>) -> bool {
+    harness
+        .state()
+        .last_frame()
+        .is_some_and(|frame| frame.hollowed)
+}
+
+/// A key going down in a frame drawn at `at`.
+fn key_at(driver: &mut Driver, harness: &mut Harness<'_>, key: Key, at: f64) {
+    harness.event(egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.frame(harness, at);
+}
+
+// Closing runs the opening backwards over the live grid: the viewer is closed at the
+// press, and in the frame drawn at that moment the photo still stands where the viewer
+// fitted it, on its black, its tile in the grid an empty place; 200 ms on it is in its
+// tile and the ground is gone, and then the window is still and the tile is the photo's
+// again.
+#[test]
+fn closing_shrinks_the_photo_into_its_tile_over_the_live_grid() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let fit = fit(&harness);
+    let (_, _, image) = harness.state().viewer_photo().unwrap();
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    assert_eq!(viewing(&harness), None, "closed at the press");
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(!first.opening && first.zoom, "{first:?}");
+    assert!(
+        near(first.photo, fit, 2.0),
+        "{:?} from {fit:?}",
+        first.photo
+    );
+    assert!(first.ground > 0.8, "{first:?}");
+    assert!(hollowed(&harness), "the tile it shrinks into stands empty");
+    let place = harness.state().drawn_place(ids[0]).unwrap();
+    assert_eq!(picture_on_top_at(&harness, place), Some(false));
+    driver.frame(&mut harness, p + 0.1);
+    let half = motion(&harness);
+    assert!(
+        place.width() < half.photo.width() && half.photo.width() < fit.width(),
+        "{half:?}"
+    );
+    assert!(0.05 < half.ground && half.ground < 0.2, "{half:?}");
+    let black = ground_drawn(&harness);
+    assert!(
+        (f32::from(black) - half.ground * 255.0).abs() <= 2.0,
+        "{black} of black for {}",
+        half.ground
+    );
+    // The part of the picture drawn is its cut to the shape it has on the way: it is
+    // never squeezed.
+    let uv = last_picture_uv(&harness);
+    let (left, top, right, bottom) = photon_ui::viewer_motion::crop_uv(
+        (image.x, image.y),
+        (half.photo.width(), half.photo.height()),
+    );
+    let cut = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
+    assert!(near(uv, cut, 0.01), "{uv:?} drawn, {cut:?} its cut");
+    // While it moves it asks for its frames itself, as an event loop would draw them.
+    // (Short of its end: a frame asked for within the span is drawn a refresh after the
+    // one before, and may be past it.)
+    let drawn = driver.frames_in(&mut harness, 0.07);
+    assert!(
+        drawn >= 3,
+        "{drawn} frames in seventy milliseconds of the shrink"
+    );
+    driver.frame(&mut harness, p + 0.2);
+    let landed = motion(&harness);
+    let place = harness.state().drawn_place(ids[0]).unwrap();
+    assert!(near(landed.photo, place, 0.5), "{landed:?} into {place:?}");
+    assert_eq!(landed.ground, 0.0);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0);
+    assert_eq!(harness.state().viewer_motion(), None);
+    assert!(!hollowed(&harness), "the tile is the photo's again");
+    assert_eq!(picture_on_top_at(&harness, place), Some(true));
+}
+
+// The closing's last frame draws the grid before the photo lands, so its tile is drawn
+// empty in it - no picture, no ring, no marks. One frame more is asked for after the end,
+// and in it the tile is the photo's again: a still window would keep the empty place.
+#[test]
+fn the_frame_after_the_shrink_gives_the_tile_back_its_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    // What the other threads ask for as the viewer lets go - a thumbnail, the engine - is
+    // asked for before the closing's end, and drawn in its frame: the frames after are
+    // the closing's own.
+    driver.quiet();
+    driver.frame(&mut harness, p + 0.2);
+    assert_eq!(motion(&harness).ground, 0.0, "the closing's end");
+    assert!(hollowed(&harness), "its last frame drew the tile empty");
+    assert!(driver.frames_in(&mut harness, 1.0) > 0);
+    assert_eq!(harness.state().viewer_motion(), None);
+    assert!(!hollowed(&harness), "the tile is the photo's again");
+    let place = harness.state().drawn_place(ids[0]).unwrap();
+    assert_eq!(picture_on_top_at(&harness, place), Some(true));
+    assert!(
+        ringed(&harness, place),
+        "the photo handed back is drawn selected"
+    );
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
+}
+
+/// Whether the last frame drew a selected tile's ring around `place`.
+fn ringed(harness: &Harness<'_>, place: egui::Rect) -> bool {
+    use photon_ui::theme::apply::{color, palette};
+    let accent = color(palette(&harness.ctx).accent);
+    fn each(shape: &egui::Shape, place: egui::Rect, accent: egui::Color32) -> bool {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| each(shape, place, accent)),
+            egui::Shape::Rect(rect) => near(rect.rect, place, 0.5) && rect.stroke.color == accent,
+            _ => false,
+        }
+    }
+    (harness.output().shapes.iter()).any(|clipped| each(&clipped.shape, place, accent))
+}
+
+// Stepped to another photo in the viewer, it shrinks into that photo's tile: the one the
+// grid is handed back.
+#[test]
+fn stepped_it_shrinks_into_the_photo_it_is_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::ArrowRight);
+    assert_eq!(viewing(&harness), Some(ids[1]));
+    driver.until(&mut harness, "the next photo's picture", |app| {
+        app.viewer_photo().is_some()
+    });
+    rest(&mut driver, &mut harness, 0.5);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    assert!(motion(&harness).zoom);
+    driver.frame(&mut harness, p + 0.2);
+    let landed = motion(&harness).photo;
+    let place = harness.state().drawn_place(ids[1]).unwrap();
+    assert!(near(landed, place, 0.5), "{landed:?} into {place:?}");
+}
+
+// While the photo shrinks the grid is the grid: an arrow pressed then moves the selection
+// from the photo handed back to the next one, as it would with nothing over it.
+#[test]
+fn the_grid_is_the_grids_while_the_photo_shrinks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    assert_eq!(harness.state().lead(), Some(ids[0]), "handed back");
+    key_at(&mut driver, &mut harness, Key::ArrowRight, p + 0.05);
+    assert!(!motion(&harness).opening, "still on its way back");
+    assert_eq!(harness.state().lead(), Some(ids[1]));
+    assert_eq!(harness.state().selected(), [ids[1]]);
+}
+
+// Escape while the photo still grows turns it round where it is: the next frame draws it
+// where the last one did, on as much black, and it goes back into its tile.
+#[test]
+fn escape_while_it_grows_turns_it_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    driver.frame(&mut harness, p);
+    key_at(&mut driver, &mut harness, Key::Escape, p + 0.1);
+    assert_eq!(viewing(&harness), None);
+    let drawn = motion(&harness);
+    assert!(drawn.opening && drawn.zoom, "{drawn:?}");
+    driver.frame(&mut harness, p + 0.1);
+    let turned = motion(&harness);
+    assert!(!turned.opening && turned.zoom, "{turned:?}");
+    assert!(
+        near(turned.photo, drawn.photo, 2.0),
+        "{:?} after {:?}",
+        turned.photo,
+        drawn.photo
+    );
+    assert!((turned.ground - drawn.ground).abs() < 0.02, "{turned:?}");
+    driver.frame(&mut harness, p + 0.3);
+    let place = harness.state().drawn_place(ids[0]).unwrap();
+    assert!(near(motion(&harness).photo, place, 0.5));
+}
+
+// Enter while the photo shrinks opens the viewer again, and the photo turns round where it
+// is drawn: no jump, and it lands in its place 200 ms on.
+#[test]
+fn enter_while_it_shrinks_turns_it_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let fit = fit(&harness);
+    let (_, _, picture) = harness.state().viewer_photo().unwrap();
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    driver.frame(&mut harness, p + 0.1);
+    let before = motion(&harness);
+    assert!(!before.opening, "{before:?}");
+    key_at(&mut driver, &mut harness, Key::Enter, p + 0.1);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    // The frame the viewer opens in still draws the photo where it was going.
+    assert_eq!(motion(&harness), before);
+    driver.frame(&mut harness, p + 0.1);
+    let turned = motion(&harness);
+    assert!(turned.opening && turned.zoom, "{turned:?}");
+    assert!(
+        near(turned.photo, before.photo, 2.0),
+        "{:?} after {:?}",
+        turned.photo,
+        before.photo
+    );
+    assert!((turned.ground - before.ground).abs() < 0.02, "{turned:?}");
+    // Drawn from the picture it shrank as, and not from the tile's thumbnail, 256 pixels
+    // at its longest, while the viewer has no picture of its own again yet (or a preview,
+    // larger still).
+    let (_, _, image) = harness.state().viewer_photo().unwrap();
+    assert!(image.x >= picture.x, "{image:?} drawn after {picture:?}");
+    driver.frame(&mut harness, p + 0.3);
+    let landed = motion(&harness).photo;
+    assert!(near(landed, fit, 1.0), "{landed:?} at {fit:?}");
+}
+
+// Without the animations the viewer is gone in the frame of the press, and the tile is
+// the photo's at once.
+#[test]
+fn without_animations_the_viewer_closes_in_one_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.settle(&mut harness);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    assert_eq!(harness.state().viewer_motion(), None);
+    assert!(!hollowed(&harness));
+}
+
+// The picture the shrinking photo is drawn from is the viewer's, which the viewer lets go
+// of as it closes: held for the shrink, and let go of once it has landed.
+#[test]
+fn the_picture_that_shrinks_is_let_go_of_once_it_has_landed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let (_, _, image) = harness.state().viewer_photo().unwrap();
+    let drawn = textures_drawn(&harness);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p + 0.1);
+    let manager = harness.ctx.tex_manager();
+    let held: Vec<_> = (drawn.iter())
+        .filter(|id| {
+            (manager.read().meta(**id))
+                .is_some_and(|meta| meta.size == [image.x as usize, image.y as usize])
+        })
+        .copied()
+        .collect();
+    assert!(!held.is_empty(), "the viewer's picture let go of mid-way");
+    rest(&mut driver, &mut harness, 1.0);
+    let kept: Vec<_> = (held.iter())
+        .filter(|id| manager.read().meta(**id).is_some())
+        .collect();
+    assert!(kept.is_empty(), "{kept:?} still held");
+}
+
+/// What is seen of the last picture the last frame drew - its rectangle, cut to what it was
+/// clipped to - and of the last thing it filled over `place`.
+fn last_seen(harness: &Harness<'_>, place: egui::Rect) -> (egui::Rect, egui::Rect) {
+    fn each(
+        shape: &egui::Shape,
+        clip: egui::Rect,
+        place: egui::Rect,
+        found: &mut (egui::Rect, egui::Rect),
+    ) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                (shapes.iter()).for_each(|shape| each(shape, clip, place, found))
+            }
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                found.0 = mesh.calc_bounds().intersect(clip);
+            }
+            egui::Shape::Rect(rect)
+                if near(rect.rect, place, 0.5) && rect.fill != egui::Color32::TRANSPARENT =>
+            {
+                found.1 = rect.rect.intersect(clip);
+            }
+            _ => {}
+        }
+    }
+    let mut found = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, clipped.clip_rect, place, &mut found);
+    }
+    found
+}
+
+/// The wheel turned down over the photo at `offset` in a frame drawn at `at`: as far as
+/// the grid goes.
+fn wheel_down(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize, at: f64) {
+    harness.event(egui::Event::PointerMoved(tile(harness, offset)));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -100.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.frame(harness, at);
+}
+
+/// The part of `tile` seen in the grid in the last frame: below the top bar, and below
+/// the folder's header pinned over the photos.
+fn seen_of(harness: &Harness<'_>, tile: egui::Rect) -> egui::Rect {
+    let pinned = (harness.state().last_frame().unwrap().pinned).expect("a header pinned");
+    let top_bar = photon_ui::window_layout::TOP_BAR;
+    let seen_top = top_bar + (pinned.y + photon_ui::grid::layout::HEADER) as f32;
+    assert!(
+        tile.top() < top_bar && seen_top < tile.center().y,
+        "{tile:?}"
+    );
+    egui::Rect::from_min_max(egui::pos2(tile.left(), seen_top), tile.max)
+}
+
+// A photo whose tile is part under the top edge of the grid - under the top bar and the
+// folder's header pinned over the photos - is seen as its tile was: it grows out of what
+// was seen of the tile, the empty place it leaves is not drawn over the bar or the header,
+// and it goes back into what is seen of the tile, not over them - here a tile the wheel
+// has taken up under them while the photo shrank.
+#[test]
+fn a_tile_part_under_the_top_edge_is_grown_out_of_and_gone_back_into_as_it_shows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    harness.set_size(egui::vec2(1000.0, 220.0));
+    driver.act(&mut harness);
+    rest(&mut driver, &mut harness, 0.5);
+    let now = driver.now + 0.1;
+    wheel_down(&mut driver, &mut harness, 0, now);
+    rest(&mut driver, &mut harness, 0.5);
+    let t = harness.state().tile_rect(0).unwrap();
+    let seen = seen_of(&harness, t);
+    let p = double_click(&mut driver, &mut harness, 0);
+    driver.frame(&mut harness, p);
+    assert!(motion(&harness).zoom);
+    let (photo, empty) = last_seen(&harness, t);
+    assert!(near(photo, seen, 0.5), "{photo:?} grown out of {seen:?}");
+    assert!(
+        near(empty, seen, 0.5),
+        "{empty:?} left empty, {seen:?} seen"
+    );
+    driver.frame(&mut harness, p + 0.4);
+    driver.act(&mut harness);
+    assert_eq!(harness.state().viewer_motion(), None);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    wheel_down(&mut driver, &mut harness, 0, p + 0.05);
+    driver.frame(&mut harness, p + 0.2);
+    assert!(motion(&harness).zoom);
+    let place = harness.state().drawn_place(ids[0]).unwrap();
+    let seen = seen_of(&harness, place);
+    let (photo, hollow) = last_seen(&harness, place);
+    assert!(near(photo, seen, 0.5), "{photo:?} gone back into {seen:?}");
+    assert!(
+        hollow.top() >= photon_ui::window_layout::TOP_BAR,
+        "{hollow:?} empty over the top bar"
+    );
+}
+
+// Another photo opened while one shrinks back into its tile: the one going back ends where
+// it is, and stands in the window the new one grows over - its tile is not left empty
+// under it.
+#[test]
+fn opening_another_photo_while_one_shrinks_keeps_that_one_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    key_at(&mut driver, &mut harness, Key::ArrowRight, p + 0.05);
+    key_at(&mut driver, &mut harness, Key::Enter, p + 0.1);
+    assert_eq!(viewing(&harness), Some(ids[1]));
+    let going = motion(&harness);
+    assert!(!going.opening, "{going:?}");
+    driver.frame(&mut harness, p + 0.1);
+    assert!(motion(&harness).opening);
+    assert!(
+        (pictures_drawn(&harness).iter()).any(|drawn| near(*drawn, going.photo, 0.5)),
+        "the first photo, {:?}, under the second",
+        going.photo
+    );
+    // And its picture is held while it stands there: the closing that held it is over,
+    // and a texture let go of is drawn by the GPU as nothing.
+    let under = textures_at(&harness, going.photo);
+    assert!(!under.is_empty(), "no picture at {:?}", going.photo);
+    driver.frame(&mut harness, p + 0.15);
+    let manager = harness.ctx.tex_manager();
+    let gone: Vec<_> = (under.iter())
+        .filter(|id| manager.read().meta(**id).is_none())
+        .collect();
+    assert!(
+        gone.is_empty(),
+        "{gone:?} drawn under the second and let go of"
+    );
+}
+
+/// The textures of the pictures the last frame drew at `place`.
+fn textures_at(harness: &Harness<'_>, place: egui::Rect) -> Vec<egui::TextureId> {
+    fn each(shape: &egui::Shape, place: egui::Rect, found: &mut Vec<egui::TextureId>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, place, found)),
+            egui::Shape::Mesh(mesh)
+                if mesh.texture_id != egui::TextureId::default()
+                    && near(mesh.calc_bounds(), place, 0.5) =>
+            {
+                found.push(mesh.texture_id);
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, place, &mut found);
+    }
+    found
+}
+
+// A tile scrolled out of sight while its photo shrinks back into it is not gone back into:
+// the photo fades out where it stands.
+#[test]
+fn a_tile_scrolled_out_of_sight_is_not_gone_back_into() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    let ids = harness.state().shown();
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(first.zoom, "{first:?}");
+    key_at(&mut driver, &mut harness, Key::End, p + 0.05);
+    assert_eq!(harness.state().drawn_place(ids[0]), None, "scrolled away");
+    let gone = motion(&harness);
+    assert!(!gone.zoom, "{gone:?}");
+    assert_eq!(gone.photo, first.photo, "where it was drawn");
+    assert!(!hollowed(&harness));
+    driver.frame(&mut harness, p + 0.2);
+    let last = motion(&harness);
+    assert_eq!((last.photo, last.ground), (first.photo, 0.0));
+}
+
+// A photo whose tile is scrolled away as it shrinks fades from the opacity it had there -
+// whole, on its way into its tile - over the time that is left: it neither jumps to the
+// black's opacity nor stays whole to vanish at the end.
+#[test]
+fn a_photo_that_loses_its_tile_fades_from_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(first.zoom, "{first:?}");
+    assert_eq!(picture_alpha_at(&harness, first.photo), Some(255));
+    key_at(&mut driver, &mut harness, Key::End, p + 0.05);
+    let gone = motion(&harness);
+    assert!(!gone.zoom, "{gone:?}");
+    let mut alphas = vec![picture_alpha_at(&harness, gone.photo).unwrap_or(0)];
+    assert!(alphas[0] >= 250, "{alphas:?} as its tile went, on {gone:?}");
+    for at in [p + 0.1, p + 0.15, p + 0.2] {
+        driver.frame(&mut harness, at);
+        let drawn = motion(&harness);
+        let alpha = picture_alpha_at(&harness, drawn.photo).unwrap_or(0);
+        assert!(
+            f32::from(alpha) >= drawn.ground * 255.0 - 2.0,
+            "{alpha} on {drawn:?}"
+        );
+        alphas.push(alpha);
+    }
+    assert!(
+        alphas.windows(2).all(|pair| pair[1] < pair[0]),
+        "{alphas:?}"
+    );
+    assert_eq!(alphas[3], 0, "gone with the black");
+}
+
+// Enter while a photo whose tile was scrolled away fades out opens it again from what was
+// drawn: the photo from its opacity, the black from its own, which is less - the photo
+// was whole as it lost its tile.
+#[test]
+fn enter_after_its_tile_was_lost_turns_it_round_from_what_was_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    let ids = harness.state().shown();
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    key_at(&mut driver, &mut harness, Key::End, p + 0.05);
+    assert_eq!(harness.state().drawn_place(ids[0]), None, "scrolled away");
+    // And back: the photo stays where it fades, and Enter is on it again.
+    key_at(&mut driver, &mut harness, Key::Home, p + 0.07);
+    assert_eq!(harness.state().lead(), Some(ids[0]));
+    driver.frame(&mut harness, p + 0.1);
+    let before = motion(&harness);
+    assert!(!before.zoom && !before.opening, "{before:?}");
+    let faded = picture_alpha_at(&harness, before.photo).unwrap_or(0);
+    assert!(
+        f32::from(faded) > before.ground * 255.0 + 10.0,
+        "{faded} of the photo on {before:?}"
+    );
+    key_at(&mut driver, &mut harness, Key::Enter, p + 0.1);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    driver.frame(&mut harness, p + 0.1);
+    let turned = motion(&harness);
+    assert!(turned.opening && !turned.zoom, "{turned:?}");
+    assert_eq!(turned.photo, before.photo);
+    let alpha = picture_alpha_at(&harness, turned.photo).expect("the photo drawn");
+    assert!(
+        alpha.abs_diff(faded) <= 3,
+        "{alpha} of the photo turned round, after {faded}"
+    );
+    let black = ground_drawn(&harness);
+    assert!(
+        (f32::from(black) - before.ground * 255.0).abs() <= 3.0,
+        "{black} of black turned round, after {}",
+        before.ground
+    );
+}
+
+// Enter while the photo fades out where it stands - its tile has nothing to grow - opens
+// it again from the opacity it has: the photo does not jump, nor does the black.
+#[test]
+fn enter_while_it_fades_out_turns_it_round_from_its_opacity() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 3, 0, 0);
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    let first = lib.grid_entries().unwrap()[0];
+    let cache = photon_core::thumbs::ThumbCache::new(library.dirs().cache_dir);
+    std::fs::remove_file(cache.path_for(first.thumb_key, ThumbSize::Grid)).unwrap();
+    let (mut harness, mut driver) = opened_animated(&library, 3);
+    driver.settle(&mut harness);
+    let offset = (harness.state().shown().iter())
+        .position(|id| *id == first.id)
+        .unwrap();
+    resting(&mut driver, &mut harness, offset);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    driver.frame(&mut harness, p + 0.1);
+    let before = motion(&harness);
+    assert!(!before.zoom && !before.opening, "{before:?}");
+    let faded = picture_alpha_at(&harness, before.photo).unwrap_or(0);
+    assert!(
+        (f32::from(faded) - before.ground * 255.0).abs() <= 2.0,
+        "{faded} of the photo on {before:?}"
+    );
+    key_at(&mut driver, &mut harness, Key::Enter, p + 0.1);
+    assert_eq!(viewing(&harness), Some(first.id));
+    driver.frame(&mut harness, p + 0.1);
+    let turned = motion(&harness);
+    assert!(turned.opening && !turned.zoom, "{turned:?}");
+    assert_eq!(turned.photo, before.photo);
+    assert!((turned.ground - before.ground).abs() < 0.02, "{turned:?}");
+    let alpha = picture_alpha_at(&harness, turned.photo).expect("the photo drawn");
+    assert!(
+        alpha.abs_diff(faded) <= 3,
+        "{alpha} of the photo turned round, after {faded}"
+    );
+    driver.frame(&mut harness, p + 0.3);
+    driver.until(&mut harness, "the photo's picture", |app| {
+        app.viewer_photo().is_some()
+    });
+    let fit = fit(&harness);
+    assert_eq!(picture_alpha_at(&harness, fit), Some(255));
+}
+
+// Closed while it still fades in - opened from compare, where there is no tile - the
+// photo fades out from the opacity it has, where it stands: it is not drawn whole all at
+// once to shrink into its tile.
+#[test]
+fn closed_while_it_fades_in_it_fades_out_from_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let at = tile(&harness, 1);
+    let adding = if cfg!(target_os = "macos") {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    harness.event(egui::Event::ModifiersChanged(adding));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: adding,
+        });
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::C);
+    driver.until(&mut harness, "compare open", |app| app.compare().is_some());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    // A fade waits for the viewer's own picture: the tile's thumbnail, 256 pixels at its
+    // longest, is not stretched over the window meanwhile.
+    driver.frame(&mut harness, p);
+    let drawn = harness.state().viewer_photo();
+    assert!(
+        drawn.is_none_or(|(_, _, image)| image.x > 256.0),
+        "{drawn:?} drawn as it opens"
+    );
+    driver.until(&mut harness, "the photo's picture", |app| {
+        app.viewer_photo().is_some()
+    });
+    let at = driver.now.max(p + 0.05);
+    key_at(&mut driver, &mut harness, Key::Escape, at);
+    let opening = motion(&harness);
+    assert!(opening.opening && !opening.zoom, "{opening:?}");
+    let faint = picture_alpha_at(&harness, opening.photo).expect("the photo drawn");
+    assert!(faint < 250, "{faint} of the photo on {opening:?}");
+    assert_eq!(viewing(&harness), None);
+    driver.frame(&mut harness, at);
+    let closing = motion(&harness);
+    assert!(!closing.opening && !closing.zoom, "{closing:?}");
+    assert!(near(closing.photo, opening.photo, 2.0), "{closing:?}");
+    let alpha = picture_alpha_at(&harness, closing.photo).unwrap_or(0);
+    assert!(
+        alpha.abs_diff(faint) <= 3,
+        "{alpha} of the photo closing, after {faint}"
+    );
+}
+
+// A tile with nothing to grow - its thumbnail cannot be had - is not gone back into either:
+// the photo fades out where it stands, as it faded in.
+#[test]
+fn a_tile_whose_thumbnail_cannot_be_had_is_not_gone_back_into() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 3, 0, 0);
+    // photon's own cache, in this test's directory: the first photo's thumbnail. Its file
+    // is on a drive that is not there, and it is not made again; its preview stays.
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    let first = lib.grid_entries().unwrap()[0];
+    let cache = photon_core::thumbs::ThumbCache::new(library.dirs().cache_dir);
+    std::fs::remove_file(cache.path_for(first.thumb_key, ThumbSize::Grid)).unwrap();
+    let (mut harness, mut driver) = opened_animated(&library, 3);
+    driver.settle(&mut harness);
+    let offset = (harness.state().shown().iter())
+        .position(|id| *id == first.id)
+        .unwrap();
+    resting(&mut driver, &mut harness, offset);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(!first.zoom && !first.opening, "{first:?}");
+    assert!(!hollowed(&harness));
+    driver.frame(&mut harness, p + 0.1);
+    assert_eq!(motion(&harness).photo, first.photo);
 }

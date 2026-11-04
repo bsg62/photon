@@ -335,7 +335,7 @@ impl App {
     /// lands back on it.
     fn open_face(&mut self, id: i64) {
         if !self.nav.busy() && self.index.position_of(id).is_some() {
-            self.open_viewer(id);
+            self.open_viewer(id, None);
             return;
         }
         if self.nav.target().view != View::All {
@@ -356,7 +356,7 @@ impl App {
             && self.page.is_some()
         {
             if self.index.position_of(id).is_some() {
-                self.open_viewer(id);
+                self.open_viewer(id, None);
             } else {
                 self.toasts.done(PHOTO_GONE, now);
             }

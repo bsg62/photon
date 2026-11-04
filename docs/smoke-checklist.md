@@ -837,3 +837,9 @@ library, a file changed in the file manager, or Picasa will do.
 - [ ] Open the viewer on a zoomed photo and press `I`: the panel slides in, the photo is refitted beside it, the panel never crosses the close button.
 - [ ] `H` in a long folder (and unstar in Starred): the photos close the gap by gliding, the one that left fades where it stood.
 - [ ] Settings → animations off: the sidebar and panel change at once, the grid does not glide, and a thumbnail arriving late does not fade. Back on: all of it moves again.
+- [ ] Right-click near each corner of the window: the menu grows out of the pointer. Escape fades it in a blink; a click on a photo where it stood selects that photo. Open the sort dropdown: its list grows down from its middle; choosing an option fades it. In the viewer the menu does the same in the dark palette.
+- [ ] Open a photo from the grid, step twice, close: it grows out of its tile and shrinks into the one it is on; try it zoomed in, and with a portrait photo.
+- [ ] Close a photo and press an arrow, or turn the wheel, while it shrinks: the grid answers at once, and the photo lands where its tile has gone. Press Enter while it shrinks: it turns round where it is. Open a photo whose tile is half under the pinned folder header: nothing is drawn over the header or the top bar.
+- [ ] Close the viewer in a slideshow, and over the People page: it fades out where it stands.
+- [ ] Zoom into a photo opened over the People page, press Escape and at once Enter: the photo comes back from where it was fading. Note whether it jumps to its fitted place when the viewer's own picture returns (known: it may).
+- [ ] Open Settings and press Escape: it grows from its middle with the backdrop darkening, and fades with it in a blink; a click on a photo where it stood selects that photo. Open the keyword picker: it grows from the middle of its first frame and does not move as it is typed in.

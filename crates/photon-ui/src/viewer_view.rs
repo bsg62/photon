@@ -14,6 +14,7 @@
 //! while the viewer is open.)
 
 use crate::{
+    afterimage::Afterimage,
     crop::ASPECTS,
     crop_tool::CropTool,
     crop_view::{self, CropData},
@@ -32,13 +33,14 @@ use crate::{
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout::{BAR, CLOSE, EDGE, Frame, INFO_RIGHT, NAV, contained, info_place, photo_area},
     viewer_levels::level_for,
+    viewer_motion::{Passage, Way},
     viewer_zoom::{
         MAX_ZOOM, MIN_ZOOM, Pan, ZOOM_KEY_STEP, Zoom, actual_size_zoom, wheel_zoom_factor,
     },
 };
 use eframe::egui::{
     self, Color32, CursorIcon, Event, Id, Key, PointerButton, Pos2, Rect, Sense, Stroke,
-    StrokeKind, TextureHandle, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
+    StrokeKind, TextureHandle, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// A tool in the bar, and the room between two.
@@ -198,6 +200,35 @@ pub struct ViewerData<'a> {
     /// A video being played: its strip, its keys, a click on its picture. None for a
     /// photo, and for a video that is not playing - not yet, or that cannot.
     pub strip: Option<Strip>,
+    /// The viewer opening, while it does.
+    pub arriving: Option<Arriving<'a>>,
+}
+
+/// The viewer opening (`viewer_motion.rs`): for a zoom, the photo is drawn on its way from
+/// its tile to its place on a ground that comes from clear to black, and the controls
+/// come once it has landed. A fade is the application's to draw, by the opacity of the
+/// whole viewer, which is the photo's; the black is drawn here at the ground's.
+pub struct Arriving<'a> {
+    pub passage: &'a Passage,
+    /// The window's clock, in milliseconds.
+    pub now_ms: f64,
+    /// The tile's thumbnail, or the picture of a closing turned round: what is drawn on
+    /// the way until the viewer's own picture is in hand. For a fade, only the latter.
+    pub thumb: Option<&'a TextureHandle>,
+    /// What the photo is cut to in this frame, besides the photo's area: the part of its
+    /// tile the grid showed, opening out to the whole window as it lands. None for none.
+    pub clip: Option<Rect>,
+}
+
+/// The photo as a frame drew it: where, cut off at the photo's area, which part of its
+/// picture that is, and the picture. What a closing shrinks from.
+#[derive(Clone)]
+pub struct PhotoDrawn {
+    pub at: Rect,
+    pub uv: Rect,
+    pub texture: TextureHandle,
+    /// The picture's size, in pixels.
+    pub image: Vec2,
 }
 
 /// A slideshow that is running.
@@ -288,6 +319,11 @@ pub struct ViewerView {
     /// The picture the last frame drew at fit, and where: what a slideshow fades out as
     /// it goes on.
     drawn: Option<(TextureHandle, Rect)>,
+    /// The photo as the last frame drew it, wherever and however much of it.
+    photo: Option<PhotoDrawn>,
+    /// Where the photo was drawn on its way in, uncut, and when: the next frame goes on
+    /// from there (`Passage::follow`).
+    arrival: Option<(Frame, f64)>,
 }
 
 /// Where the controls stand: what a press on the photo is not.
@@ -348,6 +384,11 @@ impl ViewerView {
         self.ratio.open()
     }
 
+    /// The crop tool's list, closed in this frame, to fade out over the window.
+    pub fn take_fading(&mut self) -> Option<Afterimage> {
+        self.ratio.take_fading()
+    }
+
     /// The picture the last frame drew at fit, and where: what a slideshow fades out as
     /// it goes on. None for a zoomed photo, and under the crop tool.
     pub fn drawn(&self) -> Option<(TextureHandle, Rect)> {
@@ -358,6 +399,19 @@ impl ViewerView {
     /// here would be held for the rest of the session.
     pub fn let_go(&mut self) {
         self.drawn = None;
+        self.photo = None;
+    }
+
+    /// The photo as the last frame drew it: where, cut off at the photo's area, and which
+    /// part of which picture. None where no picture was drawn.
+    pub fn photo_drawn(&self) -> Option<&PhotoDrawn> {
+        self.photo.as_ref()
+    }
+
+    /// Where the last frame drew the photo while the viewer opened by a zoom, uncut; none
+    /// when it did not, or drew no picture.
+    pub fn arrival(&self) -> Option<Rect> {
+        self.arrival.map(|(at, _)| rect_of(at))
     }
 
     /// Whether a keyword is being typed into the info panel's field: the keys are the
@@ -378,10 +432,40 @@ impl ViewerView {
     ) -> Vec<ViewerAction> {
         let window = ui.ctx().content_rect();
         let painter = ui.painter().clone();
+        // Opening by a zoom, the ground comes from clear over the window it was opened
+        // from, and nothing but the photo is drawn until it has landed; the controls then
+        // fade in, and are pressed from the frame they are first drawn in.
+        let zooming =
+            (data.arriving.as_ref()).filter(|arriving| arriving.passage.way() == Way::Zoom);
+        // A fade draws the whole viewer at the photo's opacity, and the black at the
+        // ground's: as much as the photo, but for a closing turned round that had taken
+        // over from a zoom, whose photo was more opaque than its black.
+        let ground = match &data.arriving {
+            Some(arriving) if arriving.passage.way() == Way::Zoom => {
+                arriving.passage.ground(arriving.now_ms)
+            }
+            Some(arriving) => {
+                let (ground, photo) = (
+                    arriving.passage.ground(arriving.now_ms),
+                    arriving.passage.photo(arriving.now_ms),
+                );
+                if photo > 0.0 {
+                    (ground / photo).min(1.0)
+                } else {
+                    1.0
+                }
+            }
+            None => 1.0,
+        };
+        let controls_shown =
+            zooming.map_or(1.0, |arriving| arriving.passage.controls(arriving.now_ms));
+        let hidden = held_back(data);
         // The one colour in photon that no token holds: the ground a photo is judged
         // against is not a theme's to choose.
-        painter.rect_filled(window, 0.0, Color32::BLACK);
+        painter.rect_filled(window, 0.0, Color32::BLACK.gamma_multiply(ground));
         if let Some(crop) = crop {
+            self.photo = None;
+            self.arrival = None;
             return self.cropping(ui, data, window, crop);
         }
         self.crop_since = None;
@@ -406,7 +490,7 @@ impl ViewerView {
         // over it, the cross vanished at every toggle, and a press on a panel sliding
         // shut, which is nobody's, went through to the button. A press on the part drawn
         // is not the photo's either.
-        let panel = (data.info_shown > 0.0).then(|| {
+        let panel = (data.info_shown > 0.0 && !hidden).then(|| {
             let place = info_place(whole, data.info_shown);
             let place =
                 Rect::from_min_size(pos2(place.left, place.top), vec2(place.width, place.height));
@@ -425,7 +509,7 @@ impl ViewerView {
         // (The photo's own caption is not drawn beside the open panel, which has it
         // whole.)
         let caption = (data.photo_caption)
-            .filter(|_| !data.info_open)
+            .filter(|_| !data.info_open && !hidden)
             .map(|line| caption_place(ui, window, line));
         let side = |left: f32| {
             Rect::from_min_size(pos2(left, window.center().y - NAV / 2.0), vec2(NAV, NAV))
@@ -452,7 +536,9 @@ impl ViewerView {
         // At rest in a slideshow the controls are away, and a press where they were is
         // the photo's.
         let quiet = data.show.is_some_and(|show| show.quiet);
-        let away = |rect: Rect| if quiet { Rect::NOTHING } else { rect };
+        // Nor before they have come, while the photo grows into its place.
+        let gone = quiet || hidden;
+        let away = |rect: Rect| if gone { Rect::NOTHING } else { rect };
         let controls = Controls {
             // What a press in this frame was aimed at is what the last frame drew, not
             // what this one is about to: in the frame after the panel is toggled, the
@@ -467,12 +553,12 @@ impl ViewerView {
                 vec2(CLOSE, CLOSE),
             )),
             bar: away(bar_place(ui, window, data, edited, self.bar)),
-            slider: (!data.video && !quiet).then(|| slider_place(window)),
-            strip: (data.strip.is_some() && !quiet).then(|| strip_place(window, area)),
+            slider: (!data.video && !gone).then(|| slider_place(window)),
+            strip: (data.strip.is_some() && !gone).then(|| strip_place(window, area)),
             caption: caption.as_ref().map(|(place, _)| *place),
             panel: panel.map(|(_, drawn)| drawn),
         };
-        if !quiet {
+        if !gone {
             self.bar = Some(controls.bar.width());
         }
         // The photo's own surface, under the controls: with something there to be hit,
@@ -498,14 +584,32 @@ impl ViewerView {
             area
         };
         let drawn = shows.then(|| picture(ui, data, fit_in, zoom)).flatten();
-        self.drawn = (drawn.filter(|_| zoom.is_fit())).map(|(texture, at)| (texture.clone(), at));
-        if let Some((texture, at)) = drawn {
-            let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-            (painter.with_clip_rect(within)).image(texture.id(), at, whole, Color32::WHITE);
+        let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        // Landed with no picture of its own yet, it stays the thumbnail it grew as.
+        let on_way =
+            zooming.filter(|arriving| !arriving.passage.landed(arriving.now_ms) || drawn.is_none());
+        let photo = match on_way {
+            Some(arriving) => shows
+                .then(|| on_its_way(ui, data, arriving, drawn, (fit_in, zoom), self.arrival))
+                .flatten(),
+            None => (drawn.map(|(texture, at)| (texture, at, whole)))
+                .or_else(|| shows.then(|| standing_in(data)).flatten()),
+        };
+        self.arrival = zooming
+            .zip(photo)
+            .map(|(arriving, (_, at, _))| (frame_of(at), arriving.now_ms));
+        self.drawn = (drawn.filter(|_| on_way.is_none() && zoom.is_fit()))
+            .map(|(texture, at)| (texture.clone(), at));
+        // Grown out of a tile part under the top bar or a folder's pinned header, it is
+        // seen as the tile was, and not over them, until it opens out.
+        let shown_in = (zooming.and_then(|arriving| arriving.clip))
+            .map_or(within, |clip| within.intersect(clip));
+        self.photo = photo.and_then(|(texture, at, uv)| cut(texture, at, uv, shown_in));
+        if let Some((texture, at, uv)) = photo {
+            (painter.with_clip_rect(shown_in)).image(texture.id(), at, uv, Color32::WHITE);
         }
         // The photo the show has left, over the one arriving, as it fades.
         if let Some((texture, at, seen)) = data.outgoing {
-            let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             let tint = Color32::WHITE.gamma_multiply(seen.clamp(0.0, 1.0));
             (painter.with_clip_rect(within)).image(texture.id(), at, whole, tint);
         }
@@ -530,9 +634,13 @@ impl ViewerView {
                     .map(|(.., part)| *part),
             })
             .collect();
+        // Everything else comes with the controls, at their opacity: put back before
+        // the end, since the window draws on this `Ui` after the viewer.
+        let opacity = ui.opacity();
+        ui.multiply_opacity(controls_shown);
         // Drawn while the panel is open: over the photo, under everything else - made
         // before the buttons, the bar and the panel.
-        if data.info_open && !boxes.is_empty() {
+        if data.info_open && !boxes.is_empty() && !hidden {
             let over = |at: Pos2| controls.over(at);
             let pressed = faces(ui, within, data.faces, &boxes, &pressable, over);
             // Not under a dialog or the menu, and not in the frame the menu is asked
@@ -543,7 +651,7 @@ impl ViewerView {
                 actions.extend(pressed.map(ViewerAction::NameFace));
             }
         }
-        if let Some(message) = data.message {
+        if let Some(message) = data.message.filter(|_| !hidden) {
             said(ui, within, message);
         }
 
@@ -551,7 +659,7 @@ impl ViewerView {
             ui.ctx().set_cursor_icon(CursorIcon::None);
         }
         // The one before and the one after, at the window's sides.
-        if !quiet
+        if !gone
             && round(
                 ui,
                 controls.prev,
@@ -563,7 +671,7 @@ impl ViewerView {
         {
             actions.push(ViewerAction::Step(-1));
         }
-        if !quiet
+        if !gone
             && round(
                 ui,
                 controls.next,
@@ -575,7 +683,7 @@ impl ViewerView {
         {
             actions.push(ViewerAction::Step(1));
         }
-        if !quiet
+        if !gone
             && round(
                 ui,
                 controls.close,
@@ -591,7 +699,7 @@ impl ViewerView {
         if let (Some(line), Some((place, galley))) = (data.photo_caption, caption) {
             photo_caption(ui, place, galley, line);
         }
-        if !quiet {
+        if !gone {
             actions.extend(bar(ui, controls.bar, data, edited));
         }
         if let (Some(place), Some(shown)) = (controls.strip, data.strip.as_ref()) {
@@ -629,6 +737,7 @@ impl ViewerView {
             }
             None => {}
         }
+        ui.set_opacity(opacity);
         actions
     }
 
@@ -789,6 +898,8 @@ impl ViewerView {
                 above: true,
                 // On the viewer's glass, which is dark in both themes.
                 palette: Some(&DARK),
+                // The crop tool's bar is not animated.
+                animations: false,
             },
         );
         if let Some(index) = chosen {
@@ -864,6 +975,16 @@ impl ViewerView {
             // slider is drawn, so the frame the dialog opens in is covered too.)
             self.let_go = true;
             return actions;
+        }
+        // While the photo grows into its place a press is nobody's: the controls under it
+        // are not drawn yet and the photo is on its way, and a press kept from now would
+        // be a pan or the first half of a double click once it has landed. The keys, the
+        // wheel and the mouse's back button are the viewer's from the press that opened
+        // it, as Escape is.
+        let deaf = held_back(data);
+        if deaf {
+            self.press = None;
+            self.clicked = None;
         }
         let size = (area.width, area.height);
         let middle = pos2(area.left + area.width / 2.0, area.top + area.height / 2.0);
@@ -1089,6 +1210,7 @@ impl ViewerView {
                     pressed: true,
                     ..
                 } => actions.push(ViewerAction::Close),
+                Event::PointerButton { .. } if deaf => {}
                 // The other button asks for the photo's menu where it goes down, as on a
                 // photo of the grid (`grid/view.rs`): on the photo or on a face of it,
                 // under no control and nothing that lies over the viewer, and not while
@@ -1231,6 +1353,19 @@ const SAME_SIZE: f32 = 1.5;
 /// viewer takes for one photo.
 const POINTS_A_NOTCH: f32 = 100.0;
 
+fn rect_of(frame: Frame) -> Rect {
+    Rect::from_min_size(pos2(frame.left, frame.top), vec2(frame.width, frame.height))
+}
+
+fn frame_of(rect: Rect) -> Frame {
+    Frame {
+        left: rect.left(),
+        top: rect.top(),
+        width: rect.width(),
+        height: rect.height(),
+    }
+}
+
 /// How wide the photo is drawn at fit, in points: by its full picture's shape, else its
 /// preview's; nought while there is neither.
 fn fitted_width(data: &ViewerData<'_>, area: Frame) -> f32 {
@@ -1251,21 +1386,108 @@ fn picture<'a>(
     zoom: &Zoom,
 ) -> Option<(&'a TextureHandle, Rect)> {
     let texture = (data.levels.first().map(|level| level.texture)).or(data.preview)?;
+    drawn(ui, data, placed(texture, area, zoom), zoom.is_fit())
+}
+
+/// Where a picture the shape of `texture` is drawn: fitted into `area`, then `zoom` times
+/// that size about the middle of the area and moved by the pan.
+fn placed(texture: &TextureHandle, area: Frame, zoom: &Zoom) -> Rect {
     let [width, height] = texture.size();
-    let fitted = contained(width as f32, height as f32, area);
-    let fit = Rect::from_min_size(
-        pos2(fitted.left, fitted.top),
-        vec2(fitted.width, fitted.height),
-    );
+    let fit = rect_of(contained(width as f32, height as f32, area));
     // A point `q` of the fitted photo, from the middle of the area, is at `pan + zoom *
     // q` (`viewer_zoom.rs`).
     let middle = pos2(area.left + area.width / 2.0, area.top + area.height / 2.0);
     let pan = vec2(zoom.pan().x, zoom.pan().y);
-    let at = Rect::from_min_size(
+    Rect::from_min_size(
         middle + pan + (fit.min - middle) * zoom.zoom(),
         fit.size() * zoom.zoom(),
-    );
-    drawn(ui, data, at, zoom.is_fit())
+    )
+}
+
+/// The photo on its way in from its tile, as this frame draws it: the texture, where it
+/// is drawn uncut, and the part of the picture drawn there. It heads for where the viewer
+/// draws the picture it has (`drawn`, the place `picture` gives) - else the tile's
+/// thumbnail, fitted and zoomed as a picture would be - and goes on from where the last
+/// frame drew it, so that a landing that moves (a window resized, a picture of another
+/// shape arrived) is followed and not jumped to. Drawn from the level of the picture that
+/// suits the size it has on the way, else the thumbnail. None while there is neither.
+fn on_its_way<'a>(
+    ui: &egui::Ui,
+    data: &ViewerData<'a>,
+    arriving: &Arriving<'a>,
+    drawn: Option<(&'a TextureHandle, Rect)>,
+    (area, zoom): (Frame, &Zoom),
+    last: Option<(Frame, f64)>,
+) -> Option<(&'a TextureHandle, Rect, Rect)> {
+    let (passage, now) = (arriving.passage, arriving.now_ms);
+    let landing = match drawn {
+        Some((_, at)) => at,
+        None => placed(arriving.thumb?, area, zoom),
+    };
+    let at = rect_of(match last {
+        Some((was, when)) => passage.follow(was, when, frame_of(landing), now),
+        None => passage.photo_at(frame_of(landing), now),
+    });
+    let texture = match drawn {
+        Some(_) => self::drawn(ui, data, at, false)?.0,
+        None => arriving.thumb?,
+    };
+    let [width, height] = texture.size();
+    let (left, top, right, bottom) =
+        passage.uv_at((width as f32, height as f32), frame_of(at), now);
+    Some((
+        texture,
+        at,
+        Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
+    ))
+}
+
+/// A fade turned round, while the viewer has no picture of its own yet: the picture the
+/// closing was drawn from, where it stands - the viewer let go of its own as it closed,
+/// and without it the photo was gone for the frames its picture took to come again. A
+/// fade that is not turned round has none, and waits for its picture as it always has.
+fn standing_in<'a>(data: &ViewerData<'a>) -> Option<(&'a TextureHandle, Rect, Rect)> {
+    let arriving =
+        (data.arriving.as_ref()).filter(|arriving| arriving.passage.way() == Way::Fade)?;
+    let (passage, now) = (arriving.passage, arriving.now_ms);
+    let texture = arriving.thumb?;
+    // A fade stays where it stands, wherever it is told it lands.
+    let at = passage.photo_at(frame_of(Rect::ZERO), now);
+    let [width, height] = texture.size();
+    let (left, top, right, bottom) = passage.uv_at((width as f32, height as f32), at, now);
+    Some((
+        texture,
+        rect_of(at),
+        Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
+    ))
+}
+
+/// The picture drawn at `at` with the part `uv` of it, as much of it as lies in `within`:
+/// the rectangle cut to it, and the part of the picture cut to match.
+fn cut(texture: &TextureHandle, at: Rect, uv: Rect, within: Rect) -> Option<PhotoDrawn> {
+    let kept = at.intersect(within);
+    if !(at.is_positive() && kept.is_positive()) {
+        return None;
+    }
+    let u = |x: f32| uv.left() + (x - at.left()) / at.width() * uv.width();
+    let v = |y: f32| uv.top() + (y - at.top()) / at.height() * uv.height();
+    Some(PhotoDrawn {
+        at: kept,
+        uv: Rect::from_min_max(
+            pos2(u(kept.left()), v(kept.top())),
+            pos2(u(kept.right()), v(kept.bottom())),
+        ),
+        texture: texture.clone(),
+        image: texture.size_vec2(),
+    })
+}
+
+/// Whether the viewer is opening by a zoom and its controls are not yet come: a press is
+/// nobody's, and nothing but the photo is drawn.
+fn held_back(data: &ViewerData<'_>) -> bool {
+    (data.arriving.as_ref()).is_some_and(|arriving| {
+        arriving.passage.way() == Way::Zoom && arriving.passage.controls(arriving.now_ms) <= 0.0
+    })
 }
 
 /// The texture to draw at `at`, and where exactly: the copy made for exactly this size
@@ -2302,6 +2524,7 @@ mod tests {
                 show: self.show,
                 outgoing: (self.outgoing.as_ref()).map(|(texture, at, seen)| (texture, *at, *seen)),
                 strip: self.strip,
+                arriving: None,
             };
             let (view, zoom) = (&mut self.view, &mut self.zoom);
             let mut crop = self.crop.as_mut().map(|(tool, size, part, busy)| Cropped {

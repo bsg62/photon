@@ -1,12 +1,13 @@
 //! The application: the engine, the shell around the grid, and the order of a frame.
 
 use crate::{
-    animate::Slide,
+    afterimage::{Afterimage, of_layers},
+    animate::{FADE_OUT_MS, Slide},
     compare::{self, Compare},
     compare_view::{self, CompareAction, CompareData, CompareView, PaneData},
     copies::{self, CopiesOf},
     crop_tool::CropTool,
-    dialog_view::{DialogView, Done},
+    dialog_view::{self, DialogView, Done},
     dialogs::{Confirm, Dialog, Subject},
     dirs::Dirs,
     drop_card,
@@ -24,7 +25,7 @@ use crate::{
     },
     icons,
     menu::{self, Item},
-    menu_view::{MenuView, Outcome},
+    menu_view::{self, Growth, MenuView, Outcome},
     nav::{self, Landed, LastFolder, Nav, Place, Step, Target},
     people_page::{self, PeoplePage},
     people_view::{PeopleData, PeopleView},
@@ -62,7 +63,10 @@ use crate::{
     viewer_info_view::{InfoAction, InfoData, InfoView},
     viewer_layout, viewer_levels,
     viewer_menu::{self, ViewerPick},
-    viewer_view::{Cropped, Level, Message, Showing, ViewerAction, ViewerData, ViewerView},
+    viewer_motion::Way,
+    viewer_view::{
+        Arriving, Cropped, Level, Message, Showing, ViewerAction, ViewerData, ViewerView,
+    },
     viewer_zoom::Zoom,
     window,
     window_layout::{Layout, STATUS_BAR, TOP_BAR},
@@ -83,10 +87,12 @@ use photon_engine::{
 use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::mpsc::Receiver, time::Duration};
 
 mod copy;
+pub mod motion;
 mod open;
 mod people;
 mod pick;
 mod settings_dialog;
+use motion::MotionSeen;
 use settings_dialog::{SettingWrite, SettingWrote};
 
 /// How long a thumbnail that has not been built is waited for, as `protocol.rs`'s
@@ -140,6 +146,9 @@ pub struct App {
     menu_on_header: bool,
     menu: Option<Open>,
     menu_view: MenuView,
+    /// The layers of menus that closed, fading out: painted over the window until done
+    /// (`afterimage.rs`).
+    afterimages: Vec<Afterimage>,
     /// The name being typed in the sidebar.
     rename: Rename,
     /// The dialog that is open: one at a time, over the whole window.
@@ -167,6 +176,13 @@ pub struct App {
     /// The viewer, while it is open: the shell is not drawn then.
     viewer: Option<Viewing>,
     viewer_view: ViewerView,
+    /// The viewer opening out of its tile, while it does (`app/motion.rs`).
+    motion: Option<motion::Motion>,
+    /// The viewer's photo going back into its tile once the viewer has closed, while it
+    /// does (`app/motion.rs`).
+    leaving: Option<motion::Leaving>,
+    /// What the last frame drew of either, for a test.
+    motion_seen: Option<MotionSeen>,
     /// The previews the viewer shows until a photo's full picture is made: the cache's
     /// larger thumbnails, held apart from the grid's.
     previews: Thumbs,
@@ -1387,6 +1403,7 @@ impl App {
             menu: None,
             menu_on_header: false,
             menu_view: MenuView::default(),
+            afterimages: Vec::new(),
             rename: Rename::default(),
             dialog: None,
             dialog_view: DialogView::default(),
@@ -1398,6 +1415,9 @@ impl App {
             deleting: Vec::new(),
             viewer: None,
             viewer_view: ViewerView::default(),
+            motion: None,
+            leaving: None,
+            motion_seen: None,
             previews: Thumbs::previews(preview_loader),
             viewer_items,
             pictures,
@@ -1732,6 +1752,41 @@ impl App {
             .collect()
     }
 
+    /// How the open menu was last drawn growing; none while none is drawn.
+    pub fn menu_growth(&self) -> Option<Growth> {
+        self.menu.and(self.menu_view.growth())
+    }
+
+    /// How the list of the top bar's dropdown called `id` was last drawn growing.
+    pub fn list_growth(&self, id: &str) -> Option<Growth> {
+        self.shell.list_growth(id)
+    }
+
+    /// Whether the list of the top bar's dropdown called `id` is fading out.
+    pub fn list_fading(&self, id: &str) -> bool {
+        self.shell.list_fading(id)
+    }
+
+    /// How the open dialog was last drawn growing; none while none is drawn.
+    pub fn dialog_growth(&self) -> Option<Growth> {
+        self.dialog.as_ref().and(self.dialog_view.growth())
+    }
+
+    /// The colour the window's backdrop was last drawn in, for the dialog over it.
+    pub fn backdrop(&self) -> Option<egui::Color32> {
+        self.dialog.as_ref().and(self.dialog_view.backdrop())
+    }
+
+    /// How many closed menus and dialogs are fading out over the window.
+    pub fn afterimages(&self) -> usize {
+        self.afterimages.len()
+    }
+
+    /// How many shapes the fading menus and dialogs have kept between them.
+    pub fn afterimage_shapes(&self) -> usize {
+        self.afterimages.iter().map(Afterimage::len).sum()
+    }
+
     /// Whether a menu is open.
     pub fn menu_open(&self) -> bool {
         self.menu.is_some()
@@ -1940,6 +1995,13 @@ impl App {
         open.within.map(|(within, _)| within)
     }
 
+    /// Where the viewer's last frame drew the photo, cut off at the photo's area, the part
+    /// of its picture drawn there, and the size of that picture.
+    pub fn viewer_photo(&self) -> Option<(egui::Rect, egui::Rect, egui::Vec2)> {
+        self.viewer.as_ref()?;
+        (self.viewer_view.photo_drawn()).map(|photo| (photo.at, photo.uv, photo.image))
+    }
+
     /// The size, in pixels, of the copy of the full picture that was scaled to fit the
     /// window: none until it is made, or for a photo no larger than the window.
     pub fn viewer_fitted(&self) -> Option<[usize; 2]> {
@@ -2034,11 +2096,22 @@ impl App {
             // handed back to the grid under the viewer first, which is being left - or
             // is the one the photo is found in, by the same lookup.
             ViewerPick::Locate => {
-                self.shut_viewer();
+                self.shut_viewer(None);
                 self.locate(photo, hidden);
             }
             ViewerPick::Reveal => self.open_with_system(open::Opening::RevealPhoto(photo)),
             ViewerPick::OpenInApp => self.open_with_system(open::Opening::OpenPhoto(photo)),
+        }
+    }
+
+    /// Keeps the menu or dialog `layer` that closed in this frame, drawn in it, to fade out
+    /// over the window. On the `Middle` layer, under a menu opened by the same click and not
+    /// an area, which would take the next press.
+    fn fade(&mut self, ctx: &egui::Context, now: f64, layer: egui::LayerId) {
+        if self.animations {
+            self.afterimages
+                .push(of_layers(ctx, |kept| kept == layer, now, FADE_OUT_MS));
+            ctx.request_repaint();
         }
     }
 
@@ -2192,7 +2265,14 @@ impl App {
             | Dialog::Shortcuts => Vec::new(),
         };
         let tags = &self.held.collections().tags;
-        let done = (self.dialog_view).show(ui, dialog, &keywords, tags, self.named.as_deref());
+        let done = (self.dialog_view).show(
+            ui,
+            dialog,
+            &keywords,
+            tags,
+            self.named.as_deref(),
+            self.animations,
+        );
         match (done, &mut self.dialog) {
             (Done::Open, _) => {}
             (Done::Closed, _) => {
@@ -2285,6 +2365,11 @@ impl App {
                 _,
             ) => {}
         }
+        // Closed by this frame's answer: drawn in it, so it fades out from what it drew.
+        if self.dialog.is_none() {
+            let now = ui.ctx().input(|input| input.time) * 1000.0;
+            self.fade(ui.ctx(), now, dialog_view::layer());
+        }
     }
 
     /// Whether Settings' field for a folder to add is on screen and takes a path: shown -
@@ -2334,7 +2419,7 @@ impl App {
     /// click on a photo does. No menu is open and no button is held either, which is
     /// the grid's to see to: it answers no Enter in a frame with a mouse button in it,
     /// nor while a press on the photos is held (`grid/view.rs`).
-    fn open_viewer(&mut self, id: i64) {
+    fn open_viewer(&mut self, id: i64, tile: Option<egui::Rect>) {
         let Some(viewer) = Viewer::open(id, &self.index) else {
             return;
         };
@@ -2363,6 +2448,7 @@ impl App {
             open_failed: None,
             name_copied: None,
         });
+        self.begin_opening(id, tile);
     }
 
     /// Closes the viewer and hands its photo back to the grid: selected, alone, and
@@ -2385,7 +2471,7 @@ impl App {
             self.selection.select(&self.index, offset);
         }
         self.showing = (self.index.rows(offset, 1).first()).map(|entry| entry.id);
-        self.shut_viewer();
+        self.shut_viewer(id);
     }
 
     /// The video on screen, played: its player opened once its file is known, the system
@@ -2498,13 +2584,20 @@ impl App {
     /// The viewer is over: what it held goes with it. Its previews too, which nothing
     /// else lets go of but their store's own limit - a hundred megabytes of texture for
     /// the rest of the session, after any stretch of looking at photos.
-    fn shut_viewer(&mut self) {
+    ///
+    /// With the animations on, the photo goes on being drawn for a moment over what is
+    /// under the viewer (`begin_closing`): into the tile of `to`, the photo the grid is
+    /// handed back, and fading where it stands where there is none.
+    fn shut_viewer(&mut self, to: Option<i64>) {
+        let showing = (self.viewer.as_ref()).is_some_and(|open| open.show.active());
+        self.begin_closing(to, showing);
         // A show the viewer is closed under is stopped, and gives the window back.
         let now = self.ctx.input(|input| input.time) * 1000.0;
         if (self.viewer.as_mut()).is_some_and(|open| open.show.stop(now)) {
             self.fullscreen(false);
         }
         self.viewer = None;
+        self.motion = None;
         self.previews.clear();
         self.viewer_view.let_go();
         // And the dialog that stands over it, which is of its photo - "Who is this?",
@@ -3072,6 +3165,31 @@ impl App {
                 })
                 .collect(),
         };
+        // The opening is of the photo it opened on: a step, by hand or by a show, ends it
+        // at once, and the viewer shows the next photo as it always has - a zoom that
+        // lands on another photo than it left is wrong either way. And the crop tool,
+        // which takes the whole window in the frame it opens, ends it too.
+        if (self.motion.as_ref()).is_some_and(|motion| motion.passage.id() != id)
+            || open.crop.is_some()
+        {
+            self.motion = None;
+        }
+        let passage = self.motion.as_ref().map(|motion| motion.passage);
+        let clip =
+            (self.motion.as_ref()).and_then(|motion| motion.clip_at(ctx.content_rect(), now));
+        self.paint_frozen(ui);
+        // A closing turned round brought the picture it was drawn from.
+        let stand_in = self
+            .motion
+            .as_ref()
+            .and_then(|motion| motion.stand_in().cloned());
+        // A fade waits for the viewer's own picture, but for one turned round, which has
+        // the picture it was drawn from (`viewer_view::standing_in`).
+        let thumb = match passage {
+            Some(passage) if passage.way() == Way::Fade => stand_in,
+            Some(_) => stand_in.or_else(|| self.thumbs.texture(key).cloned()),
+            None => None,
+        };
         let len = self.index.len();
         let collections = self.held.collections();
         let faces = (open.item.as_ref()).map_or(Vec::new(), viewer_faces::drawn);
@@ -3117,6 +3235,12 @@ impl App {
             outgoing: (open.outgoing.as_ref())
                 .map(|out| (&out.texture, out.at, seen.unwrap_or(1.0) as f32)),
             strip: open.playing.as_ref().and_then(Playing::strip),
+            arriving: passage.as_ref().map(|passage| Arriving {
+                passage,
+                now_ms: now,
+                thumb: thumb.as_ref(),
+                clip,
+            }),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
         // before what was done in the frame is acted on, since a step puts it back to
@@ -3133,9 +3257,19 @@ impl App {
             part,
             busy: *sent,
         });
+        // A fade is the whole viewer's, at the photo's opacity, over the window it was
+        // opened from (the black under it is the ground's: `ViewerView::show`); it is
+        // pressed as usual.
+        let opacity = ui.opacity();
+        if let Some(passage) = passage.filter(|passage| passage.way() == Way::Fade) {
+            ui.multiply_opacity(passage.photo(now));
+        }
         let mut actions = self.viewer_view.show(ui, &data, &mut zoom, cropped);
+        ui.set_opacity(opacity);
+        self.afterimages.extend(self.viewer_view.take_fading());
         drop(levels);
         drop(faces);
+        self.opening_drawn(&ctx, now);
         *open.viewer.zoom_mut() = zoom;
         if let (Some(crop), Some((tool, ..))) = (&mut open.crop, tool) {
             crop.tool = tool;
@@ -3397,7 +3531,7 @@ impl App {
             if step.as_ref().is_some_and(|step| !self.nav.wants(step)) {
                 self.close_viewer();
             } else {
-                self.shut_viewer();
+                self.shut_viewer(None);
             }
             match link {
                 // A copy the panel lists is never a hidden photo.
@@ -3695,7 +3829,7 @@ impl App {
             self.previews.clear();
             self.compare_view = CompareView::default();
             if let Some(id) = opening {
-                self.open_viewer(id);
+                self.open_viewer(id, None);
             }
             return;
         }
@@ -4696,7 +4830,7 @@ impl App {
             let lost = (self.viewer.as_ref())
                 .is_some_and(|open| self.index.position_of(open.viewer.id()).is_none());
             if lost {
-                self.shut_viewer();
+                self.shut_viewer(None);
             }
         } else {
             if let Some(landed) = self.selection.follow(&before, &self.index) {
@@ -4933,6 +5067,8 @@ impl eframe::App for App {
         }
         let reported = self.take_events() || touched;
         let now = ui.input(|input| input.time) * 1000.0;
+        // Said of the frame that draws one.
+        self.motion_seen = None;
         // A task's answer asked for this frame as an engine's report does: the frame is
         // not one the grid drew by itself.
         let reported = self.take_answers(now) || reported;
@@ -5038,6 +5174,20 @@ impl eframe::App for App {
         // The menu, before anything else is drawn: while it is open the keys are its
         // own, and it takes them out of the frame before the search box, the sidebar
         // or the grid can read them (`menu_view.rs`).
+        self.afterimages.retain(|image| image.running(now));
+        if !self.afterimages.is_empty() {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("fading"),
+            ));
+            // Not one kept in this frame: a dialog closed in it is drawn in it as well,
+            // over this (`show_dialog`, above), and the two drew its ground, its shadow
+            // and its edges twice. It is painted from the next frame on.
+            for image in (self.afterimages.iter()).filter(|image| image.begun_before(now)) {
+                image.paint(&painter, image.opacity(now));
+            }
+            ui.ctx().request_repaint();
+        }
         if let Some(open) = self.menu {
             // The viewer's menu is dark in both themes, as the viewer is.
             let palette = match open.of {
@@ -5050,20 +5200,26 @@ impl eframe::App for App {
                 // none to land on - or its album, search or folder is no longer listed,
                 // or the viewer shows nothing the library has said anything of.
                 None => self.menu = None,
-                Some(items) => match (self.menu_view).show_in(ui, open.at, &items, palette) {
-                    Outcome::Open => {}
-                    Outcome::Closed => self.menu = None,
-                    Outcome::Picked(picked) => {
-                        self.menu = None;
-                        self.overlay_closed = Some(now);
-                        match picked {
-                            Picked::Tile(action) => self.pick(action),
-                            Picked::Side(action) => self.side(action),
-                            Picked::Viewer(pick) => self.viewer_pick(pick),
-                            Picked::Merge(into) => self.merge_into(open.of, into),
+                Some(items) => {
+                    match (self.menu_view).show_in(ui, open.at, &items, palette, self.animations) {
+                        Outcome::Open => {}
+                        Outcome::Closed => {
+                            self.menu = None;
+                            self.fade(ui.ctx(), now, menu_view::layer());
+                        }
+                        Outcome::Picked(picked) => {
+                            self.menu = None;
+                            self.fade(ui.ctx(), now, menu_view::layer());
+                            self.overlay_closed = Some(now);
+                            match picked {
+                                Picked::Tile(action) => self.pick(action),
+                                Picked::Side(action) => self.side(action),
+                                Picked::Viewer(pick) => self.viewer_pick(pick),
+                                Picked::Merge(into) => self.merge_into(open.of, into),
+                            }
                         }
                     }
-                },
+                }
             }
         }
 
@@ -5085,6 +5241,8 @@ impl eframe::App for App {
         }
         // Compare takes the whole window as the viewer does.
         if self.compare.is_some() {
+            // Nothing goes back into a grid that is not drawn.
+            self.leaving = None;
             self.show_compare(ui, now, under_dialog);
             if self.drop.hovering() {
                 drop_card::show(ui.ctx(), folder_drop::CARD);
@@ -5125,6 +5283,7 @@ impl eframe::App for App {
             copies_marked: copies::marked(self.nav.settled().view),
             animations: self.animations,
             glide_from: glide_from.as_deref(),
+            hollow: self.hollow(),
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.
@@ -5205,6 +5364,13 @@ impl eframe::App for App {
                 Some(people) => pressed = people_view.show(ui, ui.max_rect(), people, crops),
                 None => output = Some(view.show(ui, &data, thumbs, selection)),
             });
+        // A dropdown's list closed in this frame fades out with the menus and dialogs:
+        // to its end, whether or not its control is drawn again.
+        self.afterimages.extend(self.shell.take_fading());
+        // The viewer's photo going back into its tile, over the grid just drawn and where
+        // it drew the tile: before anything opens the viewer again, which turns it round
+        // from where this frame draws it.
+        self.leaving_drawn(ui.ctx(), now, output.is_some());
         let pressed = if under_dialog { Vec::new() } else { pressed };
         for action in pressed {
             self.people_act(ui.ctx(), action);
@@ -5255,7 +5421,8 @@ impl eframe::App for App {
         }
         // Enter on the photo the keys are on, or a double click: the viewer.
         if let Some(id) = open {
-            self.open_viewer(id);
+            let tile = self.view.drawn_place(id);
+            self.open_viewer(id, tile);
         }
         self.ask_for_search(ui.ctx(), now);
 

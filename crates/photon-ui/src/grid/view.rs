@@ -166,6 +166,9 @@ pub struct GridData<'a> {
     /// from, whatever else changed. None for every other grid, which glides only when
     /// its columns change under the same sections.
     pub glide_from: Option<&'a GridIndex>,
+    /// The photo whose tile is drawn as an empty place: the viewer's photo on its way
+    /// back into it, drawn over the grid by the application, is not to be seen twice.
+    pub hollow: Option<i64>,
 }
 
 /// A key the grid answers, read from the frame's input.
@@ -308,6 +311,8 @@ pub struct GridOutput {
     /// Whether the photos are gliding to new places: frames are asked for until they are
     /// there.
     pub gliding: bool,
+    /// Whether the tile of `GridData::hollow` was drawn, empty.
+    pub hollowed: bool,
 }
 
 /// A key that asks something of the selection, with the selection as it was at that
@@ -461,6 +466,18 @@ impl GridView {
             .map(|(_, rect)| *rect)
     }
 
+    /// The part of the window the photos were seen in in the last frame: the grid's own
+    /// area, less a folder's header pinned over its top. A tile part under the top bar or
+    /// the header is cut there, and so is what is drawn in its place over the grid.
+    pub fn seen_area(&self) -> Option<Rect> {
+        let (area, top) = self.drawn?;
+        let Some(pinned) = pinned_header(&self.rows, &self.headers, top) else {
+            return Some(area);
+        };
+        let below = (area.top() + (pinned.y + HEADER) as f32).max(area.top());
+        Some(Rect::from_min_max(pos2(area.left(), below), area.max))
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -528,7 +545,8 @@ impl GridView {
         let still = matches!(motion, Motion::Still);
         let loading = thumbs.frame(ui.ctx(), &wanted, defers_thumbs(motion, viewport), still);
 
-        let (settled, marked) = self.draw(ui, area, data, thumbs, selection, (first, last), now);
+        let (settled, marked, hollowed) =
+            self.draw(ui, area, data, thumbs, selection, (first, last), now);
         self.drawn = Some((area, top));
         self.draw_band(ui, area, top);
         let pinned = pinned_header(&self.rows, &self.headers, top);
@@ -566,6 +584,7 @@ impl GridView {
             header_menu: self.header_menu.take(),
             open: self.open.take(),
             gliding,
+            hollowed,
         }
     }
 
@@ -1341,12 +1360,12 @@ impl GridView {
         selection: &Selection,
         (first, last): (usize, usize),
         now_ms: f64,
-    ) -> (bool, usize) {
+    ) -> (bool, usize, bool) {
         let mut placed = std::mem::take(&mut self.placed);
         placed.clear();
         let Some(laid) = self.laid_out else {
             self.placed = placed;
-            return (true, 0);
+            return (true, 0, false);
         };
         let palette = palette(ui.ctx());
         let mut clipped = clipped_to(ui, area);
@@ -1381,6 +1400,7 @@ impl GridView {
             now: now_ms / 1000.0,
             settled: true,
             marks: 0,
+            hollowed: false,
         };
         let header_place = |row: &Row| Place {
             x: 0.0,
@@ -1456,9 +1476,9 @@ impl GridView {
                 placed.push((gone.entry.id, rect));
             }
         }
-        let (settled, marks) = (painter.settled, painter.marks);
+        let (settled, marks, hollowed) = (painter.settled, painter.marks, painter.hollowed);
         self.placed = placed;
-        (settled, marks)
+        (settled, marks, hollowed)
     }
 
     fn draw_scrollbar(&self, ui: &egui::Ui, bar: Rect) {
@@ -1581,6 +1601,8 @@ struct Painter<'d, 't> {
     now: f64,
     settled: bool,
     marks: usize,
+    /// Whether the tile of `GridData::hollow` was drawn.
+    hollowed: bool,
 }
 
 impl Painter<'_, '_> {
@@ -1594,6 +1616,12 @@ impl Painter<'_, '_> {
         let texture = thumbs.texture(entry.thumb_key).map(|t| (t, shown));
         self.settled &= marked || texture.is_some();
         self.marks += usize::from(marked);
+        // Its photo is out of it, drawn elsewhere: the place it goes back to is empty.
+        if self.data.hollow == Some(entry.id) {
+            self.hollowed = true;
+            (ui.painter_at(rect)).rect_filled(rect, R[1], color(self.palette.field));
+            return;
+        }
         let selected = self.selection.is_selected(entry.id);
         let entry = &GridEntry {
             has_copies: entry.has_copies && self.data.copies_marked,
@@ -1908,6 +1936,7 @@ mod tests {
                 copies_marked: true,
                 animations: self.animations,
                 glide_from: self.glide_from.as_ref(),
+                hollow: None,
             };
             let (view, thumbs, space) = (&mut self.view, &mut self.thumbs, self.space_above);
             let selection = &mut self.selection;

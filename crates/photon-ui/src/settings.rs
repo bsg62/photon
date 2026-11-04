@@ -77,7 +77,7 @@ pub const PHOTO_SIZE_HINT: &str = "How large the grid draws each photo.";
 pub const SLIDESHOW_HINT: &str = "Press S in the viewer to play the current view from the photo on screen. Space pauses, the arrow keys step, Escape ends it.";
 pub const INTERVAL_BEFORE: &str = "Show each photo for";
 pub const INTERVAL_AFTER: &str = "seconds";
-pub const ANIMATIONS: &str = "Animations: move the sidebar, the info panel and the photos smoothly";
+pub const ANIMATIONS: &str = "Animations: open, close and move things smoothly";
 pub const SHUFFLE: &str = "Shuffle: play the photos in a mixed order";
 
 /// One choice of the look-alikes: the Hamming distance the library stores, which it

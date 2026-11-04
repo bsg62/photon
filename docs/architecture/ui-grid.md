@@ -329,6 +329,22 @@ a press on the scrim - the press, as a menu closes. The question opens with the 
 on "Cancel", so an Enter that came with the dialog deletes nothing. `Modal`'s area fades
 in like any new area, each frame of it asked for: `fade_in(false)`.
 
+**A dialog grows and fades by the menus' machinery** (ui-shell.md, motion): `Growth::draw`
+about the middle of the rectangle it stood in in its first frame (`DialogView::grows_from`,
+for every dialog: a picker's height changes with its list, the export's with what is said
+under its field, and the point does not move with them), with the ground's colour faded by the
+same progress - the backdrop is `Modal`'s, outside the transform, so it fades and never
+scales. A closed dialog is drawn once more in the frame that closes it, and `App::fade`
+keeps its layer (`dialog_view::layer()`, backdrop included) as an afterimage. **Escape
+closes before the draw, so with the animations on it is drawn after all - by a plain
+`Area`, `.interactable(false)`, and not a `Modal`**: `Modal` makes its layer the one
+`layer_id_at` answers in the next frame, over the old rectangle, and a press on a photo
+there was lost (`a_closed_dialog_fades_with_its_ground`, which presses in the very next
+frame). With the animations off Escape answers `Closed` before anything is drawn
+(`without_animations_a_dialog_is_there_at_once` finds no scrim in that frame). A dialog closed by its own answer is drawn as a `Modal` before it is known to be
+closing, as it always was. A press during the first 0.3 s is the second of a double click
+(`deaf`) whatever the growth.
+
 **A letter and the Enter after it can arrive in one frame**, when a frame is long: the
 field's Enter is read before the field is drawn (egui's field gives the keyboard up at
 Enter), which is before the field has taken the letter. The picker's submit carries what

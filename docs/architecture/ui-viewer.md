@@ -33,6 +33,86 @@ faces left out of what it compares. **What the library says of the photo is a ro
 behind the grid**, and is what `.` and `H` go by: a test that presses one waits for the
 facts first, as a user's eye does.
 
+**The viewer grows out of its tile and shrinks back into it** (spec
+`2026-11-03-photon-more-animations-design.md`; `viewer_motion.rs` is the arithmetic,
+`app/motion.rs` the application's side, `viewer_view.rs`'s `Arriving` the drawing). 200 ms on
+`ease_out`, the controls fading in over the 100 ms after it has landed. **The state flips at
+the press both ways**: the viewer is open from the press that opens it and closed at the one
+that closes it, and the motion only draws. *Opening*, the shell is still not drawn under the
+viewer (its keys would be answered twice): what is seen behind the growing photo is a
+**frozen picture**, the shapes the frame of the press drew (`afterimage::of_layers`, taken
+after the grid has drawn - egui empties them at the end of the frame), which take no press,
+no hover and no key. **The picture holds its own handles to the textures it draws**: compare
+lets go of its panes' pictures at the very press that opens the viewer from it, and a shape
+naming a texture that is gone is drawn by the GPU as nothing. `of_layers` reads egui's order
+of *areas*, which lists no layer a painter alone drew on; such a layer is taken only when
+named (`of_layers_and`). The tile the photo grew out of is painted empty, **cut to
+`GridView::seen_area`** (the grid's area below a pinned header): painted whole, a tile part
+under the top bar or the header put a square of the field over them for 200 ms. The growing
+photo is cut the same way at its start (`Arriving::clip`), opening out to the window as it
+lands. **It lands where the viewer draws its picture now** - `picture()`, with the zoom, the
+pan and a video's strip (`fit_in`) - else the tile's thumbnail placed the same way, not by the
+index's aspect, which can be wrong; and it *follows* a landing that moves on the way (a
+resize, a picture of another shape arriving: `Passage::follow` covers in each frame the
+curve's share of what was left of the way) instead of jumping to it, and still lands on time.
+It is drawn from the level that suits its size on the way, else the thumbnail; landed with no
+picture of its own, it stays the thumbnail until the passage ends. **While it grows the keys,
+the wheel and a pinch are the viewer's from the press, and a press is nobody's** until the
+controls begin to fade in (a click on a button not yet drawn is a surprise, and a click then
+is no half of a double click) - but the mouse's back button closes, as Escape does. A step
+(by hand or by a show) and the crop tool end the opening at once. *Closing*
+(`begin_closing`, from `shut_viewer`, which reads `photo_drawn()` before `let_go` clears it),
+**the grid under the shrinking photo is the live grid** - nothing waits for a clock: the
+viewer is closed at the press, so an arrow, a click or the wheel in those 200 ms is the
+user's, and is answered by the grid as if nothing were over it. It is drawn as the grid, its
+keys, presses and wheel its own, with the tile drawn empty (`GridData::hollow`), and over it, on the
+`viewer-leaving` painter layer (no area, so it takes no press), the black going and the photo
+shrinking from the rectangle the viewer last drew it in - cut to the photo's area, with the
+part of the picture drawn there when it was zoomed or panned (the whole picture is given as
+none, or it would be squeezed in a straight line to the tile's cut) and from the ground last
+drawn (less than 1 mid-opening). **Its target is read in every frame** from where the grid
+drew the tile in that frame, so a scroll moves it, and it is cut in to the grid's seen area as
+it lands. It holds the viewer's picture for its 200 ms (the viewer lets go of its own as it
+closes), and asks one frame after its end, in which the tile is the photo's again (its last
+frame drew the grid before the photo landed, the tile empty: no picture, ring or marks).
+egui answers every request with two frames, so that frame comes even without the request,
+and no test can tell it gone (`the_frame_after_the_shrink_gives_the_tile_back_its_photo`
+holds the outcome). **It is
+drawn before the grid's Enter or double click is answered**, so a viewer opened again on the
+same photo turns round from what that very frame drew - place, cut of the picture, black and
+clip - with the picture it shrank as standing in until the viewer has its own again; opened
+on another photo, the closing ends and its last frame is named into the frozen picture, or
+its tile stood empty under the new viewer - and the closing, the only holder of its picture,
+is let go of only after the frozen picture has taken its own handle: dropped first, the
+texture was freed at once and drawn as nothing. Closed while it grows, the closing starts from the
+photo as drawn, so it turns round too. **Where there is no tile, it fades** where the photo
+stands, the black and the photo going or coming together over the same 200 ms - opening, the
+whole viewer at the photo's opacity (`Passage::photo`) and the black at the ground's; closing,
+the photo's tint (once drawn whole as the black went, it vanished at 200 ms): opened from compare or a face, which have no tile under the pointer; a tile
+with nothing to grow, opened from (its thumbnail not held, or failed) or closed into (its
+thumbnail failed, or not to be had when last asked for - not built yet, a video with no
+poster), where the photo would land in a mark or in nothing; closed with no photo
+handed back (a link that leaves for another view, Locate, a grid of other results -
+`shut_viewer(None)`); closed over the People page, which has no grid; closed in a show, whose
+window leaves fullscreen at that moment and changes its size, so a tile's place is not known
+yet; a viewer closed while it still fades in, whose photo is not yet whole (a zoom draws it
+whole from its first frame); and a tile not drawn in a frame of the shrink - scrolled out of
+sight - fades from where it was drawn (`Passage::fade_instead`), **its photo from the opacity
+it had at the switch** (whole) over the time that is left, not from the black's. **The photo's
+opacity is part of what a turn-round starts from** (`Drawn::photo`, the passage's
+`from_photo`): a fading closing opened again comes back from the opacity it was drawn at, the
+black from its own (less, after `fade_instead`, so `ViewerView::show` draws the black at
+`ground / photo` under the viewer's opacity), and the picture it faded as stands in until the
+viewer has its own (`viewer_view::standing_in`) - without it the photo was gone for the frames
+its picture took to come back. A fade not turned round draws no stand-in and waits for the
+viewer's picture, as it always has. **A show's closing fades where the fullscreen window
+had the photo**: off the middle of the smaller window for the frames after the system has
+resized it - placed by the new window, it would jump mid-fade; it is faint by then. A viewer that drew no picture (a message, the crop
+tool) neither grows nor shrinks; it is there or gone. **One opening does not fade**: a face
+whose photo the grid needed a step to find opens before anything is drawn in its frame
+(`take_open`), the frozen picture is empty, and the viewer simply appears - accepted. With
+the animations off none of this runs.
+
 **No control of the viewer is a stop of the Tab key** (`Sense::CLICK`, not
 `Sense::click()`): a control that had the keyboard would take the arrows from the viewer,
 egui walking the focus on with them, and every control has a key. **And Tab is called

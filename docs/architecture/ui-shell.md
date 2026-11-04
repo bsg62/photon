@@ -112,7 +112,43 @@ there. A pin that moves the position under a running glide is
 `Glides::repositioned`'s to keep steady. **The switch is the `animations` setting**, on by
 default; off, nothing here moves and the grid's late-thumbnail fade stops too. Every test
 launches `without_animations` (all but `probe.rs` and `app.rs`), and a test of a motion says
-so (`launch_animated`, `opened_animated`, `over_animated`).
+so (`launch_animated`, `opened_animated`, `over_animated`, `three_animated`). **The viewer's
+passage** - growing out of its tile over a frozen picture of the window, shrinking back into
+it over the live grid, a fade where there is no tile - is the same rule kept by other means,
+and is in `ui-viewer.md`.
+
+**Menus and dropdowns grow in and fade out** (`menu_view.rs`, `select_view.rs`, `afterimage.rs`).
+The growth is a *visual* transform (`Ui::with_visual_transform`, after `multiply_opacity`) of
+the area's contents, 92% to 100% over 200 ms from the first frame the menu or list is drawn
+(`opened`, reset with the menu); hit tests are the full-size, final places from that frame, so a
+growing menu is pressed where it will stand. At `k == 1` no transform is applied, so the
+resting text is on whole pixels. The origin is the click, clamped into the placed menu's
+rectangle (a menu `place_menu` flipped up and left grows out of its corner at the click); a
+dropdown's is the middle of its list's top edge (bottom for `above`). A new area is measured
+unseen in its first frame, so the first *visible* frame is one refresh into the growth.
+**Closing** keeps the layer's shapes (`of_layers`, 100 ms) and paints them every frame on a
+`Middle`-order layer painter that is not an area: an area would take the press meant for the
+photo under it, and `Middle` keeps the fading menu under a new one opened by the same right
+click. egui empties the graphics at the end of the pass, so the afterimage is taken in the
+frame the menu was last *drawn*: `MenuView::show_in` and `SelectView::show` therefore draw the
+area once more in the frame that closes them (Escape, a press outside) and answer `Closed`
+after, with the area `.interactable(false)`: drawn interactable, it stays visible to egui's
+`layer_id_at` and hit test in the next frame and takes the press meant for the photo under it
+(with the animations off it returns `Closed` before drawing, as it always did). An early
+return before drawing would leave nothing to fade. A dropdown closed by a *choice* is closed
+inside its own `list()`, after the frame's draw: it keeps `list` one frame more and is drawn
+deaf and kept in the next. The app's
+afterimages (`App::afterimages`) are painted and pruned before the menu is drawn, ahead of
+the viewer and compare's early returns. **One kept in this frame is not painted in it**
+(`Afterimage::begun_before`): what it was kept from is drawn in that frame itself - a dialog
+closed by Escape or its own answer is shown before the block - and the two drew the dialog's
+ground, shadow and edges twice for a frame (`a_closed_dialog_fades_with_its_ground` counts the
+scrims). **A dropdown hands its list to the app's afterimages** (`SelectView::take_fading`,
+collected after the shell and the viewer are drawn) and keeps none: painted by the control,
+the fade stopped whenever the control was not drawn - the viewer opened just after a choice -
+and its pictures were held until it was drawn again
+(`a_dropdowns_fade_is_not_held_by_a_control_the_viewer_covers`). A menu closed in a frame it
+was not drawn in (its photos gone) goes at once.
 
 **A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one
 thread polls every pending `request_async`. Three rules a

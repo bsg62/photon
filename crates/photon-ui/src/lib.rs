@@ -5,6 +5,7 @@
 //! its bookkeeping, the tokens, the labels. *Views* draw a state module and turn input
 //! into calls on it. `state_modules_name_no_egui_type` holds the line.
 
+pub mod afterimage;
 pub mod allocator;
 pub mod animate;
 pub mod app;
@@ -106,6 +107,7 @@ pub mod viewer_info_view;
 pub mod viewer_layout;
 pub mod viewer_levels;
 pub mod viewer_menu;
+pub mod viewer_motion;
 pub mod viewer_view;
 pub mod viewer_zoom;
 pub mod watched_list;
@@ -116,7 +118,7 @@ pub mod window_layout;
 #[cfg(test)]
 mod tests {
     /// The state modules, with their source.
-    const STATE_MODULES: [(&str, &str); 65] = [
+    const STATE_MODULES: [(&str, &str); 66] = [
         ("animate.rs", include_str!("animate.rs")),
         ("face_crops.rs", include_str!("face_crops.rs")),
         ("people_page.rs", include_str!("people_page.rs")),
@@ -178,6 +180,7 @@ mod tests {
         ("viewer_histogram.rs", include_str!("viewer_histogram.rs")),
         ("viewer_info.rs", include_str!("viewer_info.rs")),
         ("viewer_layout.rs", include_str!("viewer_layout.rs")),
+        ("viewer_motion.rs", include_str!("viewer_motion.rs")),
         ("viewer_levels.rs", include_str!("viewer_levels.rs")),
         ("viewer_zoom.rs", include_str!("viewer_zoom.rs")),
         ("wheel.rs", include_str!("wheel.rs")),
