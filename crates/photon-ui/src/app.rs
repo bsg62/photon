@@ -178,7 +178,10 @@ pub struct App {
     viewer_view: ViewerView,
     /// The viewer opening out of its tile, while it does (`app/motion.rs`).
     motion: Option<motion::Motion>,
-    /// What the last frame drew of it, for a test.
+    /// The viewer's photo going back into its tile once the viewer has closed, while it
+    /// does (`app/motion.rs`).
+    leaving: Option<motion::Leaving>,
+    /// What the last frame drew of either, for a test.
     motion_seen: Option<MotionSeen>,
     /// The previews the viewer shows until a photo's full picture is made: the cache's
     /// larger thumbnails, held apart from the grid's.
@@ -1413,6 +1416,7 @@ impl App {
             viewer: None,
             viewer_view: ViewerView::default(),
             motion: None,
+            leaving: None,
             motion_seen: None,
             previews: Thumbs::previews(preview_loader),
             viewer_items,
@@ -2092,7 +2096,7 @@ impl App {
             // handed back to the grid under the viewer first, which is being left - or
             // is the one the photo is found in, by the same lookup.
             ViewerPick::Locate => {
-                self.shut_viewer();
+                self.shut_viewer(None);
                 self.locate(photo, hidden);
             }
             ViewerPick::Reveal => self.open_with_system(open::Opening::RevealPhoto(photo)),
@@ -2467,7 +2471,7 @@ impl App {
             self.selection.select(&self.index, offset);
         }
         self.showing = (self.index.rows(offset, 1).first()).map(|entry| entry.id);
-        self.shut_viewer();
+        self.shut_viewer(id);
     }
 
     /// The video on screen, played: its player opened once its file is known, the system
@@ -2580,7 +2584,13 @@ impl App {
     /// The viewer is over: what it held goes with it. Its previews too, which nothing
     /// else lets go of but their store's own limit - a hundred megabytes of texture for
     /// the rest of the session, after any stretch of looking at photos.
-    fn shut_viewer(&mut self) {
+    ///
+    /// With the animations on, the photo goes on being drawn for a moment over what is
+    /// under the viewer (`begin_closing`): into the tile of `to`, the photo the grid is
+    /// handed back, and fading where it stands where there is none.
+    fn shut_viewer(&mut self, to: Option<i64>) {
+        let showing = (self.viewer.as_ref()).is_some_and(|open| open.show.active());
+        self.begin_closing(to, showing);
         // A show the viewer is closed under is stopped, and gives the window back.
         let now = self.ctx.input(|input| input.time) * 1000.0;
         if (self.viewer.as_mut()).is_some_and(|open| open.show.stop(now)) {
@@ -3165,9 +3175,16 @@ impl App {
             self.motion = None;
         }
         let passage = self.motion.as_ref().map(|motion| motion.passage);
+        let clip =
+            (self.motion.as_ref()).and_then(|motion| motion.clip_at(ctx.content_rect(), now));
         self.paint_frozen(ui);
+        // A closing turned round brought the picture it was drawn from.
+        let stand_in = self
+            .motion
+            .as_ref()
+            .and_then(|motion| motion.stand_in().cloned());
         let thumb = match passage {
-            Some(_) => self.thumbs.texture(key).cloned(),
+            Some(_) => stand_in.or_else(|| self.thumbs.texture(key).cloned()),
             None => None,
         };
         let len = self.index.len();
@@ -3219,6 +3236,7 @@ impl App {
                 passage,
                 now_ms: now,
                 thumb: thumb.as_ref(),
+                clip,
             }),
         };
         // The zoom is the view's to change in this frame, and the viewer's to keep:
@@ -3508,7 +3526,7 @@ impl App {
             if step.as_ref().is_some_and(|step| !self.nav.wants(step)) {
                 self.close_viewer();
             } else {
-                self.shut_viewer();
+                self.shut_viewer(None);
             }
             match link {
                 // A copy the panel lists is never a hidden photo.
@@ -4807,7 +4825,7 @@ impl App {
             let lost = (self.viewer.as_ref())
                 .is_some_and(|open| self.index.position_of(open.viewer.id()).is_none());
             if lost {
-                self.shut_viewer();
+                self.shut_viewer(None);
             }
         } else {
             if let Some(landed) = self.selection.follow(&before, &self.index) {
@@ -5215,6 +5233,8 @@ impl eframe::App for App {
         }
         // Compare takes the whole window as the viewer does.
         if self.compare.is_some() {
+            // Nothing goes back into a grid that is not drawn.
+            self.leaving = None;
             self.show_compare(ui, now, under_dialog);
             if self.drop.hovering() {
                 drop_card::show(ui.ctx(), folder_drop::CARD);
@@ -5255,6 +5275,7 @@ impl eframe::App for App {
             copies_marked: copies::marked(self.nav.settled().view),
             animations: self.animations,
             glide_from: glide_from.as_deref(),
+            hollow: self.hollow(),
         };
         // The entry marked as the view is where the user is going; the folders listed
         // and the line an empty view shows are of the grid that is on screen.
@@ -5335,6 +5356,10 @@ impl eframe::App for App {
                 Some(people) => pressed = people_view.show(ui, ui.max_rect(), people, crops),
                 None => output = Some(view.show(ui, &data, thumbs, selection)),
             });
+        // The viewer's photo going back into its tile, over the grid just drawn and where
+        // it drew the tile: before anything opens the viewer again, which turns it round
+        // from where this frame draws it.
+        self.leaving_drawn(ui.ctx(), now, output.is_some());
         let pressed = if under_dialog { Vec::new() } else { pressed };
         for action in pressed {
             self.people_act(ui.ctx(), action);

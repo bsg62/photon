@@ -214,6 +214,9 @@ pub struct Arriving<'a> {
     /// The tile's thumbnail: what is drawn on the way until the viewer's own picture is
     /// in hand.
     pub thumb: Option<&'a TextureHandle>,
+    /// What the photo is cut to in this frame, besides the photo's area: the part of its
+    /// tile the grid showed, opening out to the whole window as it lands. None for none.
+    pub clip: Option<Rect>,
 }
 
 /// The photo as a frame drew it: where, cut off at the photo's area, which part of its
@@ -571,9 +574,13 @@ impl ViewerView {
             .map(|(arriving, (_, at, _))| (frame_of(at), arriving.now_ms));
         self.drawn = (drawn.filter(|_| on_way.is_none() && zoom.is_fit()))
             .map(|(texture, at)| (texture.clone(), at));
-        self.photo = photo.and_then(|(texture, at, uv)| cut(texture, at, uv, within));
+        // Grown out of a tile part under the top bar or a folder's pinned header, it is
+        // seen as the tile was, and not over them, until it opens out.
+        let shown_in = (zooming.and_then(|arriving| arriving.clip))
+            .map_or(within, |clip| within.intersect(clip));
+        self.photo = photo.and_then(|(texture, at, uv)| cut(texture, at, uv, shown_in));
         if let Some((texture, at, uv)) = photo {
-            (painter.with_clip_rect(within)).image(texture.id(), at, uv, Color32::WHITE);
+            (painter.with_clip_rect(shown_in)).image(texture.id(), at, uv, Color32::WHITE);
         }
         // The photo the show has left, over the one arriving, as it fades.
         if let Some((texture, at, seen)) = data.outgoing {

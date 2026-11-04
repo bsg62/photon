@@ -89,7 +89,8 @@ impl Passage {
         now_ms - self.started_ms
     }
 
-    fn progress(&self, now_ms: f64) -> f32 {
+    /// How far along the way it is, on the curve: 0 at its start, 1 once it is there.
+    pub fn progress(&self, now_ms: f64) -> f32 {
         eased(self.since(now_ms), DURATION_MS) as f32
     }
 

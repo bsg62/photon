@@ -5,7 +5,9 @@
 //! Every write here goes into a library the test made, in a temporary directory, and none
 //! of them leaves `library.db`: a name is never written to a photo or an INI.
 
-use crate::common::{Driver, Harness, click as row, library, opened, photo_ids, said};
+use crate::common::{
+    Driver, Harness, click as row, library, opened, opened_animated, photo_ids, said,
+};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use photon_core::{
@@ -1186,4 +1188,51 @@ fn a_letter_typed_after_the_arrow_lets_go_of_the_person() {
         (app.people_page().unwrap().people().iter())
             .any(|person| person.name.as_deref() == Some("Ann"))
     });
+}
+
+// Closed over the People page, the viewer fades out where the photo stands: there is no
+// grid under it, and no tile to go back into.
+#[test]
+fn a_viewer_closed_over_the_page_fades_out_where_it_stood() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    grouped(&library, &[&ids[0..3]]);
+    let (mut harness, mut driver) = opened_animated(&library, 12);
+    driver.settle(&mut harness);
+    open_page(&mut driver, &mut harness);
+    let face = harness
+        .query_all_by_label_contains("Unnamed group: face 1 of")
+        .next()
+        .unwrap()
+        .rect()
+        .center();
+    harness.event(egui::Event::PointerMoved(face));
+    for _ in 0..2 {
+        harness.event(button(face, PointerButton::Primary, true));
+        harness.event(button(face, PointerButton::Primary, false));
+        driver.act(&mut harness);
+    }
+    driver.until(&mut harness, "the photo's picture in the viewer", |app| {
+        app.viewer_photo().is_some()
+    });
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    harness.event(key_event(Key::Escape, true));
+    driver.act(&mut harness);
+    let p = driver.now;
+    assert!(harness.state().viewer().is_none());
+    assert!(harness.state().people_open());
+    let mut seen = Vec::new();
+    for at in [p, p + 0.1, p + 0.2] {
+        driver.frame(&mut harness, at);
+        let motion = harness.state().viewer_motion().expect("the closing drawn");
+        assert!(!motion.zoom && !motion.opening, "{motion:?}");
+        seen.push(motion);
+    }
+    assert!(
+        seen.iter().all(|motion| motion.photo == seen[0].photo),
+        "{seen:?}"
+    );
+    assert!(seen[0].ground > 0.9 && seen[2].ground == 0.0, "{seen:?}");
 }

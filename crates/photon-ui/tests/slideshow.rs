@@ -2,7 +2,7 @@
 //! over a library of real photos made for the test, in a temporary directory. The window
 //! is the test's: it goes fullscreen when the application asks (`obey`).
 
-use crate::common::{Driver, Harness, library, opened, over, said};
+use crate::common::{Driver, Harness, library, opened, over, over_animated, said};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, ViewportId};
 use egui_kittest::kittest::Queryable;
 use photon_core::library::Library;
@@ -50,11 +50,24 @@ fn pictures(dir: &Path) -> PathBuf {
 /// The application over a library that watches `pictures(dir)`, once its four files are
 /// shown, in a window that is not fullscreen; and their ids, in the grid's order.
 fn four<'a>(dir: &Path, settings: impl FnOnce(&Library)) -> (Harness<'a>, Driver, Vec<i64>) {
+    four_by(dir, settings, over)
+}
+
+/// `four`, with the animations on.
+fn four_animated<'a>(dir: &Path) -> (Harness<'a>, Driver, Vec<i64>) {
+    four_by(dir, |_| {}, over_animated)
+}
+
+fn four_by<'a>(
+    dir: &Path,
+    settings: impl FnOnce(&Library),
+    launch: impl FnOnce(&Path, Option<&Path>) -> (Harness<'a>, Driver, photon_ui::dirs::Dirs),
+) -> (Harness<'a>, Driver, Vec<i64>) {
     let folder = pictures(dir);
     let data = dir.join("data");
     std::fs::create_dir_all(&data).unwrap();
     settings(&Library::open(&data.join("library.db")).unwrap());
-    let (mut harness, mut driver, _) = over(dir, Some(&folder));
+    let (mut harness, mut driver, _) = launch(dir, Some(&folder));
     driver.until(&mut harness, "the four shown", |app| {
         app.photos() == 4 && app.last_frame().is_some_and(|frame| frame.settled)
     });
@@ -423,4 +436,45 @@ fn a_view_of_videos_alone_has_no_show() {
     driver.act(&mut harness);
     assert!(!showing(harness.state()));
     assert_eq!(said(&harness), ["There are no photos here to show."]);
+}
+
+// A viewer closed in a show fades out where the photo stands, and does not shrink into its
+// tile: the window leaves fullscreen at that moment and changes its size, and where the
+// tile will be is not known yet.
+#[test]
+fn a_slideshow_closed_fades_out_where_it_stood() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = four_animated(dir.path());
+    open(&mut driver, &mut harness, 0);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 0.5);
+    key(&mut driver, &mut harness, Key::S);
+    assert!(showing(harness.state()));
+    harness.event(egui::Event::Key {
+        key: Key::Backspace,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    let p = driver.now;
+    assert_eq!(viewing(&harness), None);
+    let mut seen = Vec::new();
+    for at in [p, p + 0.05, p + 0.1, p + 0.15, p + 0.2] {
+        driver.frame(&mut harness, at);
+        let motion = harness.state().viewer_motion().expect("the closing drawn");
+        assert!(!motion.zoom && !motion.opening, "{motion:?}");
+        seen.push(motion);
+    }
+    assert!(
+        seen.iter().all(|motion| motion.photo == seen[0].photo),
+        "{seen:?}"
+    );
+    assert!(seen[0].ground > 0.9, "{seen:?}");
+    assert!(
+        seen.windows(2).all(|pair| pair[1].ground < pair[0].ground),
+        "{seen:?}"
+    );
+    assert_eq!(seen[4].ground, 0.0);
 }

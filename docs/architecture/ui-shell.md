@@ -112,7 +112,10 @@ there. A pin that moves the position under a running glide is
 `Glides::repositioned`'s to keep steady. **The switch is the `animations` setting**, on by
 default; off, nothing here moves and the grid's late-thumbnail fade stops too. Every test
 launches `without_animations` (all but `probe.rs` and `app.rs`), and a test of a motion says
-so (`launch_animated`, `opened_animated`, `over_animated`).
+so (`launch_animated`, `opened_animated`, `over_animated`, `three_animated`). **The viewer's
+passage** - growing out of its tile over a frozen picture of the window, shrinking back into
+it over the live grid, a fade where there is no tile - is the same rule kept by other means,
+and is in `ui-viewer.md`.
 
 **Menus and dropdowns grow in and fade out** (`menu_view.rs`, `select_view.rs`, `afterimage.rs`).
 The growth is a *visual* transform (`Ui::with_visual_transform`, after `multiply_opacity`) of

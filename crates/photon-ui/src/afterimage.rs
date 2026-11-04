@@ -24,9 +24,27 @@ pub fn of_layers(
     now_ms: f64,
     duration_ms: f64,
 ) -> Afterimage {
+    of_layers_and(ctx, keep, &[], now_ms, duration_ms)
+}
+
+/// `of_layers`, and the layers `painted` among them: layers only a painter drew on, which
+/// are no area's and which egui's order of areas does not list. Each goes where egui
+/// draws it, after the areas of its own order.
+pub fn of_layers_and(
+    ctx: &egui::Context,
+    keep: impl Fn(egui::LayerId) -> bool,
+    painted: &[egui::LayerId],
+    now_ms: f64,
+    duration_ms: f64,
+) -> Afterimage {
     // The ids first and the graphics after: both lock the context, so neither may run
     // inside the other's closure.
-    let layers: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().filter(|l| keep(*l)).collect());
+    let mut layers: Vec<egui::LayerId> =
+        ctx.memory(|m| m.layer_ids().filter(|l| keep(*l)).collect());
+    for layer in painted {
+        let at = (layers.iter()).position(|area| area.order > layer.order);
+        layers.insert(at.unwrap_or(layers.len()), *layer);
+    }
     let shapes: Vec<ClippedShape> = ctx.graphics(|g| {
         layers
             .iter()
