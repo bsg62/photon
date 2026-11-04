@@ -4024,6 +4024,40 @@ fn opening_another_photo_while_one_shrinks_keeps_that_one_under_it() {
         "the first photo, {:?}, under the second",
         going.photo
     );
+    // And its picture is held while it stands there: the closing that held it is over,
+    // and a texture let go of is drawn by the GPU as nothing.
+    let under = textures_at(&harness, going.photo);
+    assert!(!under.is_empty(), "no picture at {:?}", going.photo);
+    driver.frame(&mut harness, p + 0.15);
+    let manager = harness.ctx.tex_manager();
+    let gone: Vec<_> = (under.iter())
+        .filter(|id| manager.read().meta(**id).is_none())
+        .collect();
+    assert!(
+        gone.is_empty(),
+        "{gone:?} drawn under the second and let go of"
+    );
+}
+
+/// The textures of the pictures the last frame drew at `place`.
+fn textures_at(harness: &Harness<'_>, place: egui::Rect) -> Vec<egui::TextureId> {
+    fn each(shape: &egui::Shape, place: egui::Rect, found: &mut Vec<egui::TextureId>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, place, found)),
+            egui::Shape::Mesh(mesh)
+                if mesh.texture_id != egui::TextureId::default()
+                    && near(mesh.calc_bounds(), place, 0.5) =>
+            {
+                found.push(mesh.texture_id);
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, place, &mut found);
+    }
+    found
 }
 
 // A tile scrolled out of sight while its photo shrinks back into it is not gone back into:
@@ -4049,4 +4083,31 @@ fn a_tile_scrolled_out_of_sight_is_not_gone_back_into() {
     driver.frame(&mut harness, p + 0.2);
     let last = motion(&harness);
     assert_eq!((last.photo, last.ground), (first.photo, 0.0));
+}
+
+// A tile with nothing to grow - its thumbnail cannot be had - is not gone back into either:
+// the photo fades out where it stands, as it faded in.
+#[test]
+fn a_tile_whose_thumbnail_cannot_be_had_is_not_gone_back_into() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 3, 0, 0);
+    // photon's own cache, in this test's directory: the first photo's thumbnail. Its file
+    // is on a drive that is not there, and it is not made again; its preview stays.
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    let first = lib.grid_entries().unwrap()[0];
+    let cache = photon_core::thumbs::ThumbCache::new(library.dirs().cache_dir);
+    std::fs::remove_file(cache.path_for(first.thumb_key, ThumbSize::Grid)).unwrap();
+    let (mut harness, mut driver) = opened_animated(&library, 3);
+    driver.settle(&mut harness);
+    let offset = (harness.state().shown().iter())
+        .position(|id| *id == first.id)
+        .unwrap();
+    resting(&mut driver, &mut harness, offset);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(!first.zoom && !first.opening, "{first:?}");
+    assert!(!hollowed(&harness));
+    driver.frame(&mut harness, p + 0.1);
+    assert_eq!(motion(&harness).photo, first.photo);
 }

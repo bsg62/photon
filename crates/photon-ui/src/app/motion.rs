@@ -151,9 +151,13 @@ impl App {
     /// its cut - and the picture it was drawn from stands in until the viewer has its own.
     /// Opened on another, the closing is dropped.
     pub(super) fn begin_opening(&mut self, id: i64, tile: Option<egui::Rect>) {
-        let left = self.leaving.take();
-        let ends = (left.as_ref()).is_some_and(|leaving| leaving.passage.id() != id);
-        let turning = left.filter(|leaving| leaving.passage.id() == id);
+        let mut left = self.leaving.take();
+        let turning = left.take_if(|leaving| leaving.passage.id() == id);
+        // What is left is a closing of another photo. It holds the only handle to the
+        // picture it draws (the viewer let go of its own as it closed), and is kept until
+        // the frozen picture has taken one of its own: dropped first, the texture is freed
+        // at once and the frozen picture names a texture that is gone.
+        let ends = left.is_some();
         self.motion = None;
         if !self.animations {
             return;
@@ -169,6 +173,7 @@ impl App {
             Vec::new()
         };
         let frozen = of_layers_and(&ctx, of_the_window, &painted, now, DURATION_MS);
+        drop(left);
         if frozen.is_empty() {
             return;
         }
@@ -222,7 +227,7 @@ impl App {
     /// A fade where there is no grid to land in or no place in it known: no photo handed
     /// back (a link that leaves for another view, a grid of other results), the People
     /// page under the viewer, and a show, whose window leaves fullscreen at this moment
-    /// and changes its size.
+    /// and changes its size; and a fade into a tile with nothing to grow.
     pub(super) fn begin_closing(&mut self, to: Option<i64>, showing: bool) {
         self.leaving = None;
         if !self.animations {
@@ -245,8 +250,16 @@ impl App {
             ),
             None => (1.0, window),
         };
+        // A tile with nothing to grow - its thumbnail failed, or not to be had when last
+        // asked for (not built yet, a video with no poster) - is not gone back into, as it
+        // was not grown out of: the photo would land in a mark, or in nothing.
+        let grown = |id: i64| {
+            (self.entry(id)).is_some_and(|entry| {
+                !self.thumbs.failed(entry.thumb_key) && !self.thumbs.troubled(entry.thumb_key)
+            })
+        };
         let way = match to {
-            Some(_) if !showing && self.page.is_none() => Way::Zoom,
+            Some(id) if !showing && self.page.is_none() && grown(id) => Way::Zoom,
             _ => Way::Fade,
         };
         let uv = (

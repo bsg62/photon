@@ -62,8 +62,10 @@ controls begin to fade in (a click on a button not yet drawn is a surprise, and 
 is no half of a double click) - but the mouse's back button closes, as Escape does. A step
 (by hand or by a show) and the crop tool end the opening at once. *Closing*
 (`begin_closing`, from `shut_viewer`, which reads `photo_drawn()` before `let_go` clears it),
-**the grid under the shrinking photo is the live grid**: drawn as the grid, its keys, presses
-and wheel its own, with the tile drawn empty (`GridData::hollow`), and over it, on the
+**the grid under the shrinking photo is the live grid** - nothing waits for a clock: the
+viewer is closed at the press, so an arrow, a click or the wheel in those 200 ms is the
+user's, and is answered by the grid as if nothing were over it. It is drawn as the grid, its
+keys, presses and wheel its own, with the tile drawn empty (`GridData::hollow`), and over it, on the
 `viewer-leaving` painter layer (no area, so it takes no press), the black going and the photo
 shrinking from the rectangle the viewer last drew it in - cut to the photo's area, with the
 part of the picture drawn there when it was zoomed or panned (the whole picture is given as
@@ -76,11 +78,15 @@ drawn before the grid's Enter or double click is answered**, so a viewer opened 
 same photo turns round from what that very frame drew - place, cut of the picture, black and
 clip - with the picture it shrank as standing in until the viewer has its own again; opened
 on another photo, the closing ends and its last frame is named into the frozen picture, or
-its tile stood empty under the new viewer. Closed while it grows, the closing starts from the
+its tile stood empty under the new viewer - and the closing, the only holder of its picture,
+is let go of only after the frozen picture has taken its own handle: dropped first, the
+texture was freed at once and drawn as nothing. Closed while it grows, the closing starts from the
 photo as drawn, so it turns round too. **Where there is no tile, it fades** where the photo
 stands, the black (and, opening, the whole viewer by its opacity) going or coming over the
 same 200 ms: opened from compare or a face, which have no tile under the pointer; a tile
-whose thumbnail is not held or failed, which has nothing to grow; closed with no photo
+with nothing to grow, opened from (its thumbnail not held, or failed) or closed into (its
+thumbnail failed, or not to be had when last asked for - not built yet, a video with no
+poster), where the photo would land in a mark or in nothing; closed with no photo
 handed back (a link that leaves for another view, Locate, a grid of other results -
 `shut_viewer(None)`); closed over the People page, which has no grid; closed in a show, whose
 window leaves fullscreen at that moment and changes its size, so a tile's place is not known
