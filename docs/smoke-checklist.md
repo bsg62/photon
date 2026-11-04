@@ -841,4 +841,5 @@ library, a file changed in the file manager, or Picasa will do.
 - [ ] Open a photo from the grid, step twice, close: it grows out of its tile and shrinks into the one it is on; try it zoomed in, and with a portrait photo.
 - [ ] Close a photo and press an arrow, or turn the wheel, while it shrinks: the grid answers at once, and the photo lands where its tile has gone. Press Enter while it shrinks: it turns round where it is. Open a photo whose tile is half under the pinned folder header: nothing is drawn over the header or the top bar.
 - [ ] Close the viewer in a slideshow, and over the People page: it fades out where it stands.
+- [ ] Zoom into a photo opened over the People page, press Escape and at once Enter: the photo comes back from where it was fading. Note whether it jumps to its fitted place when the viewer's own picture returns (known: it may).
 - [ ] Open Settings and press Escape: it grows from its middle with the backdrop darkening, and fades with it in a blink; a click on a photo where it stood selects that photo. Open the keyword picker: it grows from the middle of its first frame and does not move as it is typed in.
