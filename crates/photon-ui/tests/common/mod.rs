@@ -453,6 +453,31 @@ pub fn said(harness: &Harness<'_>) -> Vec<String> {
         .collect()
 }
 
+/// How opaque the last frame drew the picture standing at `place`, 0 to 255: the alpha of
+/// the last picture it drew there (the viewer's photo, or the photo of a closing). None
+/// where it drew none.
+pub fn picture_alpha_at(harness: &Harness<'_>, place: egui::Rect) -> Option<u8> {
+    fn each(shape: &egui::Shape, place: egui::Rect, found: &mut Option<u8>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| each(shape, place, found)),
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                let bounds = mesh.calc_bounds();
+                let near = (bounds.min - place.min).length() <= 2.0
+                    && (bounds.max - place.max).length() <= 2.0;
+                if near && let Some(vertex) = mesh.vertices.first() {
+                    *found = Some(vertex.color.a());
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = None;
+    for clipped in &harness.output().shapes {
+        each(&clipped.shape, place, &mut found);
+    }
+    found
+}
+
 /// The ids of `library`'s photos, in grid order: the newest folder first.
 pub fn photo_ids(library: &fixture::Fixture) -> Vec<i64> {
     let lib = Library::open(&library.dirs().db_path).unwrap();

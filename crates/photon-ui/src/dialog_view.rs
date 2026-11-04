@@ -97,8 +97,10 @@ pub struct DialogView {
     opened: bool,
     /// When the dialog was first drawn, on egui's clock.
     opened_at: Option<f64>,
-    /// The middle of what the dialog drew in its first frame: a picker, which is as tall
-    /// as its list, grows from there however its height changes after.
+    /// The point every dialog grows about: the middle of where it stood in its first
+    /// frame, kept for the whole of its growth. Its height may change while it grows - a
+    /// picker's with its list, the export's with what is said under its field - and the
+    /// point it grows about does not move with it.
     grows_from: Option<Pos2>,
     /// What the last frame drew of the dialog's growth.
     growth: Option<Growth>,
@@ -385,6 +387,8 @@ impl DialogView {
         );
         let opened_at = *self.opened_at.get_or_insert(now);
         let k = opening((now - opened_at) * 1000.0, animations);
+        // About the middle of where it stood in its first frame, whatever kind of dialog
+        // it is (`grows_from`).
         let origin = *self.grows_from.get_or_insert(place.center());
         let growth = Growth {
             rect: place,

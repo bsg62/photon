@@ -11,7 +11,7 @@ use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
 use photon_core::{grid::GridView, library::Library};
 use photon_engine::commands;
-use photon_ui::{app::App, dialogs::Dialog, fixture::Fixture, nav::Place};
+use photon_ui::{app::App, dialogs::Dialog, fixture::Fixture, nav::Place, shortcuts::SHEET_TITLE};
 
 fn button(pos: Pos2, button: PointerButton, pressed: bool, modifiers: Modifiers) -> egui::Event {
     egui::Event::PointerButton {
@@ -1103,6 +1103,7 @@ fn a_closed_dialog_fades_with_its_ground() {
         })
         .expect("a photo under the dialog");
     assert!(stood.contains(at));
+    let scrim = photon_ui::theme::apply::color(photon_ui::theme::tokens::SCRIM);
     escape_down(&mut driver, &mut harness);
     let closed = driver.now;
     assert!(harness.state().dialog().is_none());
@@ -1111,6 +1112,9 @@ fn a_closed_dialog_fades_with_its_ground() {
         harness.state().afterimage_shapes() > 0,
         "the dialog is kept"
     );
+    // Its closing frame draws it once: the dialog, drawn for the last time, and not its
+    // afterimage over it as well, which doubled its ground, its shadow and its edges.
+    assert_eq!(scrims(&harness), [scrim.a()]);
     // A press in the very next frame lands on the photo under where the dialog stood.
     press_next(&mut driver, &mut harness, at);
     assert_eq!(
@@ -1118,8 +1122,37 @@ fn a_closed_dialog_fades_with_its_ground() {
         [harness.state().shown()[offset]]
     );
     assert_eq!(harness.state().afterimages(), 1);
+    // And the ground fades with the rest: it is in the afterimage.
+    let fading = scrims(&harness);
+    assert!(
+        fading.len() == 1 && fading[0] < scrim.a(),
+        "{fading:?} of the ground"
+    );
     driver.frame(&mut harness, closed + 0.11);
     assert_eq!(harness.state().afterimages(), 0);
+    assert!(scrims(&harness).is_empty());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
+}
+
+/// How opaque each dialog's ground the last frame drew over the whole window was: the
+/// scrim's black, as much of it as was drawn.
+fn scrims(harness: &Harness<'_>) -> Vec<u8> {
+    let window = harness.ctx.content_rect();
+    (harness.output().shapes.iter())
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect)
+                if rect.rect == window
+                    && rect.fill.a() > 0
+                    && (rect.fill.r(), rect.fill.g(), rect.fill.b()) == (0, 0, 0) =>
+            {
+                Some(rect.fill.a())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -1176,9 +1209,17 @@ fn without_animations_a_dialog_is_there_at_once() {
             both.is_positive().then(|| (offset, both.center()))
         })
         .expect("a photo under the dialog");
+    assert!(harness.query_by_label(SHEET_TITLE).is_some());
     escape_down(&mut driver, &mut harness);
     assert!(harness.state().dialog().is_none());
     assert_eq!(harness.state().afterimages(), 0);
+    // Gone before it is drawn: nothing of it in the frame of the Escape, not even a last
+    // drawing to fade from, which nothing would fade.
+    assert!(scrims(&harness).is_empty(), "its ground drawn");
+    assert!(
+        harness.query_by_label(SHEET_TITLE).is_none(),
+        "the sheet drawn"
+    );
     press_next(&mut driver, &mut harness, at.1);
     assert_eq!(harness.state().selected(), [harness.state().shown()[at.0]]);
 }

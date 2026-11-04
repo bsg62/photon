@@ -26,19 +26,26 @@ pub struct Passage {
     from: Frame,
     from_uv: Option<Uv>,
     from_ground: f32,
+    /// How opaque the photo was drawn at the start, 0 to 1.
+    from_photo: f32,
+    /// How far along the way a fade that took over from a zoom began to take the photo
+    /// out (`fade_instead`); 0 for a passage that was a fade from its start.
+    photo_since: f32,
     started_ms: f64,
 }
 
 impl Passage {
     /// A photo opening from `from` (its tile; for a fade, its landing place); `from_uv`
     /// is the part of it that was drawn when that was not the crop of its frame - a
-    /// closing from a zoomed photo, turned round.
+    /// closing from a zoomed photo, turned round. It starts on `from_ground` of the black,
+    /// and drawn at `from_photo` of its opacity: 1 out of a tile, 0 for a fade that brings
+    /// it, and what a closing turned round had come to.
     pub fn opening(
         id: i64,
         way: Way,
         from: Frame,
         from_uv: Option<Uv>,
-        from_ground: f32,
+        (from_ground, from_photo): (f32, f32),
         now_ms: f64,
     ) -> Self {
         Passage {
@@ -48,18 +55,21 @@ impl Passage {
             from,
             from_uv,
             from_ground,
+            from_photo,
+            photo_since: 0.0,
             started_ms: now_ms,
         }
     }
 
-    /// A photo closing from where it was drawn; `from_uv` is the part of it that was
-    /// drawn when that was not the crop of its frame.
+    /// A photo closing from where it was drawn, on `from_ground` of the black and at
+    /// `from_photo` of its opacity; `from_uv` is the part of it that was drawn when that
+    /// was not the crop of its frame.
     pub fn closing(
         id: i64,
         way: Way,
         from: Frame,
         from_uv: Option<Uv>,
-        from_ground: f32,
+        (from_ground, from_photo): (f32, f32),
         now_ms: f64,
     ) -> Self {
         Passage {
@@ -69,6 +79,8 @@ impl Passage {
             from,
             from_uv,
             from_ground,
+            from_photo,
+            photo_since: 0.0,
             started_ms: now_ms,
         }
     }
@@ -143,13 +155,29 @@ impl Passage {
         lerp(self.from_ground, to, self.progress(now_ms))
     }
 
+    /// How opaque the photo is drawn, 0 to 1. A zoom ends at full: in its place, or in
+    /// its tile. A fade brings the photo with the black, or takes it with it - from where
+    /// it stood when it began to, for one that took over from a zoom part way: the photo
+    /// goes on from the opacity it had, and is gone as the black is.
+    pub fn photo(&self, now_ms: f64) -> f32 {
+        let k = self.progress(now_ms);
+        if self.opening || self.way == Way::Zoom {
+            return lerp(self.from_photo, 1.0, k);
+        }
+        let left = 1.0 - self.photo_since;
+        if left <= 0.0 {
+            return 0.0;
+        }
+        self.from_photo * ((1.0 - k) / left).clamp(0.0, 1.0)
+    }
+
     /// How much of the controls show: they come once the photo has landed and go at once.
     pub fn controls(&self, now_ms: f64) -> f32 {
         if !self.opening {
             return 0.0;
         }
         match self.way {
-            Way::Fade => self.ground(now_ms),
+            Way::Fade => self.photo(now_ms),
             Way::Zoom => eased(self.since(now_ms) - DURATION_MS, CONTROLS_MS) as f32,
         }
     }
@@ -164,9 +192,12 @@ impl Passage {
         self.progress(now_ms) < 1.0 || (self.opening && self.controls(now_ms) < 1.0)
     }
 
-    /// The tile it was going to is gone: the photo stays at `at` and goes with the ground.
-    /// Time and ground go on unbroken.
-    pub fn fade_instead(&mut self, at: Frame) {
+    /// The tile it was going to is gone at `now_ms`: the photo stays at `at` and goes with
+    /// the ground. Time and ground go on unbroken, and so does the photo's opacity: it is
+    /// taken out from what it was drawn at, over what is left of the time.
+    pub fn fade_instead(&mut self, at: Frame, now_ms: f64) {
+        self.from_photo = self.photo(now_ms);
+        self.photo_since = self.progress(now_ms);
         self.way = Way::Fade;
         self.from = at;
     }
@@ -230,7 +261,7 @@ mod tests {
     };
 
     fn opening() -> Passage {
-        Passage::opening(1, Way::Zoom, TILE, None, 0.0, 1000.0)
+        Passage::opening(1, Way::Zoom, TILE, None, (0.0, 1.0), 1000.0)
     }
 
     #[test]
@@ -272,7 +303,7 @@ mod tests {
 
     #[test]
     fn a_fade_stays_where_it_lands() {
-        let p = Passage::opening(1, Way::Fade, LANDING, None, 0.0, 1000.0);
+        let p = Passage::opening(1, Way::Fade, LANDING, None, (0.0, 0.0), 1000.0);
         for now in [1000.0, 1050.0, 1100.0, 1200.0, 1500.0] {
             assert_eq!(p.photo_at(TILE, now), LANDING);
             assert_eq!(p.controls(now), p.ground(now));
@@ -283,7 +314,7 @@ mod tests {
 
     #[test]
     fn a_closing_runs_to_the_tile_and_its_ground_goes() {
-        let p = Passage::closing(1, Way::Zoom, LANDING, None, 1.0, 1000.0);
+        let p = Passage::closing(1, Way::Zoom, LANDING, None, (1.0, 1.0), 1000.0);
         assert!(!p.is_opening());
         assert_eq!(p.photo_at(TILE, 1000.0), LANDING);
         assert_eq!(p.photo_at(TILE, 1200.0), TILE);
@@ -300,7 +331,7 @@ mod tests {
     #[test]
     fn a_zoomed_photo_closes_from_the_part_that_was_drawn() {
         let zoomed = (0.2, 0.3, 0.4, 0.5);
-        let p = Passage::closing(1, Way::Zoom, LANDING, Some(zoomed), 1.0, 1000.0);
+        let p = Passage::closing(1, Way::Zoom, LANDING, Some(zoomed), (1.0, 1.0), 1000.0);
         let image = (256.0, 128.0);
         assert_eq!(p.uv_at(image, LANDING, 1000.0), zoomed);
         assert_eq!(p.uv_at(image, TILE, 1200.0), (0.25, 0.0, 0.75, 1.0));
@@ -347,7 +378,7 @@ mod tests {
     // A fade does not travel, whatever it is told of a landing.
     #[test]
     fn a_fade_followed_stays_where_it_stands() {
-        let p = Passage::opening(1, Way::Fade, LANDING, None, 0.0, 1000.0);
+        let p = Passage::opening(1, Way::Fade, LANDING, None, (0.0, 0.0), 1000.0);
         assert_eq!(p.follow(TILE, 1050.0, TILE, 1100.0), LANDING);
     }
 
@@ -358,43 +389,85 @@ mod tests {
     #[test]
     fn a_passage_turned_round_goes_on_from_what_was_drawn() {
         let image = (256.0, 128.0);
-        type Turn = fn(Frame, Option<Uv>, f32, f64) -> Passage;
+        type Turn = fn(Frame, Option<Uv>, (f32, f32), f64) -> Passage;
         let turned = |old: Passage, old_to: Frame, turn: Turn, new_to: Frame| {
             let at = 1100.0;
             let drawn = old.photo_at(old_to, at);
             let uv = old.uv_at(image, drawn, at);
-            let ground = old.ground(at);
-            let new = turn(drawn, Some(uv), ground, at);
+            let (ground, photo) = (old.ground(at), old.photo(at));
+            let new = turn(drawn, Some(uv), (ground, photo), at);
             assert_eq!(new.photo_at(new_to, at), drawn);
             assert_eq!(new.uv_at(image, drawn, at), uv);
             assert_eq!(new.ground(at), ground);
+            assert_eq!(new.photo(at), photo);
         };
         let zoomed = (0.2, 0.3, 0.4, 0.5);
         turned(
-            Passage::closing(1, Way::Zoom, LANDING, Some(zoomed), 1.0, 1000.0),
+            Passage::closing(1, Way::Zoom, LANDING, Some(zoomed), (1.0, 1.0), 1000.0),
             TILE,
-            |from, uv, ground, now| Passage::opening(1, Way::Zoom, from, uv, ground, now),
+            |from, uv, seen, now| Passage::opening(1, Way::Zoom, from, uv, seen, now),
             LANDING,
         );
         turned(
             opening(),
             LANDING,
-            |from, uv, ground, now| Passage::closing(1, Way::Zoom, from, uv, ground, now),
+            |from, uv, seen, now| Passage::closing(1, Way::Zoom, from, uv, seen, now),
             TILE,
         );
+        // A fading closing, and one that took over from a zoom, opened again: the photo
+        // goes on from the opacity it was drawn at.
+        turned(
+            Passage::closing(1, Way::Fade, LANDING, None, (1.0, 1.0), 1000.0),
+            TILE,
+            |from, uv, seen, now| Passage::opening(1, Way::Fade, from, uv, seen, now),
+            LANDING,
+        );
+        let mut lost = Passage::closing(1, Way::Zoom, LANDING, None, (1.0, 1.0), 1000.0);
+        lost.fade_instead(TILE, 1050.0);
+        turned(
+            lost,
+            TILE,
+            |from, uv, seen, now| Passage::opening(1, Way::Fade, from, uv, seen, now),
+            LANDING,
+        );
+    }
+
+    // A fade brings the photo with the black and takes it with it: the photo is drawn as
+    // opaque as the black is, and the controls come with both.
+    #[test]
+    fn a_fade_brings_the_photo_and_takes_it_with_the_black() {
+        let opening = Passage::opening(1, Way::Fade, LANDING, None, (0.0, 0.0), 1000.0);
+        let closing = Passage::closing(1, Way::Fade, LANDING, None, (1.0, 1.0), 1000.0);
+        for now in [1000.0, 1050.0, 1100.0, 1150.0, 1200.0] {
+            assert_eq!(opening.photo(now), opening.ground(now));
+            assert_eq!(opening.controls(now), opening.photo(now));
+            assert!((closing.photo(now) - closing.ground(now)).abs() < 1e-6);
+        }
+        assert_eq!(closing.photo(1000.0), 1.0);
+        assert_eq!(closing.photo(1200.0), 0.0);
+        // A zoom's photo is whole all the way, into its place or into its tile.
+        let zoom = Passage::closing(1, Way::Zoom, LANDING, None, (1.0, 1.0), 1000.0);
+        assert_eq!(zoom.photo(1100.0), 1.0);
     }
 
     #[test]
     fn a_passage_that_loses_its_tile_fades_from_where_it_is() {
-        let mut p = Passage::closing(1, Way::Zoom, LANDING, None, 1.0, 1000.0);
+        let mut p = Passage::closing(1, Way::Zoom, LANDING, None, (1.0, 1.0), 1000.0);
         let ground = p.ground(1100.0);
         let at = p.photo_at(TILE, 1100.0);
-        p.fade_instead(at);
+        p.fade_instead(at, 1100.0);
+        // The photo, whole as it went into its tile, goes from there: no jump to the
+        // black's eighth that is left, and gone with it.
+        assert_eq!(p.photo(1100.0), 1.0);
+        let (left, later) = (1.0 - p.progress(1100.0), 1.0 - p.progress(1150.0));
+        assert!((p.photo(1150.0) - later / left).abs() < 1e-6);
+        assert!(p.photo(1150.0) > p.ground(1150.0));
         assert_eq!(p.way(), Way::Fade);
         assert_eq!(p.photo_at(frame(500.0, 500.0, 1.0, 1.0), 1150.0), at);
         assert_eq!(p.photo_at(TILE, 1200.0), at);
         assert_eq!(p.ground(1100.0), ground);
         assert_eq!(p.controls(1150.0), 0.0);
         assert_eq!(p.ground(1200.0), 0.0);
+        assert_eq!(p.photo(1200.0), 0.0);
     }
 }

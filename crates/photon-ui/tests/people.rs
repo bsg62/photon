@@ -6,7 +6,8 @@
 //! of them leaves `library.db`: a name is never written to a photo or an INI.
 
 use crate::common::{
-    Driver, Harness, click as row, library, opened, opened_animated, photo_ids, said,
+    Driver, Harness, click as row, library, opened, opened_animated, photo_ids, picture_alpha_at,
+    said,
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -1228,6 +1229,12 @@ fn a_viewer_closed_over_the_page_fades_out_where_it_stood() {
         driver.frame(&mut harness, at);
         let motion = harness.state().viewer_motion().expect("the closing drawn");
         assert!(!motion.zoom && !motion.opening, "{motion:?}");
+        // The photo goes with the black: as opaque as it is, and not whole over the page.
+        let alpha = picture_alpha_at(&harness, motion.photo).unwrap_or(0);
+        assert!(
+            (f32::from(alpha) - motion.ground * 255.0).abs() <= 2.0,
+            "{alpha} of the photo on {motion:?}"
+        );
         seen.push(motion);
     }
     assert!(

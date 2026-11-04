@@ -14,6 +14,7 @@
 //! while the viewer is open.)
 
 use crate::{
+    afterimage::Afterimage,
     crop::ASPECTS,
     crop_tool::CropTool,
     crop_view::{self, CropData},
@@ -206,13 +207,13 @@ pub struct ViewerData<'a> {
 /// The viewer opening (`viewer_motion.rs`): for a zoom, the photo is drawn on its way from
 /// its tile to its place on a ground that comes from clear to black, and the controls
 /// come once it has landed. A fade is the application's to draw, by the opacity of the
-/// whole viewer.
+/// whole viewer, which is the photo's; the black is drawn here at the ground's.
 pub struct Arriving<'a> {
     pub passage: &'a Passage,
     /// The window's clock, in milliseconds.
     pub now_ms: f64,
-    /// The tile's thumbnail: what is drawn on the way until the viewer's own picture is
-    /// in hand.
+    /// The tile's thumbnail, or the picture of a closing turned round: what is drawn on
+    /// the way until the viewer's own picture is in hand. For a fade, only the latter.
     pub thumb: Option<&'a TextureHandle>,
     /// What the photo is cut to in this frame, besides the photo's area: the part of its
     /// tile the grid showed, opening out to the whole window as it lands. None for none.
@@ -383,6 +384,11 @@ impl ViewerView {
         self.ratio.open()
     }
 
+    /// The crop tool's list, closed in this frame, to fade out over the window.
+    pub fn take_fading(&mut self) -> Option<Afterimage> {
+        self.ratio.take_fading()
+    }
+
     /// The picture the last frame drew at fit, and where: what a slideshow fades out as
     /// it goes on. None for a zoomed photo, and under the crop tool.
     pub fn drawn(&self) -> Option<(TextureHandle, Rect)> {
@@ -431,7 +437,26 @@ impl ViewerView {
         // fade in, and are pressed from the frame they are first drawn in.
         let zooming =
             (data.arriving.as_ref()).filter(|arriving| arriving.passage.way() == Way::Zoom);
-        let ground = zooming.map_or(1.0, |arriving| arriving.passage.ground(arriving.now_ms));
+        // A fade draws the whole viewer at the photo's opacity, and the black at the
+        // ground's: as much as the photo, but for a closing turned round that had taken
+        // over from a zoom, whose photo was more opaque than its black.
+        let ground = match &data.arriving {
+            Some(arriving) if arriving.passage.way() == Way::Zoom => {
+                arriving.passage.ground(arriving.now_ms)
+            }
+            Some(arriving) => {
+                let (ground, photo) = (
+                    arriving.passage.ground(arriving.now_ms),
+                    arriving.passage.photo(arriving.now_ms),
+                );
+                if photo > 0.0 {
+                    (ground / photo).min(1.0)
+                } else {
+                    1.0
+                }
+            }
+            None => 1.0,
+        };
         let controls_shown =
             zooming.map_or(1.0, |arriving| arriving.passage.controls(arriving.now_ms));
         let hidden = held_back(data);
@@ -567,7 +592,8 @@ impl ViewerView {
             Some(arriving) => shows
                 .then(|| on_its_way(ui, data, arriving, drawn, (fit_in, zoom), self.arrival))
                 .flatten(),
-            None => drawn.map(|(texture, at)| (texture, at, whole)),
+            None => (drawn.map(|(texture, at)| (texture, at, whole)))
+                .or_else(|| shows.then(|| standing_in(data)).flatten()),
         };
         self.arrival = zooming
             .zip(photo)
@@ -1412,6 +1438,26 @@ fn on_its_way<'a>(
     Some((
         texture,
         at,
+        Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
+    ))
+}
+
+/// A fade turned round, while the viewer has no picture of its own yet: the picture the
+/// closing was drawn from, where it stands - the viewer let go of its own as it closed,
+/// and without it the photo was gone for the frames its picture took to come again. A
+/// fade that is not turned round has none, and waits for its picture as it always has.
+fn standing_in<'a>(data: &ViewerData<'a>) -> Option<(&'a TextureHandle, Rect, Rect)> {
+    let arriving =
+        (data.arriving.as_ref()).filter(|arriving| arriving.passage.way() == Way::Fade)?;
+    let (passage, now) = (arriving.passage, arriving.now_ms);
+    let texture = arriving.thumb?;
+    // A fade stays where it stands, wherever it is told it lands.
+    let at = passage.photo_at(frame_of(Rect::ZERO), now);
+    let [width, height] = texture.size();
+    let (left, top, right, bottom) = passage.uv_at((width as f32, height as f32), at, now);
+    Some((
+        texture,
+        rect_of(at),
         Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
     ))
 }

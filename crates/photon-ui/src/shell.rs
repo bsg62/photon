@@ -6,6 +6,7 @@
 //! the application's business.
 
 use crate::{
+    afterimage::Afterimage,
     animate::Slide,
     controls_bar::{self, ControlAction, ControlsBar, ControlsData},
     empty::{Panel, PanelButton},
@@ -152,6 +153,12 @@ impl Shell {
     /// Whether the list of the top bar's dropdown called `id` is fading out.
     pub fn list_fading(&self, id: &str) -> bool {
         self.controls.list_fading(id)
+    }
+
+    /// The lists of the top bar's dropdowns that closed in this frame, to fade out over
+    /// the window.
+    pub fn take_fading(&mut self) -> impl Iterator<Item = Afterimage> + use<> {
+        self.controls.take_fading()
     }
 
     /// Where the sidebar's list is.

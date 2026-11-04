@@ -70,7 +70,11 @@ pub struct SelectView {
     opened: Option<f64>,
     /// What the last frame drew of the list's growth.
     growth: Option<Growth>,
-    /// The list of the frame it closed in, fading out over the window.
+    /// The list of the frame it closed in, to fade out over the window: kept here only
+    /// until the application takes it (`take_fading`), which paints it and lets it go when
+    /// it is done whether or not the control is drawn again. Painted here, a fade was cut
+    /// short and its pictures held for as long as the control was not drawn - the viewer
+    /// opened just after a choice.
     fading: Option<Afterimage>,
 }
 
@@ -122,6 +126,7 @@ impl SelectView {
         self.list = None;
         self.opened = None;
         self.growth = None;
+        self.fading = None;
     }
 
     /// How the last frame drew the list's growth; none while it is not drawn.
@@ -129,9 +134,16 @@ impl SelectView {
         self.growth
     }
 
-    /// Whether a list is fading out.
+    /// Whether a list that closed is kept here, to fade out: never past the frame it
+    /// closed in, once the application has taken it.
     pub fn fading(&self) -> bool {
         self.fading.is_some()
+    }
+
+    /// The list that closed in this frame, for the application to fade out over the
+    /// window with the menus and dialogs that closed (`App::afterimages`).
+    pub fn take_fading(&mut self) -> Option<Afterimage> {
+        self.fading.take()
     }
 
     /// Draws the control in `rect` and, while it is open, its list under it. Answers the
@@ -139,7 +151,6 @@ impl SelectView {
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect, data: &SelectData<'_>) -> Option<usize> {
         let palette = data.palette.unwrap_or_else(|| palette(ui.ctx()));
         let now_ms = ui.input(|input| input.time) * 1000.0;
-        self.fade(ui.ctx(), now_ms);
         let options = Options {
             labels: data.options,
             selected: data.selected,
@@ -288,23 +299,6 @@ impl SelectView {
             }
         }
         chosen
-    }
-
-    /// Paints the list that is fading out, over the window and under whatever is opened
-    /// after it, and lets it go when it is done.
-    fn fade(&mut self, ctx: &egui::Context, now_ms: f64) {
-        let Some(image) = &self.fading else {
-            return;
-        };
-        if !image.running(now_ms) {
-            self.fading = None;
-            return;
-        }
-        image.paint(
-            &ctx.layer_painter(egui::LayerId::new(Order::Middle, Id::new("fading-list"))),
-            image.opacity(now_ms),
-        );
-        ctx.request_repaint();
     }
 
     /// Reads the keys of this frame for the control. One the list used is taken out of
@@ -815,9 +809,12 @@ mod tests {
     // The keys are the control's while it has the keyboard, and the list's own while it
     // is open: an arrow that moved through the list must not scroll the grid as well.
     // The list that closes is drawn once more, whatever closed it before it was drawn, and
-    // kept: it fades out over the window, a hundred milliseconds, and takes no press.
+    // kept, for the application to fade out over the window - a hundred milliseconds,
+    // taking no press - and to let go of when it is done: the control holds none of it,
+    // and is not drawn again for its fade to end (the viewer opened just after a choice
+    // held the list's pictures for as long as the viewer stayed open).
     #[test]
-    fn a_list_that_closes_fades_out_over_the_window() {
+    fn a_list_that_closes_is_handed_over_to_fade_out_over_the_window() {
         let mut f = Fixture::new(0);
         f.animations = true;
         f.frame(Vec::new());
@@ -826,17 +823,17 @@ mod tests {
         // Past its growth.
         f.time += 0.5;
         f.frame(Vec::new());
-        assert!(!f.view.fading());
+        assert!(f.view.take_fading().is_none());
         f.key(Key::Escape);
         assert!(!f.view.open());
-        assert!(f.view.fading(), "kept for the fade");
-        // Painted, faintly, in the frames after.
+        let image = f.view.take_fading().expect("kept for the fade");
+        assert!(!image.is_empty(), "the list's shapes");
+        assert!(image.running(f.time * 1000.0));
+        assert!(!f.view.fading(), "handed over, and not held");
+        // Not drawn by the control in the frames after: the fade is the application's.
         f.frame(Vec::new());
-        assert_eq!(f.drew("Size").len(), 1, "the closed list is painted");
-        f.time += 0.2;
-        f.frame(Vec::new());
-        assert!(!f.view.fading());
         assert!(f.drew("Size").is_empty());
+        assert!(f.view.take_fading().is_none());
     }
 
     #[test]

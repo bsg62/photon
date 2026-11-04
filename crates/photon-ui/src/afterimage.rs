@@ -117,6 +117,12 @@ impl Afterimage {
     pub fn running(&self, now_ms: f64) -> bool {
         now_ms - self.started_ms < self.duration_ms
     }
+
+    /// Whether it was kept before `now_ms`. In the frame it is kept in, what it was kept
+    /// from is drawn there itself, for the last time: painted as well, it is drawn twice.
+    pub fn begun_before(&self, now_ms: f64) -> bool {
+        self.started_ms < now_ms
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +229,8 @@ mod tests {
         let image = of_layers(&ctx, |_| true, 1000.0, 100.0);
         let _ = end(&ctx);
         assert_eq!(image.opacity(1000.0), 1.0);
+        assert!(!image.begun_before(1000.0));
+        assert!(image.begun_before(1016.0));
         assert_eq!(image.opacity(1050.0), 1.0 - 0.875);
         assert!(image.running(1099.0));
         assert_eq!(image.opacity(1100.0), 0.0);

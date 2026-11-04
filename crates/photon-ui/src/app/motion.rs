@@ -83,6 +83,8 @@ struct Drawn {
     at: Frame,
     uv: Uv,
     ground: f32,
+    /// How opaque the photo was drawn: less than whole in a fade.
+    photo: f32,
     clip: egui::Rect,
 }
 
@@ -182,7 +184,14 @@ impl App {
             let (way, drawn) = (leaving.passage.way(), leaving.drawn);
             let zoom = way == Way::Zoom;
             self.motion = Some(Motion {
-                passage: Passage::opening(id, way, drawn.at, Some(drawn.uv), drawn.ground, now),
+                passage: Passage::opening(
+                    id,
+                    way,
+                    drawn.at,
+                    Some(drawn.uv),
+                    (drawn.ground, drawn.photo),
+                    now,
+                ),
                 frozen,
                 tile: tile.filter(|_| zoom),
                 seen,
@@ -208,8 +217,10 @@ impl App {
                 (Way::Fade, fit, None)
             }
         };
+        // Out of its tile the photo is whole all the way; a fade brings it with the black.
+        let photo = if way == Way::Zoom { 1.0 } else { 0.0 };
         self.motion = Some(Motion {
-            passage: Passage::opening(id, way, from, None, 0.0, now),
+            passage: Passage::opening(id, way, from, None, (0.0, photo), now),
             frozen,
             tile,
             seen,
@@ -227,7 +238,11 @@ impl App {
     /// A fade where there is no grid to land in or no place in it known: no photo handed
     /// back (a link that leaves for another view, a grid of other results), the People
     /// page under the viewer, and a show, whose window leaves fullscreen at this moment
-    /// and changes its size; and a fade into a tile with nothing to grow.
+    /// and changes its size; a fade into a tile with nothing to grow; and a fade from a
+    /// viewer closed while it still faded in, its photo not yet whole. A fade takes the
+    /// photo with the black. (A show's photo stands where the fullscreen window had it,
+    /// off the middle of the smaller window once that has changed - a frame or more on,
+    /// as the system answers - by when it is faint.)
     pub(super) fn begin_closing(&mut self, to: Option<i64>, showing: bool) {
         self.leaving = None;
         if !self.animations {
@@ -242,14 +257,19 @@ impl App {
         let ctx = self.ctx.clone();
         let now = ctx.input(|input| input.time) * 1000.0;
         let window = ctx.content_rect();
-        // Closed while it still opens, it goes back from the black and the cut it has.
-        let (ground, clip_from) = match &self.motion {
+        // Closed while it still opens, it goes back from the black, the cut and the
+        // opacity it has.
+        let (ground, opaque, clip_from) = match &self.motion {
             Some(motion) => (
                 motion.passage.ground(now),
+                motion.passage.photo(now),
                 motion.clip_at(window, now).unwrap_or(window),
             ),
-            None => (1.0, window),
+            None => (1.0, 1.0, window),
         };
+        // And closed while it still fades in, it fades out from there: a zoom draws the
+        // photo whole from its first frame, and this one is not yet.
+        let fading = (self.motion.as_ref()).is_some_and(|motion| motion.passage.way() == Way::Fade);
         // A tile with nothing to grow - its thumbnail failed, or not to be had when last
         // asked for (not built yet, a video with no poster) - is not gone back into, as it
         // was not grown out of: the photo would land in a mark, or in nothing.
@@ -259,7 +279,7 @@ impl App {
             })
         };
         let way = match to {
-            Some(id) if !showing && self.page.is_none() && grown(id) => Way::Zoom,
+            Some(id) if !showing && !fading && self.page.is_none() && grown(id) => Way::Zoom,
             _ => Way::Fade,
         };
         let uv = (
@@ -279,7 +299,7 @@ impl App {
             way,
             at,
             (!whole).then_some(uv),
-            ground,
+            (ground, opaque),
             now,
         );
         self.leaving = Some(Leaving {
@@ -291,6 +311,7 @@ impl App {
                 at,
                 uv,
                 ground,
+                photo: opaque,
                 clip: clip_from,
             },
         });
@@ -324,25 +345,27 @@ impl App {
                     let seen = self.view.seen_area().unwrap_or(window);
                     clip = lerp_rect(leaving.clip_from, seen, passage.progress(now));
                 }
-                None => passage.fade_instead(leaving.drawn.at),
+                None => passage.fade_instead(leaving.drawn.at, now),
             }
         }
         let at = passage.photo_at(to, now);
         let uv = passage.uv_at(leaving.image, at, now);
-        let ground = passage.ground(now);
+        let (ground, photo) = (passage.ground(now), passage.photo(now));
         let painter = ctx.layer_painter(leaving_layer());
         // The one colour in photon that no token holds, as in the viewer.
         painter.rect_filled(window, 0.0, egui::Color32::BLACK.gamma_multiply(ground));
+        // Whole on its way into its tile; going with the black where it fades.
         (painter.with_clip_rect(clip)).image(
             leaving.texture.id(),
             rect(at),
             uv_rect(uv),
-            egui::Color32::WHITE,
+            egui::Color32::WHITE.gamma_multiply(photo),
         );
         leaving.drawn = Drawn {
             at,
             uv,
             ground,
+            photo,
             clip,
         };
         self.motion_seen = Some(MotionSeen {
@@ -352,6 +375,12 @@ impl App {
             opening: false,
             zoom: passage.way() == Way::Zoom,
         });
+        // Frames are asked while it runs, and one after its last: the grid was drawn in
+        // that frame before the photo landed, its tile empty - no picture, no ring, no
+        // marks - and the frame after draws the tile as the photo's again. (egui answers
+        // every request with two frames, so the frame after the last is drawn in any case
+        // and no test can tell this request gone; it is asked here so that the closing
+        // does not lean on that rule of egui's.)
         ctx.request_repaint();
         if !passage.running(now) {
             self.leaving = None;

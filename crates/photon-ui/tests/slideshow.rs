@@ -2,7 +2,9 @@
 //! over a library of real photos made for the test, in a temporary directory. The window
 //! is the test's: it goes fullscreen when the application asks (`obey`).
 
-use crate::common::{Driver, Harness, library, opened, over, over_animated, said};
+use crate::common::{
+    Driver, Harness, library, opened, over, over_animated, picture_alpha_at, said,
+};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, ViewportId};
 use egui_kittest::kittest::Queryable;
 use photon_core::library::Library;
@@ -465,6 +467,12 @@ fn a_slideshow_closed_fades_out_where_it_stood() {
         driver.frame(&mut harness, at);
         let motion = harness.state().viewer_motion().expect("the closing drawn");
         assert!(!motion.zoom && !motion.opening, "{motion:?}");
+        // The photo goes with the black: as opaque as it is.
+        let alpha = picture_alpha_at(&harness, motion.photo).unwrap_or(0);
+        assert!(
+            (f32::from(alpha) - motion.ground * 255.0).abs() <= 2.0,
+            "{alpha} of the photo on {motion:?}"
+        );
         seen.push(motion);
     }
     assert!(
@@ -477,4 +485,8 @@ fn a_slideshow_closed_fades_out_where_it_stood() {
         "{seen:?}"
     );
     assert_eq!(seen[4].ground, 0.0);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
 }

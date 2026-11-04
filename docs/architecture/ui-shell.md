@@ -139,7 +139,15 @@ return before drawing would leave nothing to fade. A dropdown closed by a *choic
 inside its own `list()`, after the frame's draw: it keeps `list` one frame more and is drawn
 deaf and kept in the next. The app's
 afterimages (`App::afterimages`) are painted and pruned before the menu is drawn, ahead of
-the viewer and compare's early returns; a dropdown keeps its own. A menu closed in a frame it
+the viewer and compare's early returns. **One kept in this frame is not painted in it**
+(`Afterimage::begun_before`): what it was kept from is drawn in that frame itself - a dialog
+closed by Escape or its own answer is shown before the block - and the two drew the dialog's
+ground, shadow and edges twice for a frame (`a_closed_dialog_fades_with_its_ground` counts the
+scrims). **A dropdown hands its list to the app's afterimages** (`SelectView::take_fading`,
+collected after the shell and the viewer are drawn) and keeps none: painted by the control,
+the fade stopped whenever the control was not drawn - the viewer opened just after a choice -
+and its pictures were held until it was drawn again
+(`a_dropdowns_fade_is_not_held_by_a_control_the_viewer_covers`). A menu closed in a frame it
 was not drawn in (its photos gone) goes at once.
 
 **A thumbnail not built yet is waited for, never blocked on** (`thumbs/loader.rs`): one

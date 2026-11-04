@@ -7,6 +7,7 @@
 //! puts the controls back.
 
 use crate::{
+    afterimage::Afterimage,
     controls::{
         GROUPING_IDLE, GROUPINGS, SIZES, SORT_KEYS, grouping_applies, held, reversed,
         with_grouping, with_key,
@@ -140,6 +141,13 @@ impl ControlsBar {
             "group" => self.group.fading(),
             _ => false,
         }
+    }
+
+    /// The lists that closed in this frame, to fade out over the window.
+    pub fn take_fading(&mut self) -> impl Iterator<Item = Afterimage> + use<> {
+        [self.sort.take_fading(), self.group.take_fading()]
+            .into_iter()
+            .flatten()
     }
 
     /// Closes the lists, for controls that are not drawn.

@@ -4,7 +4,7 @@
 
 use crate::common::{
     Driver, Harness, hold_over, library, opened, opened_animated, over, over_animated, photo_ids,
-    said,
+    picture_alpha_at, said,
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -3644,7 +3644,7 @@ fn resting(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize) {
     assert_eq!(harness.state().viewer_motion(), None);
 }
 
-/// The part of its picture the last picture the last frame drew shows.
+/// Which part of its picture the last picture drawn in the last frame shows.
 fn last_picture_uv(harness: &Harness<'_>) -> egui::Rect {
     fn each(shape: &egui::Shape, found: &mut egui::Rect) {
         match shape {
@@ -3754,6 +3754,49 @@ fn closing_shrinks_the_photo_into_its_tile_over_the_live_grid() {
     assert_eq!(harness.state().viewer_motion(), None);
     assert!(!hollowed(&harness), "the tile is the photo's again");
     assert_eq!(picture_on_top_at(&harness, place), Some(true));
+}
+
+// The closing's last frame draws the grid before the photo lands, so its tile is drawn
+// empty in it - no picture, no ring, no marks. One frame more is asked for after the end,
+// and in it the tile is the photo's again: a still window would keep the empty place.
+#[test]
+fn the_frame_after_the_shrink_gives_the_tile_back_its_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    // What the other threads ask for as the viewer lets go - a thumbnail, the engine - is
+    // asked for before the closing's end, and drawn in its frame: the frames after are
+    // the closing's own.
+    driver.quiet();
+    driver.frame(&mut harness, p + 0.2);
+    assert_eq!(motion(&harness).ground, 0.0, "the closing's end");
+    assert!(hollowed(&harness), "its last frame drew the tile empty");
+    assert!(driver.frames_in(&mut harness, 1.0) > 0);
+    assert_eq!(harness.state().viewer_motion(), None);
+    assert!(!hollowed(&harness), "the tile is the photo's again");
+    let place = harness.state().drawn_place(ids[0]).unwrap();
+    assert_eq!(picture_on_top_at(&harness, place), Some(true));
+    assert!(
+        ringed(&harness, place),
+        "the photo handed back is drawn selected"
+    );
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
+}
+
+/// Whether the last frame drew a selected tile's ring around `place`.
+fn ringed(harness: &Harness<'_>, place: egui::Rect) -> bool {
+    use photon_ui::theme::apply::{color, palette};
+    let accent = color(palette(&harness.ctx).accent);
+    fn each(shape: &egui::Shape, place: egui::Rect, accent: egui::Color32) -> bool {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| each(shape, place, accent)),
+            egui::Shape::Rect(rect) => near(rect.rect, place, 0.5) && rect.stroke.color == accent,
+            _ => false,
+        }
+    }
+    (harness.output().shapes.iter()).any(|clipped| each(&clipped.shape, place, accent))
 }
 
 // Stepped to another photo in the viewer, it shrinks into that photo's tile: the one the
@@ -4083,6 +4126,194 @@ fn a_tile_scrolled_out_of_sight_is_not_gone_back_into() {
     driver.frame(&mut harness, p + 0.2);
     let last = motion(&harness);
     assert_eq!((last.photo, last.ground), (first.photo, 0.0));
+}
+
+// A photo whose tile is scrolled away as it shrinks fades from the opacity it had there -
+// whole, on its way into its tile - over the time that is left: it neither jumps to the
+// black's opacity nor stays whole to vanish at the end.
+#[test]
+fn a_photo_that_loses_its_tile_fades_from_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(first.zoom, "{first:?}");
+    assert_eq!(picture_alpha_at(&harness, first.photo), Some(255));
+    key_at(&mut driver, &mut harness, Key::End, p + 0.05);
+    let gone = motion(&harness);
+    assert!(!gone.zoom, "{gone:?}");
+    let mut alphas = vec![picture_alpha_at(&harness, gone.photo).unwrap_or(0)];
+    assert!(alphas[0] >= 250, "{alphas:?} as its tile went, on {gone:?}");
+    for at in [p + 0.1, p + 0.15, p + 0.2] {
+        driver.frame(&mut harness, at);
+        let drawn = motion(&harness);
+        let alpha = picture_alpha_at(&harness, drawn.photo).unwrap_or(0);
+        assert!(
+            f32::from(alpha) >= drawn.ground * 255.0 - 2.0,
+            "{alpha} on {drawn:?}"
+        );
+        alphas.push(alpha);
+    }
+    assert!(
+        alphas.windows(2).all(|pair| pair[1] < pair[0]),
+        "{alphas:?}"
+    );
+    assert_eq!(alphas[3], 0, "gone with the black");
+}
+
+// Enter while a photo whose tile was scrolled away fades out opens it again from what was
+// drawn: the photo from its opacity, the black from its own, which is less - the photo
+// was whole as it lost its tile.
+#[test]
+fn enter_after_its_tile_was_lost_turns_it_round_from_what_was_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 60, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 60);
+    driver.settle(&mut harness);
+    let ids = harness.state().shown();
+    resting(&mut driver, &mut harness, 0);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    key_at(&mut driver, &mut harness, Key::End, p + 0.05);
+    assert_eq!(harness.state().drawn_place(ids[0]), None, "scrolled away");
+    // And back: the photo stays where it fades, and Enter is on it again.
+    key_at(&mut driver, &mut harness, Key::Home, p + 0.07);
+    assert_eq!(harness.state().lead(), Some(ids[0]));
+    driver.frame(&mut harness, p + 0.1);
+    let before = motion(&harness);
+    assert!(!before.zoom && !before.opening, "{before:?}");
+    let faded = picture_alpha_at(&harness, before.photo).unwrap_or(0);
+    assert!(
+        f32::from(faded) > before.ground * 255.0 + 10.0,
+        "{faded} of the photo on {before:?}"
+    );
+    key_at(&mut driver, &mut harness, Key::Enter, p + 0.1);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    driver.frame(&mut harness, p + 0.1);
+    let turned = motion(&harness);
+    assert!(turned.opening && !turned.zoom, "{turned:?}");
+    assert_eq!(turned.photo, before.photo);
+    let alpha = picture_alpha_at(&harness, turned.photo).expect("the photo drawn");
+    assert!(
+        alpha.abs_diff(faded) <= 3,
+        "{alpha} of the photo turned round, after {faded}"
+    );
+    let black = ground_drawn(&harness);
+    assert!(
+        (f32::from(black) - before.ground * 255.0).abs() <= 3.0,
+        "{black} of black turned round, after {}",
+        before.ground
+    );
+}
+
+// Enter while the photo fades out where it stands - its tile has nothing to grow - opens
+// it again from the opacity it has: the photo does not jump, nor does the black.
+#[test]
+fn enter_while_it_fades_out_turns_it_round_from_its_opacity() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 3, 0, 0);
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    let first = lib.grid_entries().unwrap()[0];
+    let cache = photon_core::thumbs::ThumbCache::new(library.dirs().cache_dir);
+    std::fs::remove_file(cache.path_for(first.thumb_key, ThumbSize::Grid)).unwrap();
+    let (mut harness, mut driver) = opened_animated(&library, 3);
+    driver.settle(&mut harness);
+    let offset = (harness.state().shown().iter())
+        .position(|id| *id == first.id)
+        .unwrap();
+    resting(&mut driver, &mut harness, offset);
+    let p = key_down(&mut driver, &mut harness, Key::Escape);
+    driver.frame(&mut harness, p);
+    driver.frame(&mut harness, p + 0.1);
+    let before = motion(&harness);
+    assert!(!before.zoom && !before.opening, "{before:?}");
+    let faded = picture_alpha_at(&harness, before.photo).unwrap_or(0);
+    assert!(
+        (f32::from(faded) - before.ground * 255.0).abs() <= 2.0,
+        "{faded} of the photo on {before:?}"
+    );
+    key_at(&mut driver, &mut harness, Key::Enter, p + 0.1);
+    assert_eq!(viewing(&harness), Some(first.id));
+    driver.frame(&mut harness, p + 0.1);
+    let turned = motion(&harness);
+    assert!(turned.opening && !turned.zoom, "{turned:?}");
+    assert_eq!(turned.photo, before.photo);
+    assert!((turned.ground - before.ground).abs() < 0.02, "{turned:?}");
+    let alpha = picture_alpha_at(&harness, turned.photo).expect("the photo drawn");
+    assert!(
+        alpha.abs_diff(faded) <= 3,
+        "{alpha} of the photo turned round, after {faded}"
+    );
+    driver.frame(&mut harness, p + 0.3);
+    driver.until(&mut harness, "the photo's picture", |app| {
+        app.viewer_photo().is_some()
+    });
+    let fit = fit(&harness);
+    assert_eq!(picture_alpha_at(&harness, fit), Some(255));
+}
+
+// Closed while it still fades in - opened from compare, where there is no tile - the
+// photo fades out from the opacity it has, where it stands: it is not drawn whole all at
+// once to shrink into its tile.
+#[test]
+fn closed_while_it_fades_in_it_fades_out_from_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, ids, _) = three_animated(dir.path());
+    click(&mut driver, &mut harness, 0);
+    let at = tile(&harness, 1);
+    let adding = if cfg!(target_os = "macos") {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    harness.event(egui::Event::ModifiersChanged(adding));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: adding,
+        });
+    }
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    driver.act(&mut harness);
+    key(&mut driver, &mut harness, Key::C);
+    driver.until(&mut harness, "compare open", |app| app.compare().is_some());
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    let p = key_down(&mut driver, &mut harness, Key::Enter);
+    assert_eq!(viewing(&harness), Some(ids[0]));
+    // A fade waits for the viewer's own picture: the tile's thumbnail, 256 pixels at its
+    // longest, is not stretched over the window meanwhile.
+    driver.frame(&mut harness, p);
+    let drawn = harness.state().viewer_photo();
+    assert!(
+        drawn.is_none_or(|(_, _, image)| image.x > 256.0),
+        "{drawn:?} drawn as it opens"
+    );
+    driver.until(&mut harness, "the photo's picture", |app| {
+        app.viewer_photo().is_some()
+    });
+    let at = driver.now.max(p + 0.05);
+    key_at(&mut driver, &mut harness, Key::Escape, at);
+    let opening = motion(&harness);
+    assert!(opening.opening && !opening.zoom, "{opening:?}");
+    let faint = picture_alpha_at(&harness, opening.photo).expect("the photo drawn");
+    assert!(faint < 250, "{faint} of the photo on {opening:?}");
+    assert_eq!(viewing(&harness), None);
+    driver.frame(&mut harness, at);
+    let closing = motion(&harness);
+    assert!(!closing.opening && !closing.zoom, "{closing:?}");
+    assert!(near(closing.photo, opening.photo, 2.0), "{closing:?}");
+    let alpha = picture_alpha_at(&harness, closing.photo).unwrap_or(0);
+    assert!(
+        alpha.abs_diff(faint) <= 3,
+        "{alpha} of the photo closing, after {faint}"
+    );
 }
 
 // A tile with nothing to grow - its thumbnail cannot be had - is not gone back into either:

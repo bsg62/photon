@@ -3183,7 +3183,10 @@ impl App {
             .motion
             .as_ref()
             .and_then(|motion| motion.stand_in().cloned());
+        // A fade waits for the viewer's own picture, but for one turned round, which has
+        // the picture it was drawn from (`viewer_view::standing_in`).
         let thumb = match passage {
+            Some(passage) if passage.way() == Way::Fade => stand_in,
             Some(_) => stand_in.or_else(|| self.thumbs.texture(key).cloned()),
             None => None,
         };
@@ -3254,14 +3257,16 @@ impl App {
             part,
             busy: *sent,
         });
-        // A fade is the whole viewer's, at the ground's opacity, over the window it was
-        // opened from; it is pressed as usual.
+        // A fade is the whole viewer's, at the photo's opacity, over the window it was
+        // opened from (the black under it is the ground's: `ViewerView::show`); it is
+        // pressed as usual.
         let opacity = ui.opacity();
         if let Some(passage) = passage.filter(|passage| passage.way() == Way::Fade) {
-            ui.multiply_opacity(passage.ground(now));
+            ui.multiply_opacity(passage.photo(now));
         }
         let mut actions = self.viewer_view.show(ui, &data, &mut zoom, cropped);
         ui.set_opacity(opacity);
+        self.afterimages.extend(self.viewer_view.take_fading());
         drop(levels);
         drop(faces);
         self.opening_drawn(&ctx, now);
@@ -5175,7 +5180,10 @@ impl eframe::App for App {
                 egui::Order::Middle,
                 egui::Id::new("fading"),
             ));
-            for image in &self.afterimages {
+            // Not one kept in this frame: a dialog closed in it is drawn in it as well,
+            // over this (`show_dialog`, above), and the two drew its ground, its shadow
+            // and its edges twice. It is painted from the next frame on.
+            for image in (self.afterimages.iter()).filter(|image| image.begun_before(now)) {
                 image.paint(&painter, image.opacity(now));
             }
             ui.ctx().request_repaint();
@@ -5356,6 +5364,9 @@ impl eframe::App for App {
                 Some(people) => pressed = people_view.show(ui, ui.max_rect(), people, crops),
                 None => output = Some(view.show(ui, &data, thumbs, selection)),
             });
+        // A dropdown's list closed in this frame fades out with the menus and dialogs:
+        // to its end, whether or not its control is drawn again.
+        self.afterimages.extend(self.shell.take_fading());
         // The viewer's photo going back into its tile, over the grid just drawn and where
         // it drew the tile: before anything opens the viewer again, which turns it round
         // from where this frame draws it.

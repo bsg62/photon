@@ -1176,6 +1176,10 @@ fn a_closed_menu_fades_and_takes_no_press() {
     assert!((0.0..0.5).contains(&faded), "{faded}");
     driver.frame(&mut harness, closed + 0.11);
     assert_eq!(harness.state().afterimages(), 0);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
 }
 
 /// Opens the sort dropdown, lets it grow, and answers where its list stands.
@@ -1234,9 +1238,59 @@ fn a_dropdown_closed_by_a_choice_fades() {
     harness.get_by_label("Size").click();
     driver.act(&mut harness);
     driver.act(&mut harness);
-    assert!(harness.state().list_fading("sort"), "the list is kept");
-    driver.frame(&mut harness, driver.now + 0.3);
+    // Kept to fade, with the menus and dialogs that closed.
+    assert_eq!(harness.state().afterimages(), 1, "the list is kept");
     assert!(!harness.state().list_fading("sort"));
+    driver.frame(&mut harness, driver.now + 0.3);
+    assert_eq!(harness.state().afterimages(), 0);
+    driver.settle(&mut harness);
+    driver.frames_in(&mut harness, 1.0);
+    driver.settle(&mut harness);
+    assert_eq!(driver.frames_in(&mut harness, 1.0), 0, "a still window");
+}
+
+// A list closed by a choice just before the viewer opens - Enter on the photo the frame
+// after - fades out to its end over the opening viewer, and is let go of: its control,
+// under the viewer, is not drawn again for its fade to go on, and held none of it.
+#[test]
+fn a_dropdowns_fade_is_not_held_by_a_control_the_viewer_covers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver) = animated(dir.path());
+    let at = middle(&harness, 0);
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    sort_list(&mut driver, &mut harness);
+    // (The option held: choosing another would rebuild the grid under the viewer.)
+    harness.get_by_label("Date taken").click();
+    driver.act(&mut harness);
+    // The frame after the choice draws the list once more, to fade from; the next opens
+    // the viewer.
+    driver.act(&mut harness);
+    harness.event(egui::Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    assert!(harness.state().viewer().is_some(), "the viewer opened");
+    driver.frame(&mut harness, driver.now + 0.3);
+    assert!(harness.state().viewer().is_some());
+    assert!(!harness.state().list_fading("sort"), "the list is held");
+    assert_eq!(harness.state().afterimages(), 0);
 }
 
 #[test]

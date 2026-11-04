@@ -73,7 +73,11 @@ none, or it would be squeezed in a straight line to the tile's cut) and from the
 drawn (less than 1 mid-opening). **Its target is read in every frame** from where the grid
 drew the tile in that frame, so a scroll moves it, and it is cut in to the grid's seen area as
 it lands. It holds the viewer's picture for its 200 ms (the viewer lets go of its own as it
-closes), and asks one frame after its end, in which the tile is the photo's again. **It is
+closes), and asks one frame after its end, in which the tile is the photo's again (its last
+frame drew the grid before the photo landed, the tile empty: no picture, ring or marks).
+egui answers every request with two frames, so that frame comes even without the request,
+and no test can tell it gone (`the_frame_after_the_shrink_gives_the_tile_back_its_photo`
+holds the outcome). **It is
 drawn before the grid's Enter or double click is answered**, so a viewer opened again on the
 same photo turns round from what that very frame drew - place, cut of the picture, black and
 clip - with the picture it shrank as standing in until the viewer has its own again; opened
@@ -82,16 +86,28 @@ its tile stood empty under the new viewer - and the closing, the only holder of 
 is let go of only after the frozen picture has taken its own handle: dropped first, the
 texture was freed at once and drawn as nothing. Closed while it grows, the closing starts from the
 photo as drawn, so it turns round too. **Where there is no tile, it fades** where the photo
-stands, the black (and, opening, the whole viewer by its opacity) going or coming over the
-same 200 ms: opened from compare or a face, which have no tile under the pointer; a tile
+stands, the black and the photo going or coming together over the same 200 ms - opening, the
+whole viewer at the photo's opacity (`Passage::photo`) and the black at the ground's; closing,
+the photo's tint (once drawn whole as the black went, it vanished at 200 ms): opened from compare or a face, which have no tile under the pointer; a tile
 with nothing to grow, opened from (its thumbnail not held, or failed) or closed into (its
 thumbnail failed, or not to be had when last asked for - not built yet, a video with no
 poster), where the photo would land in a mark or in nothing; closed with no photo
 handed back (a link that leaves for another view, Locate, a grid of other results -
 `shut_viewer(None)`); closed over the People page, which has no grid; closed in a show, whose
 window leaves fullscreen at that moment and changes its size, so a tile's place is not known
-yet; and a tile not drawn in a frame of the shrink - scrolled out of sight - fades from where
-it was drawn (`Passage::fade_instead`). A viewer that drew no picture (a message, the crop
+yet; a viewer closed while it still fades in, whose photo is not yet whole (a zoom draws it
+whole from its first frame); and a tile not drawn in a frame of the shrink - scrolled out of
+sight - fades from where it was drawn (`Passage::fade_instead`), **its photo from the opacity
+it had at the switch** (whole) over the time that is left, not from the black's. **The photo's
+opacity is part of what a turn-round starts from** (`Drawn::photo`, the passage's
+`from_photo`): a fading closing opened again comes back from the opacity it was drawn at, the
+black from its own (less, after `fade_instead`, so `ViewerView::show` draws the black at
+`ground / photo` under the viewer's opacity), and the picture it faded as stands in until the
+viewer has its own (`viewer_view::standing_in`) - without it the photo was gone for the frames
+its picture took to come back. A fade not turned round draws no stand-in and waits for the
+viewer's picture, as it always has. **A show's closing fades where the fullscreen window
+had the photo**: off the middle of the smaller window for the frames after the system has
+resized it - placed by the new window, it would jump mid-fade; it is faint by then. A viewer that drew no picture (a message, the crop
 tool) neither grows nor shrinks; it is there or gone. **One opening does not fade**: a face
 whose photo the grid needed a step to find opens before anything is drawn in its frame
 (`take_open`), the frozen picture is empty, and the viewer simply appears - accepted. With
