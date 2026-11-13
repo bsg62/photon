@@ -16,6 +16,11 @@ pub enum Error {
     NonUtf8Path(PathBuf),
     #[error("library schema version {found} is newer than supported version {supported}")]
     SchemaTooNew { found: i64, supported: i64 },
+    #[error(
+        "the library's references do not hold together ({violations} broken), \
+         so the upgrade to version {version} was not made"
+    )]
+    ForeignKeyCheck { version: i64, violations: usize },
     #[error("a person needs a name")]
     EmptyPersonName,
     /// A merge into, or an operation on, something that is not a named person; or the

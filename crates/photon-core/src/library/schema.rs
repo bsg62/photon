@@ -429,27 +429,150 @@ CREATE INDEX items_moved ON items(size, mtime_ms);
 "#,
 ];
 
+/// Versions (1-based) whose migration rebuilds a table that others reference, and so
+/// runs with foreign keys off. See `run`.
+const WITHOUT_FOREIGN_KEYS: &[usize] = &[];
+
 pub fn migrate(conn: &Connection) -> Result<()> {
+    run(conn, MIGRATIONS, WITHOUT_FOREIGN_KEYS)
+}
+
+fn run(conn: &Connection, migrations: &[&str], without_foreign_keys: &[usize]) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let supported = MIGRATIONS.len() as i64;
+    let supported = migrations.len() as i64;
     if current > supported {
         return Err(Error::SchemaTooNew {
             found: current,
             supported,
         });
     }
-    for (index, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
-        let tx = conn.unchecked_transaction()?;
-        tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", (index + 1) as i64)?;
-        tx.commit()?;
+    for (index, sql) in migrations.iter().enumerate().skip(current as usize) {
+        let version = (index + 1) as i64;
+        if without_foreign_keys.contains(&(index + 1)) {
+            // Dropping a table that others reference with `ON DELETE CASCADE` deletes
+            // their rows while foreign keys are on. The pragma is a silent no-op inside
+            // a transaction, so it is switched before one begins.
+            conn.pragma_update(None, "foreign_keys", false)?;
+            let done = apply_checked(conn, sql, version);
+            // On every path, or the connection would go on without its cascades.
+            conn.pragma_update(None, "foreign_keys", true)?;
+            done?;
+        } else {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)?;
+            tx.pragma_update(None, "user_version", version)?;
+            tx.commit()?;
+        }
     }
+    Ok(())
+}
+
+/// One migration with foreign keys already off. The check is inside the transaction so a
+/// failure rolls back and leaves the library at the old version, which the previous photon
+/// still opens.
+fn apply_checked(conn: &Connection, sql: &str, version: i64) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(sql)?;
+    let violations = tx
+        .prepare("PRAGMA foreign_key_check")?
+        .query_map([], |_| Ok(()))?
+        .count();
+    if violations > 0 {
+        return Err(Error::ForeignKeyCheck {
+            version,
+            violations,
+        });
+    }
+    tx.pragma_update(None, "user_version", version)?;
+    tx.commit()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TOY: &[&str] = &[
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT NOT NULL); \
+         CREATE TABLE child (parent_id INTEGER NOT NULL REFERENCES parent(id) ON DELETE CASCADE);",
+        "CREATE TABLE parent_new (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL); \
+         INSERT INTO parent_new (id, name) SELECT id, name FROM parent; \
+         DROP TABLE parent; ALTER TABLE parent_new RENAME TO parent;",
+    ];
+
+    fn toy_connection(dir: &tempfile::TempDir) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(dir.path().join("toy.db")).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn
+    }
+
+    fn pragma(conn: &rusqlite::Connection, name: &str) -> i64 {
+        conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn count(conn: &rusqlite::Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Dropping a table other tables reference cascades into them while foreign keys are
+    /// on, so a rebuild of it must run with them off, and put them back after.
+    #[test]
+    fn a_rebuild_run_without_foreign_keys_keeps_the_rows_that_reference_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = toy_connection(&dir);
+        run(&conn, &TOY[..1], &[]).unwrap();
+        conn.execute("INSERT INTO parent (id, name) VALUES (1, 'a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO child (parent_id) VALUES (1)", [])
+            .unwrap();
+
+        run(&conn, TOY, &[2]).unwrap();
+
+        assert_eq!(count(&conn, "child"), 1);
+        assert_eq!(pragma(&conn, "user_version"), 2);
+        assert_eq!(pragma(&conn, "foreign_keys"), 1);
+        conn.execute("DELETE FROM parent WHERE id = 1", []).unwrap();
+        assert_eq!(count(&conn, "child"), 0);
+    }
+
+    /// The check runs inside the transaction so a library that does not hold together stays
+    /// at the old version, which the previous photon still opens.
+    #[test]
+    fn a_failing_foreign_key_check_rolls_back_and_leaves_foreign_keys_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = toy_connection(&dir);
+        run(&conn, &TOY[..1], &[]).unwrap();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute("INSERT INTO child (parent_id) VALUES (99)", [])
+            .unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        let err = run(&conn, TOY, &[2]).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                Error::ForeignKeyCheck {
+                    version: 2,
+                    violations: 1
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(pragma(&conn, "user_version"), 1);
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'parent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!sql.contains("AUTOINCREMENT"), "{sql}");
+        assert_eq!(count(&conn, "child"), 1);
+        assert_eq!(pragma(&conn, "foreign_keys"), 1);
+    }
 
     /// The settings table arriving in a library that already holds a user's photos. The
     /// upgrade must add it and leave everything else alone — nothing here rewrites rows, but
