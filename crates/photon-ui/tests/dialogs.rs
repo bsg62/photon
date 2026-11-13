@@ -9,7 +9,12 @@ use crate::common::{
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
-use photon_core::{grid::GridView, library::Library};
+use photon_core::{
+    grid::GridView,
+    library::{Library, NewItem},
+    media::MediaKind,
+    metadata::CameraMeta,
+};
 use photon_engine::commands;
 use photon_ui::{app::App, dialogs::Dialog, fixture::Fixture, nav::Place, shortcuts::SHEET_TITLE};
 
@@ -558,11 +563,11 @@ fn right_click_row(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) 
     right_click_at(driver, harness, at);
 }
 
-// An album's number is handed out again once it is free. "Delete…" answered with yes
-// is a write on its way, and until the lists have been read after it the row is still
-// there: asked again of that row, a second delete of the same number waited behind
-// whatever was made meanwhile - and deleted it. The row of something that is going has
-// no menu.
+// "Delete…" answered with yes is a write on its way, and until the lists have been read
+// after it the row is still there: asked again of that row, a second "Delete…" would ask
+// the user again and then be answered with the library's "not found". The row of
+// something that is going has no menu. An album's number is never handed out again, so
+// what is made meanwhile is never mistaken for it.
 #[test]
 fn an_album_being_deleted_has_no_menu_until_it_has_left_the_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -663,9 +668,9 @@ fn a_saved_search_being_deleted_has_no_menu_until_it_has_left_the_list() {
 
 // A question is about one album, under the name it was asked under. Deleted from
 // elsewhere while the question stands - the other photon, open on the same library -
-// and another album made at once, the number is the new album's: "Delete the album
-// “Porto”?" answered with yes deleted Paris. A question whose album is no longer
-// listed under its name is no question, and closes.
+// and another album made at once, a question about something gone or renamed is no
+// longer the question the user is answering: "Delete the album “Porto”?" is not to be
+// answered with yes about Paris. It closes, and deletes nothing.
 #[test]
 fn a_question_whose_album_has_gone_closes_and_deletes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -730,8 +735,8 @@ fn a_question_whose_saved_search_has_gone_closes_and_deletes_nothing() {
 
 // A delete the library refuses - the album has gone from elsewhere, and the lists have
 // not been read since - is a message, the lists read again, and a row that is a row
-// again: left as "going", nothing listed under that number could be opened a menu on
-// for the rest of the session.
+// again: left as "going", that row could not be opened a menu on for the rest of the
+// session.
 #[test]
 fn a_delete_the_library_refuses_leaves_the_rows_as_they_are() {
     let dir = tempfile::tempdir().unwrap();
@@ -942,6 +947,92 @@ fn a_click_in_the_frame_a_dialog_is_first_drawn_in_presses_nothing_behind_it() {
     driver.settle(&mut harness);
     driver.until(&mut harness, "at rest", |app| !app.busy());
     assert_eq!(harness.state().settled(), &Place::of(GridView::All));
+}
+
+// The picker holds the photos it was opened on by number. A photo purged and another
+// indexed while it stands must not make the held number the new photo's: ids are never
+// handed out again (migration 27), so the keyword goes nowhere, and the new photo has
+// none. Either the picker closes first or its write finds no photo; both pass.
+#[test]
+fn a_keyword_picker_left_open_writes_nothing_to_a_photo_indexed_after_its_own_was_purged() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let highest = *ids.iter().max().unwrap();
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    let at = harness
+        .state()
+        .shown()
+        .iter()
+        .position(|id| *id == highest)
+        .expect("the photo is in the grid");
+    // Its tile is laid out far below the first screenful: the wheel brings it up.
+    harness.event(egui::Event::PointerMoved(Pos2::new(600.0, 300.0)));
+    for _ in 0..20 {
+        let top = harness.state().tile_rect(at).map_or(0.0, |rect| rect.top());
+        if (100.0..450.0).contains(&top) {
+            break;
+        }
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 250.0 - top),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        driver.frames_in(&mut harness, 0.5);
+    }
+    assert!(
+        harness
+            .state()
+            .tile_rect(at)
+            .is_some_and(|rect| rect.bottom() < 650.0),
+        "the photo's tile is on screen"
+    );
+    open_picker(&mut driver, &mut harness, (at, at), "Add keyword to photo…");
+    // Another photon purges the photo and indexes a new one in the same folder.
+    let new_id = {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        let (folder_id, path): (i64, String) = rusqlite::Connection::open(&library.dirs().db_path)
+            .unwrap()
+            .query_row(
+                "SELECT folder_id, path FROM items WHERE id = ?1",
+                [highest],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        lib.purge_items(&[highest]).unwrap();
+        let fresh = NewItem {
+            folder_id,
+            file_name: "indexed-later.jpg".to_owned(),
+            path: path.replace(".jpg", "-later.jpg"),
+            kind: MediaKind::Image,
+            size: 1,
+            mtime_ms: 1_700_000_000_000,
+            width: 400,
+            height: 300,
+            orientation: 1,
+            taken_at: 1_700_000_000,
+            rating: None,
+            camera: CameraMeta::default(),
+            tags: Vec::new(),
+            caption: None,
+            duration_ms: None,
+        };
+        lib.insert_items(&[fresh]).unwrap()[0]
+    };
+    assert_ne!(new_id, highest, "a number is never handed out again");
+    typed(&mut driver, &mut harness, "lisbon");
+    key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
+    driver.until(&mut harness, "the picker answered", |app| {
+        app.dialog().is_none() && !app.toasts().is_empty()
+    });
+    driver.settle(&mut harness);
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    assert!(
+        lib.item_tags(new_id).unwrap().is_empty(),
+        "the keyword went to a photo indexed after the one it was meant for"
+    );
 }
 
 // A frame can be long, and a keyword's last letter and its Enter in it together: the

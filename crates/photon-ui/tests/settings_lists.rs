@@ -402,13 +402,13 @@ fn escape_in_another_section_closes_settings_and_answers_no_unseen_question() {
 }
 
 // A folder whose removal is on its way offers no Remove… until the list is read again. The
-// row stays until then - for a folder of many photos, seconds of cascade - and a watched
-// folder's number is handed out again once it is free (no AUTOINCREMENT): a folder added
-// meanwhile took it, and a second Remove… on the row, still naming the old path, removed
-// the folder just added. The library's write lock is held (`tests/status.rs`'s seam) so
-// that the three writes wait on the queue together.
+// row stays until then - for a folder of many photos, seconds of cascade - and a second
+// Remove… on it would ask again and then be answered with the library's "not found". A
+// folder added meanwhile has a number of its own (ids are never handed out again) and must
+// survive. The library's write lock is held (`tests/status.rs`'s seam) so that the three
+// writes wait on the queue together.
 #[test]
-fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id() {
+fn a_folder_whose_removal_is_on_its_way_offers_no_second_remove() {
     let dir = tempfile::tempdir().unwrap();
     let more = photos_in(dir.path(), "More", &["c.jpg"]);
     let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");

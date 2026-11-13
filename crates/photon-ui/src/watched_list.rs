@@ -80,9 +80,8 @@ pub struct FolderRow {
     /// nothing while a scan of it runs and saying nothing back.
     pub scanning: bool,
     /// Whether its removal has been asked for and the list not read since: the row stays
-    /// until then, and offers nothing - a watched folder's number is handed out again once
-    /// it is free, and a second Remove… of the row while the first was on its way removed
-    /// whatever folder had been added meanwhile under that number.
+    /// until then, and offers nothing - a second Remove… of the row while the first was on
+    /// its way would ask the user again and then be answered with the library's "not found".
     pub going: bool,
 }
 

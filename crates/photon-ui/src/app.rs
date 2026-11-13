@@ -169,9 +169,9 @@ pub struct App {
     /// The albums and saved searches whose delete has been asked for and which the
     /// lists on hand still hold, each with whether its delete has been answered. Until
     /// the lists have been read after that answer the row is one of something that is
-    /// going, and has no menu (`menu_items`): an id is handed out again once it is
-    /// free, and a second "Delete…" asked of the row while the first was on its way
-    /// deleted whatever had been made under the number meanwhile.
+    /// going, and has no menu (`menu_items`): a second "Delete…" asked of the row while
+    /// the first was on its way would ask the user again and then be answered with the
+    /// library's "not found".
     deleting: Vec<(Subject, bool)>,
     /// The viewer, while it is open: the shell is not drawn then.
     viewer: Option<Viewing>,
@@ -2242,9 +2242,9 @@ impl App {
     /// Draws the dialog that is open and does what was answered in it.
     fn show_dialog(&mut self, ui: &egui::Ui) {
         // A question about something that is no longer there, or no longer what it was
-        // called, is no question: an album's number is handed out again once it is
-        // free, and "Delete the album “Porto”?" answered with yes after Porto had gone
-        // from elsewhere deleted the album made since under Porto's number.
+        // called, is no question: it is no longer the question the user is answering.
+        // A dialog acts on what it showed, and "Delete the album “Porto”?" is about Porto,
+        // not about whatever the list holds under that name or number now.
         if let Some(Dialog::Confirm(confirm)) = &self.dialog
             && !self.listed(confirm)
         {
