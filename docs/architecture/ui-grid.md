@@ -369,7 +369,9 @@ undo by id, and Ctrl+Z in a new picker brought back the keyword typed in the las
 its row's menu away* (`App::deleting`, `going`): the row stays until the lists
 are read after the delete's answer, and "Delete…" asked of it a second time would ask
 again and then be answered with the library's "not found". Refused, the row is a row
-again. *A question whose album or search is no longer listed under the name it was
+again (the test refuses through a trigger in the library, so that the album stays
+listed; a refusal of an album gone from elsewhere takes the row away and proves
+nothing about it). *A question whose album or search is no longer listed under the name it was
 asked under closes* (`App::listed`): deleted from elsewhere under the question,
 "Delete the album “Porto”?" is no longer the question the user is answering, and
 closes. *The second press of a double click does
