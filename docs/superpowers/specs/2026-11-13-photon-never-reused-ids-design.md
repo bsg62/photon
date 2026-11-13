@@ -65,7 +65,9 @@ corrected to match.
 - **Keep the guards' behaviour** (2026-11-13), with their reasons rewritten:
   - `App::deleting` and `FolderRow::going` keep taking the menu away from a row whose
     delete or removal is on its way. The new reason: a second Delete…/Remove… of the
-    same row would ask again and then answer with the library's "not found".
+    same row would ask again. An album's or saved search's second delete is answered with
+    the library's "not found"; a folder's second Remove… is not refused, it silently
+    runs again (cancel, cascade, refresh) to no effect.
   - `App::listed` keeps closing a confirm question whose album or saved search is no
     longer listed under the name it was asked about. The new reason: a question about
     something that has gone or been renamed is no longer the question the user is

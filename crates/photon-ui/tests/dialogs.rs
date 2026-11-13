@@ -1021,7 +1021,6 @@ fn a_keyword_picker_left_open_writes_nothing_to_a_photo_indexed_after_its_own_wa
         };
         lib.insert_items(&[fresh]).unwrap()[0]
     };
-    assert_ne!(new_id, highest, "a number is never handed out again");
     typed(&mut driver, &mut harness, "lisbon");
     key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
     driver.until(&mut harness, "the picker answered", |app| {
@@ -1033,6 +1032,8 @@ fn a_keyword_picker_left_open_writes_nothing_to_a_photo_indexed_after_its_own_wa
         lib.item_tags(new_id).unwrap().is_empty(),
         "the keyword went to a photo indexed after the one it was meant for"
     );
+    // The fixture reached the case: the new photo is not the purged one under its number.
+    assert_ne!(new_id, highest, "a number is never handed out again");
 }
 
 // A frame can be long, and a keyword's last letter and its Enter in it together: the
