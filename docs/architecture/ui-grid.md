@@ -369,9 +369,10 @@ undo by id, and Ctrl+Z in a new picker brought back the keyword typed in the las
 its row's menu away* (`App::deleting`, `going`): the row stays until the lists
 are read after the delete's answer, and "Delete…" asked of it a second time would ask
 again and then be answered with the library's "not found". Refused, the row is a row
-again. *A question whose album or search is no longer listed under the name it was asked under closes* (`App::listed`):
-deleted from elsewhere under the question, "Delete the album “Porto”?" is no longer
-the question the user is answering, and closes. *The second press of a double click does
+again. *A question whose album or search is no longer listed under the name it was
+asked under closes* (`App::listed`): deleted from elsewhere under the question,
+"Delete the album “Porto”?" is no longer the question the user is answering, and
+closes. *The second press of a double click does
 nothing in a dialog* (`DialogView::deaf`): a double click on a menu's item opened the
 picker at its first click and landed its second on a keyword row, which writes at a
 click - a button that goes down within egui's double-click time of the dialog's first

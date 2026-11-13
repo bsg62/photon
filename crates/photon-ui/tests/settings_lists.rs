@@ -404,10 +404,9 @@ fn escape_in_another_section_closes_settings_and_answers_no_unseen_question() {
 // A folder whose removal is on its way offers no Remove… until the list is read again. The
 // row stays until then - for a folder of many photos, seconds of cascade - and a second
 // Remove… on it would ask the user again about a removal already on its way and run it
-// again (cancel, cascade, refresh) to no effect. A
-// folder added meanwhile has a number of its own (ids are never handed out again) and must
-// survive. The library's write lock is held (`tests/status.rs`'s seam) so that the three
-// writes wait on the queue together.
+// again (cancel, cascade, refresh) to no effect. A folder added meanwhile has a number of
+// its own (ids are never handed out again) and must survive. The library's write lock is
+// held (`tests/status.rs`'s seam) so that the three writes wait on the queue together.
 #[test]
 fn a_folder_whose_removal_is_on_its_way_offers_no_second_remove() {
     let dir = tempfile::tempdir().unwrap();
