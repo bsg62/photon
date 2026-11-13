@@ -891,8 +891,9 @@ const PANIC_MESSAGE: &str = "decoder panicked";
 /// `extern "C"` entry points cannot unwind and aborts, as can an allocation failure or the
 /// OOM killer; none of those run `Drop`, so `inflight`'s marker/record pair is what survives
 /// them: `deaths(id, key)` is read before the decode, keyed by the item's *current*
-/// `thumb_key()` so a reused id, a changed file or a fresh edit never inherits another
-/// photo's deaths. At [`DEATHS_TO_FAIL`] or more the photo is failed with [`CRASH_MESSAGE`]
+/// `thumb_key()` so a changed file, a fresh edit, or another photo at the same id in a
+/// library deleted and built again never inherits another photo's deaths. At
+/// [`DEATHS_TO_FAIL`] or more the photo is failed with [`CRASH_MESSAGE`]
 /// without calling `render` again, rather than dying the same way on every launch. Below
 /// that, `begin` holds a marker across the decode so a death leaves one behind for the next
 /// launch's `recover` to count, and turn into a record - `inflight` never re-counts a

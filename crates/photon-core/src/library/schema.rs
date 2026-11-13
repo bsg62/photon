@@ -368,12 +368,13 @@ ALTER TABLE items ADD COLUMN face_version INTEGER;
 -- `photon_core::people` and `library/people.rs`. No centroid is stored: it is computed from
 -- the faces at the start of each grouping step, so no writer can leave it out of date.
 --
--- `people` and `detected_faces` are AUTOINCREMENT because the People page holds their ids
--- and acts on them later: an id the UI holds must never name a different row. Without it
--- SQLite hands the highest deleted id to the next insert, and the grouping step deletes
--- empty groups and creates new ones, as a re-detection deletes a photo's faces and inserts
--- new ones - a confirm, a rename or a delete would then land on a face or person the user
--- never saw.
+-- `people` and `detected_faces` are the first tables made AUTOINCREMENT; migration 27 does
+-- the same for every other table whose ids the window holds. The People page holds their
+-- ids and acts on them later, and an id the UI holds must never name a different row.
+-- Without it SQLite hands the highest deleted id to the next insert, and the grouping step
+-- deletes empty groups and creates new ones, as a re-detection deletes a photo's faces and
+-- inserts new ones - a confirm, a rename or a delete would then land on a face or person
+-- the user never saw.
 CREATE TABLE people (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     name    TEXT,
@@ -392,7 +393,7 @@ CREATE INDEX person_contacts_person ON person_contacts(person_id);
 -- even when the face was too small to have one), its group, whether the user put it
 -- there, and whether it is to be left out of grouping. Nothing references the table yet
 -- (`face_rejections` is created below), so the drop, run with foreign keys on, cascades
--- nowhere.
+-- nowhere; migration 27, whose tables are referenced, has to run with them off.
 CREATE TABLE detected_faces_new (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id           INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -427,11 +428,170 @@ CREATE TABLE face_rejections (
     r#"
 CREATE INDEX items_moved ON items(size, mtime_ms);
 "#,
+    r#"
+-- Every other table whose ids the window holds becomes AUTOINCREMENT, as `people` and
+-- `detected_faces` did in migration 25, so that an id names one row for ever. The window
+-- keeps ids across frames and round trips - the selection, a dialog's subject, a queued
+-- write - and `settings.last_folder` keeps one across launches. Without AUTOINCREMENT SQLite
+-- hands the highest deleted id to the next insert, so a keyword picker left open while its
+-- photo was purged could write to a photo indexed after it.
+--
+-- AUTOINCREMENT cannot be added to an existing table, so each one is rebuilt: a new table
+-- with today's columns (the first migration's plus every ADD COLUMN since, in order), the
+-- rows copied with their ids, the old table dropped and the new one renamed. Inserting the
+-- old ids starts each sequence at the highest surviving one.
+--
+-- `run` applies this migration with foreign keys off (WITHOUT_FOREIGN_KEYS). Every one of
+-- these tables is referenced with ON DELETE CASCADE, and a DROP TABLE with foreign keys on
+-- deletes its rows first: dropping `watched_folders` would cascade through `folders` and
+-- `items` into every album membership, keyword and face, and the upgrade would succeed. The
+-- references in the new tables name the final tables, which the renames then satisfy.
+--
+-- The indexes are recreated in the order a version-26 library holds them in
+-- `sqlite_master`. photon never runs ANALYZE, so among partial indexes that tie SQLite takes
+-- the last one created: `items_starred` serves the Starred count only by being created after
+-- `items_pending`, `items_recent` and `items_size` (see migration 22), and a reordering
+-- would move that count to another plan.
+CREATE TABLE watched_folders_new (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    path   TEXT NOT NULL UNIQUE,
+    online INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO watched_folders_new (id, path, online)
+    SELECT id, path, online FROM watched_folders;
+DROP TABLE watched_folders;
+ALTER TABLE watched_folders_new RENAME TO watched_folders;
+
+CREATE TABLE folders_new (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    watched_id INTEGER NOT NULL REFERENCES watched_folders(id) ON DELETE CASCADE,
+    parent_id  INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+    path       TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL,
+    sort_key   TEXT NOT NULL,
+    seen_scan  INTEGER NOT NULL DEFAULT 0,
+    hidden     INTEGER NOT NULL DEFAULT 0,
+    alias      TEXT
+);
+INSERT INTO folders_new (id, watched_id, parent_id, path, name, sort_key, seen_scan, hidden, alias)
+    SELECT id, watched_id, parent_id, path, name, sort_key, seen_scan, hidden, alias FROM folders;
+DROP TABLE folders;
+ALTER TABLE folders_new RENAME TO folders;
+CREATE INDEX folders_watched ON folders(watched_id);
+CREATE INDEX folders_parent ON folders(parent_id);
+
+CREATE TABLE items_new (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id     INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    path          TEXT NOT NULL UNIQUE,
+    file_name     TEXT NOT NULL,
+    kind          INTEGER NOT NULL,
+    size          INTEGER NOT NULL,
+    mtime_ms      INTEGER NOT NULL,
+    width         INTEGER NOT NULL,
+    height        INTEGER NOT NULL,
+    orientation   INTEGER NOT NULL,
+    taken_at      INTEGER NOT NULL,
+    thumb_state   INTEGER NOT NULL DEFAULT 0,
+    thumb_error   TEXT,
+    missing_since INTEGER,
+    rating        INTEGER,
+    make          TEXT,
+    model         TEXT,
+    lens          TEXT,
+    focal_mm      REAL,
+    aperture      REAL,
+    exposure_s    REAL,
+    iso           INTEGER,
+    exif_version  INTEGER NOT NULL DEFAULT 0,
+    content_hash  BLOB,
+    edit_turns    INTEGER NOT NULL DEFAULT 0,
+    edit_crop     INTEGER,
+    percep_hash   INTEGER,
+    similar_group INTEGER,
+    hidden        INTEGER NOT NULL DEFAULT 0,
+    picasa_hidden INTEGER,
+    caption       TEXT,
+    duration_ms   INTEGER,
+    gps_lat       REAL,
+    gps_lon       REAL,
+    face_version  INTEGER
+);
+INSERT INTO items_new (id, folder_id, path, file_name, kind, size, mtime_ms, width, height,
+                       orientation, taken_at, thumb_state, thumb_error, missing_since, rating,
+                       make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version,
+                       content_hash, edit_turns, edit_crop, percep_hash, similar_group,
+                       hidden, picasa_hidden, caption, duration_ms, gps_lat, gps_lon,
+                       face_version)
+    SELECT id, folder_id, path, file_name, kind, size, mtime_ms, width, height,
+           orientation, taken_at, thumb_state, thumb_error, missing_since, rating,
+           make, model, lens, focal_mm, aperture, exposure_s, iso, exif_version,
+           content_hash, edit_turns, edit_crop, percep_hash, similar_group,
+           hidden, picasa_hidden, caption, duration_ms, gps_lat, gps_lon,
+           face_version
+      FROM items;
+DROP TABLE items;
+ALTER TABLE items_new RENAME TO items;
+CREATE INDEX items_folder ON items(folder_id, taken_at);
+CREATE INDEX items_pending ON items(thumb_state) WHERE missing_since IS NULL;
+CREATE INDEX items_recent ON items(taken_at DESC, file_name DESC, id DESC) WHERE missing_since IS NULL;
+CREATE INDEX items_size ON items(size) WHERE missing_since IS NULL;
+CREATE INDEX items_content_hash ON items(content_hash) WHERE content_hash IS NOT NULL;
+CREATE INDEX items_similar_group ON items(similar_group) WHERE similar_group IS NOT NULL;
+CREATE INDEX items_hidden ON items(folder_id, taken_at) WHERE hidden = 1 AND missing_since IS NULL;
+CREATE INDEX items_starred ON items(folder_id, taken_at) WHERE rating >= 1 AND missing_since IS NULL;
+CREATE INDEX items_videos ON items(folder_id, taken_at) WHERE kind = 1 AND missing_since IS NULL;
+CREATE INDEX items_moved ON items(size, mtime_ms);
+
+CREATE TABLE albums_new (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    created_ms      INTEGER NOT NULL,
+    picasa_token    TEXT,
+    picasa_named_at INTEGER
+);
+INSERT INTO albums_new (id, name, created_ms, picasa_token, picasa_named_at)
+    SELECT id, name, created_ms, picasa_token, picasa_named_at FROM albums;
+DROP TABLE albums;
+ALTER TABLE albums_new RENAME TO albums;
+CREATE UNIQUE INDEX albums_picasa_token ON albums(picasa_token);
+
+CREATE TABLE saved_searches_new (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    query      TEXT NOT NULL,
+    created_ms INTEGER NOT NULL
+);
+INSERT INTO saved_searches_new (id, name, query, created_ms)
+    SELECT id, name, query, created_ms FROM saved_searches;
+DROP TABLE saved_searches;
+ALTER TABLE saved_searches_new RENAME TO saved_searches;
+
+-- A folder deleted before the upgrade while it held the highest id left no trace the
+-- sequence can see, so its number would be handed out once more. If it is the folder
+-- Settings remembers, the next launch would open on a stranger. The value is text and only
+-- ever written by photon as an id, so anything that is not all digits is left alone, and so
+-- is anything over 18 digits: CAST clamps it to the largest integer, and a sequence pinned
+-- there leaves no id for the next folder.
+--
+-- The copy above always leaves a `folders` row to raise, even from an empty table, because
+-- SQLite writes the sequence back at the end of every INSERT into an AUTOINCREMENT table.
+-- That is not documented; `migration_27_never_hands_out_the_remembered_folders_id` removes
+-- every folder to catch SQLite ever stopping.
+WITH remembered (id) AS (
+    SELECT CAST(value AS INTEGER) FROM settings
+     WHERE key = 'last_folder'
+       AND length(value) BETWEEN 1 AND 18
+       AND value GLOB '[0-9]*' AND value NOT GLOB '*[^0-9]*'
+)
+UPDATE sqlite_sequence SET seq = (SELECT id FROM remembered)
+ WHERE name = 'folders' AND (SELECT id FROM remembered) > seq;
+"#,
 ];
 
 /// Versions (1-based) whose migration rebuilds a table that others reference, and so
 /// runs with foreign keys off. See `run`.
-const WITHOUT_FOREIGN_KEYS: &[usize] = &[];
+const WITHOUT_FOREIGN_KEYS: &[usize] = &[27];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     run(conn, MIGRATIONS, WITHOUT_FOREIGN_KEYS)
@@ -584,20 +744,20 @@ mod tests {
         conn.execute_batch(MIGRATIONS[1]).unwrap();
         conn.pragma_update(None, "user_version", 2i64).unwrap();
         conn.execute(
-            "INSERT INTO watched_folders (id, path) VALUES (1, '/p')",
+            "INSERT INTO watched_folders (id, path) VALUES (3, '/p')",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key) \
-             VALUES (1, 1, NULL, '/p', 'p', 'p')",
+             VALUES (5, 3, NULL, '/p', 'p', 'p')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width, \
+            "INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width, \
              height, orientation, taken_at, rating) \
-             VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 3)",
+             VALUES (8, 5, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1, 3)",
             [],
         )
         .unwrap();
@@ -624,6 +784,18 @@ mod tests {
             Some(3),
             "the upgrade must not disturb existing rows"
         );
+        // Migration 27 rebuilds these tables; the window and Settings hold their ids, so a
+        // copy that numbered the rows afresh would point each one at something else.
+        for (table, id) in [("watched_folders", 3), ("folders", 5), ("items", 8)] {
+            let ids: Vec<i64> = conn
+                .prepare(&format!("SELECT id FROM {table}"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(ids, [id], "{table}");
+        }
     }
 
     /// A library that indexed an SMB share before `paths::canonicalize` simplified the
@@ -801,7 +973,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
         let rules: i64 = conn
             .query_row("SELECT count(*) FROM tag_rules", [], |r| r.get(0))
             .unwrap();
@@ -960,7 +1132,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
         let overlay: i64 = conn
             .query_row("SELECT count(*) FROM item_user_tags", [], |r| r.get(0))
             .unwrap();
@@ -1010,7 +1182,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
         let hash: Option<Vec<u8>> = conn
             .query_row("SELECT content_hash FROM items WHERE id = 1", [], |r| {
                 r.get(0)
@@ -1151,7 +1323,7 @@ mod tests {
             .unwrap();
         // Hardcoded, like every other version assertion here: `MIGRATIONS.len()` would
         // agree with itself whatever the list did, which is the tripwire removed.
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// Every folder in an existing library comes out of the upgrade visible.
@@ -1189,7 +1361,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// Every album in an existing library comes out of the upgrade as photon's own.
@@ -1222,7 +1394,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// Every Picasa album in an existing library comes out of the upgrade with no recorded
@@ -1256,7 +1428,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// Every photo in an existing library comes out of the upgrade uncaptioned, for the
@@ -1295,7 +1467,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// A stored Conservative or Loose keeps meaning Conservative or Loose.
@@ -1329,7 +1501,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 26);
+            assert_eq!(version, 27);
         }
     }
 
@@ -1379,7 +1551,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// Every folder in an existing library comes out of the upgrade with no alias, so the
@@ -1417,7 +1589,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// A library at schema 21 comes out of the upgrade with the Videos index, and with
@@ -1465,7 +1637,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// A library at schema 23 with photos in it comes out with the table, and every photo
@@ -1501,7 +1673,7 @@ mod tests {
         let user: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(user, 26);
+        assert_eq!(user, 27);
     }
 
     #[test]
@@ -1590,7 +1762,7 @@ mod tests {
         let user: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(user, 26);
+        assert_eq!(user, 27);
     }
 
     /// The move lookup's index arriving in a populated library: the rows stay, the index is there.
@@ -1617,7 +1789,7 @@ mod tests {
         let user: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(user, 26);
+        assert_eq!(user, 27);
         let items: i64 = conn
             .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
             .unwrap();
@@ -1632,8 +1804,9 @@ mod tests {
         assert_eq!(index, 1);
     }
 
-    /// The highest id deleted and a row inserted: the new row's id is above it. Ids the
-    /// People page holds must never come to name a different row.
+    /// The highest id deleted and a row inserted: the new row's id is above it. An id the
+    /// window holds (a selection, a dialog's subject, a queued write, the People page's
+    /// rows) must never come to name a different row.
     fn next_id_after_deleting_the_highest(
         lib: &crate::library::Library,
         insert: &str,
@@ -1678,5 +1851,376 @@ mod tests {
             "detected_faces",
         );
         assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    #[test]
+    fn a_deleted_watched_folders_id_is_never_reused() {
+        let (_dir, lib) = crate::testutil::temp_library();
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            "INSERT INTO watched_folders (path) VALUES (hex(randomblob(8)))",
+            "watched_folders",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    #[test]
+    fn a_deleted_folders_id_is_never_reused() {
+        let (_dir, lib) = crate::testutil::temp_library();
+        let watched = crate::testutil::watch(&lib, "/p").id;
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            &format!(
+                "INSERT INTO folders (watched_id, path, name, sort_key)
+                 VALUES ({watched}, hex(randomblob(8)), 'f', 'f')"
+            ),
+            "folders",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    #[test]
+    fn a_deleted_items_id_is_never_reused() {
+        let (dir, lib) = crate::testutil::temp_library();
+        let (_, folder) = crate::testutil::seed_folder(&lib, dir.path());
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            &format!(
+                "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width,
+                                    height, orientation, taken_at)
+                 VALUES ({folder}, hex(randomblob(8)), 'a.jpg', 0, 1, 1, 1, 1, 1, 1)"
+            ),
+            "items",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    #[test]
+    fn a_deleted_albums_id_is_never_reused() {
+        let (_dir, lib) = crate::testutil::temp_library();
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            "INSERT INTO albums (name, created_ms) VALUES ('a', 1)",
+            "albums",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    #[test]
+    fn a_deleted_saved_searches_id_is_never_reused() {
+        let (_dir, lib) = crate::testutil::temp_library();
+        let (deleted, next) = next_id_after_deleting_the_highest(
+            &lib,
+            "INSERT INTO saved_searches (name, query, created_ms) VALUES ('s', 'q', 1)",
+            "saved_searches",
+        );
+        assert!(next > deleted, "{next} after {deleted}");
+    }
+
+    /// The tables migration 27 rebuilds.
+    const REBUILT: [&str; 5] = [
+        "watched_folders",
+        "folders",
+        "items",
+        "albums",
+        "saved_searches",
+    ];
+
+    /// A library as photon 0.56 left it: schema 26, built on a plain connection, then
+    /// filled by `fill`.
+    fn version_26_library(dir: &tempfile::TempDir, fill: &str) -> std::path::PathBuf {
+        let path = dir.path().join("library.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..26] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 26i64).unwrap();
+        conn.execute_batch(fill).unwrap();
+        path
+    }
+
+    fn values(conn: &rusqlite::Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let columns = stmt.column_count();
+        stmt.query_map([], |r| (0..columns).map(|i| r.get(i)).collect())
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn is_constraint_error(result: rusqlite::Result<usize>) -> bool {
+        matches!(
+            result,
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation
+        )
+    }
+
+    /// Every table photon keeps, in the order the snapshot reads them.
+    const EVERY_TABLE: [&str; 16] = [
+        "watched_folders",
+        "folders",
+        "items",
+        "settings",
+        "item_tags",
+        "contacts",
+        "faces",
+        "albums",
+        "album_items",
+        "tag_rules",
+        "item_user_tags",
+        "saved_searches",
+        "detected_faces",
+        "people",
+        "person_contacts",
+        "face_rejections",
+    ];
+
+    /// The rebuild drops tables that others reference with `ON DELETE CASCADE`. Run with
+    /// foreign keys on, as every photon connection is, the drop of `watched_folders` alone
+    /// would take every folder and photo with it, and their albums, keywords and faces, and
+    /// the upgrade would still report success.
+    #[test]
+    fn migration_27_keeps_every_row_and_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = version_26_library(
+            &dir,
+            "INSERT INTO watched_folders (id, path, online) VALUES (1, '/p', 1), (2, '/q', 0);
+             INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key, hidden, alias)
+             VALUES (1, 1, NULL, '/p', 'p', 'p', 0, NULL),
+                    (2, 1, 1, '/p/c', 'c', 'p/c', 1, 'Child'),
+                    (3, 2, NULL, '/q', 'q', 'q', 0, NULL);
+             INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width,
+                                height, orientation, taken_at, rating, content_hash, caption,
+                                gps_lat, gps_lon, edit_turns, percep_hash, similar_group)
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 10, 1, 4, 3, 1, 100, 3, x'0102', 'cap',
+                     1.5, 2.5, 1, 42, 1),
+                    (2, 2, '/p/c/b.jpg', 'b.jpg', 0, 20, 2, 4, 3, 6, 200, NULL, NULL, NULL,
+                     NULL, NULL, 0, NULL, NULL),
+                    (7, 3, '/q/v.mp4', 'v.mp4', 1, 30, 3, 4, 3, 1, 300, 0, NULL, NULL,
+                     NULL, NULL, 0, NULL, NULL),
+                    (9, 3, '/q/gone.jpg', 'gone.jpg', 0, 40, 4, 4, 3, 1, 400, NULL, NULL,
+                     NULL, NULL, NULL, 0, NULL, NULL);
+             DELETE FROM items WHERE id = 9;
+             INSERT INTO albums (id, name, created_ms, picasa_token, picasa_named_at)
+             VALUES (1, 'Trip', 5, 'tok', 9), (2, 'Mine', 6, NULL, NULL);
+             INSERT INTO album_items (album_id, item_id, added_ms) VALUES (1, 1, 11), (2, 7, 12);
+             INSERT INTO item_tags (item_id, tag) VALUES (1, 'beach');
+             INSERT INTO item_user_tags (item_id, tag, added) VALUES (2, 'mine', 1);
+             INSERT INTO tag_rules (tag, target) VALUES ('beach', 'seaside');
+             INSERT INTO contacts (hash, name) VALUES ('abc', 'Ann');
+             INSERT INTO faces (item_id, contact, left, top, right, bottom)
+             VALUES (1, 'abc', 0.1, 0.2, 0.3, 0.4);
+             INSERT INTO people (id, name, ignored) VALUES (1, 'Ann', 0), (2, NULL, 0);
+             INSERT INTO person_contacts (contact, person_id) VALUES ('abc', 1);
+             INSERT INTO detected_faces (id, item_id, left, top, right, bottom, landmarks,
+                                         score, person_id, confirmed)
+             VALUES (5, 2, 0.1, 0.2, 0.3, 0.4, zeroblob(40), 0.9, 1, 1);
+             INSERT INTO face_rejections (face_id, person_id) VALUES (5, 2);
+             INSERT INTO saved_searches (id, name, query, created_ms)
+             VALUES (1, 'Canon', 'camera:canon', 7);
+             INSERT INTO settings (key, value) VALUES ('last_folder', '2');",
+        );
+        let snapshot = |conn: &rusqlite::Connection| -> Vec<_> {
+            EVERY_TABLE
+                .iter()
+                .map(|t| values(conn, &format!("SELECT * FROM {t} ORDER BY rowid")))
+                .collect()
+        };
+        let before = snapshot(&rusqlite::Connection::open(&path).unwrap());
+        assert!(
+            before.iter().all(|rows| !rows.is_empty()),
+            "every table holds a row for the upgrade to lose"
+        );
+
+        let lib = crate::library::Library::open(&path).unwrap();
+
+        let conn = lib.reader().unwrap();
+        for ((table, before), after) in EVERY_TABLE.iter().zip(&before).zip(snapshot(&conn)) {
+            assert_eq!(*before, after, "{table}");
+        }
+        assert_eq!(
+            values(&conn, "PRAGMA foreign_key_check"),
+            Vec::<Vec<_>>::new()
+        );
+        assert_eq!(pragma(&conn, "user_version"), 27);
+        drop(conn);
+        let w = lib.writer();
+        w.execute(
+            "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width,
+                                height, orientation, taken_at)
+             VALUES (1, '/p/new.jpg', 'new.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        assert!(w.last_insert_rowid() > 7, "{}", w.last_insert_rowid());
+        // The cascades survive the rebuild: the writer has foreign keys on, and the new
+        // tables carry the old `REFERENCES … ON DELETE CASCADE`.
+        w.execute("DELETE FROM watched_folders WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(count(&w, "folders WHERE watched_id = 1"), 0);
+        assert_eq!(count(&w, "items WHERE folder_id IN (1, 2)"), 0);
+        assert_eq!(count(&w, "album_items WHERE item_id = 1"), 0);
+        assert_eq!(count(&w, "item_tags"), 0);
+        assert_eq!(
+            count(&w, "items"),
+            1,
+            "the other watched folder's photo stays"
+        );
+    }
+
+    /// Without `ANALYZE` SQLite picks among partial indexes that tie by creation order, so
+    /// the rebuilt tables' indexes must come back in the order a 0.56 library had them, or a
+    /// sidebar count can quietly move to a worse plan.
+    #[test]
+    fn migration_27_keeps_the_tables_shape_and_their_indexes_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = version_26_library(&dir, "");
+        let shape = |conn: &rusqlite::Connection| -> Vec<_> {
+            REBUILT
+                .iter()
+                .map(|t| {
+                    (
+                        values(conn, &format!("PRAGMA table_info({t})")),
+                        values(conn, &format!("PRAGMA foreign_key_list({t})")),
+                        values(
+                            conn,
+                            &format!(
+                                "SELECT name, sql FROM sqlite_master \
+                                 WHERE type = 'index' AND tbl_name = '{t}' ORDER BY rowid"
+                            ),
+                        ),
+                    )
+                })
+                .collect()
+        };
+        let before = shape(&rusqlite::Connection::open(&path).unwrap());
+
+        let lib = crate::library::Library::open(&path).unwrap();
+
+        let conn = lib.reader().unwrap();
+        for ((table, before), after) in REBUILT.iter().zip(&before).zip(shape(&conn)) {
+            assert_eq!(before.0, after.0, "{table}: columns");
+            assert_eq!(before.1, after.1, "{table}: foreign keys");
+            assert_eq!(before.2, after.2, "{table}: indexes");
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(sql.contains("AUTOINCREMENT"), "{sql}");
+        }
+    }
+
+    /// The paths' `UNIQUE` and the albums' unique token are what the scanner's upserts
+    /// and the Picasa album pass rely on; the rebuild must keep both.
+    #[test]
+    fn migration_27_keeps_the_unique_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = version_26_library(
+            &dir,
+            "INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+             INSERT INTO folders (id, watched_id, path, name, sort_key) VALUES (1, 1, '/p', 'p', 'p');
+             INSERT INTO items (id, folder_id, path, file_name, kind, size, mtime_ms, width,
+                                height, orientation, taken_at)
+             VALUES (1, 1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1);
+             INSERT INTO albums (id, name, created_ms, picasa_token) VALUES (1, 'a', 1, 'tok');",
+        );
+
+        let lib = crate::library::Library::open(&path).unwrap();
+
+        let w = lib.writer();
+        for (what, sql) in [
+            (
+                "watched folder",
+                "INSERT INTO watched_folders (path) VALUES ('/p')",
+            ),
+            (
+                "folder",
+                "INSERT INTO folders (watched_id, path, name, sort_key) VALUES (1, '/p', 'p', 'p')",
+            ),
+            (
+                "item",
+                "INSERT INTO items (folder_id, path, file_name, kind, size, mtime_ms, width,
+                                    height, orientation, taken_at)
+                 VALUES (1, '/p/a.jpg', 'a.jpg', 0, 1, 1, 1, 1, 1, 1)",
+            ),
+            (
+                "album",
+                "INSERT INTO albums (name, created_ms, picasa_token) VALUES ('b', 2, 'tok')",
+            ),
+        ] {
+            assert!(is_constraint_error(w.execute(sql, [])), "a second {what}");
+        }
+    }
+
+    /// `settings.last_folder` is the one id photon stores across a restart. A remembered
+    /// folder that was removed before the upgrade left no trace AUTOINCREMENT can see, so
+    /// without the migration raising the sequence a new folder could take its number and
+    /// the next launch would open on it. Also checked with every folder gone: the migration
+    /// relies on SQLite writing a `folders` sequence row even for an empty copy, which is not
+    /// documented, and this case is what would catch it stopping.
+    #[test]
+    fn migration_27_never_hands_out_the_remembered_folders_id() {
+        for removed in ["id = 2", "id IN (1, 2)"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = version_26_library(
+                &dir,
+                &format!(
+                    "INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+                     INSERT INTO folders (id, watched_id, path, name, sort_key)
+                     VALUES (1, 1, '/p', 'p', 'p'), (2, 1, '/p/c', 'c', 'c');
+                     INSERT INTO settings (key, value) VALUES ('last_folder', '2');
+                     DELETE FROM folders WHERE {removed};"
+                ),
+            );
+
+            let lib = crate::library::Library::open(&path).unwrap();
+
+            let w = lib.writer();
+            w.execute(
+                "INSERT INTO folders (watched_id, path, name, sort_key) VALUES (1, '/p/n', 'n', 'n')",
+                [],
+            )
+            .unwrap();
+            assert!(
+                w.last_insert_rowid() > 2,
+                "{removed}: {}",
+                w.last_insert_rowid()
+            );
+        }
+    }
+
+    /// The setting is text, and only a number above every folder may move the sequence: not
+    /// one with letters after its digits (CAST would read "5abc" as 5), and not one too long
+    /// for an id (CAST clamps it to the largest integer, which would leave no id to give).
+    #[test]
+    fn migration_27_ignores_a_last_folder_that_is_not_above_every_folder() {
+        for stored in ["garbage", "-5", "1", "5abc", "18446744073709551616"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = version_26_library(
+                &dir,
+                &format!(
+                    "INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+                     INSERT INTO folders (id, watched_id, path, name, sort_key)
+                     VALUES (1, 1, '/p', 'p', 'p'), (2, 1, '/p/b', 'b', 'b'),
+                            (3, 1, '/p/c', 'c', 'c');
+                     INSERT INTO settings (key, value) VALUES ('last_folder', '{stored}');"
+                ),
+            );
+
+            let lib = crate::library::Library::open(&path)
+                .unwrap_or_else(|e| panic!("last_folder {stored:?}: {e}"));
+
+            let w = lib.writer();
+            w.execute(
+                "INSERT INTO folders (watched_id, path, name, sort_key) VALUES (1, '/p/n', 'n', 'n')",
+                [],
+            )
+            .unwrap();
+            assert_eq!(w.last_insert_rowid(), 4, "last_folder {stored:?}");
+        }
     }
 }

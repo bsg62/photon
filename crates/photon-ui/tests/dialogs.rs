@@ -616,7 +616,7 @@ fn an_album_being_deleted_has_no_menu_until_it_has_left_the_list() {
     });
     driver.settle(&mut harness);
     let paris = harness.state().collections().albums[1].id;
-    assert_eq!(paris, porto, "the number is handed out again");
+    assert_ne!(paris, porto, "a number is never handed out again");
     // And Paris, which is not going anywhere, has its menu and its own question.
     ask_to_delete(&mut driver, &mut harness, "Paris");
     assert!(
@@ -683,7 +683,7 @@ fn a_question_whose_album_has_gone_closes_and_deletes_nothing() {
     let engine = harness.state().engine().clone();
     commands::delete_album(&engine, porto).unwrap();
     let paris = commands::create_album(&engine, "Paris").unwrap().id;
-    assert_eq!(paris, porto, "the number is handed out again");
+    assert_ne!(paris, porto, "a number is never handed out again");
     // The lists are read when the library says its data changed.
     engine.refresh_grid().unwrap();
     driver.until(&mut harness, "the lists read again", |app| {
@@ -717,7 +717,7 @@ fn a_question_whose_saved_search_has_gone_closes_and_deletes_nothing() {
     let ones = commands::save_search(&engine, "Ones", "IMG_00001")
         .unwrap()
         .id;
-    assert_eq!(ones, tens, "the number is handed out again");
+    assert_ne!(ones, tens, "a number is never handed out again");
     engine.refresh_grid().unwrap();
     driver.until(&mut harness, "the lists read again", |app| {
         search_names(app) == ["Ones"]
@@ -758,7 +758,7 @@ fn a_delete_the_library_refuses_leaves_the_rows_as_they_are() {
     assert_eq!(said(&harness).len(), 1);
     // An album made now takes the number, and has its menu.
     let paris = commands::create_album(&engine, "Paris").unwrap().id;
-    assert_eq!(paris, porto);
+    assert_ne!(paris, porto, "a number is never handed out again");
     engine.refresh_grid().unwrap();
     driver.until(&mut harness, "Paris listed", |app| {
         album_names(app) == ["Lisbon", "Paris"]

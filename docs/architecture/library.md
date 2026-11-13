@@ -34,6 +34,20 @@ not every grid version. The same tie is why the All view has no `items_visible`
 visible view's WHERE implies it, and created after `items_starred` and `items_videos` it took
 Starred and Videos over, the whole library read for a grid of 3%.
 
+**Ids are never handed out again.** Every table whose ids the window holds - `watched_folders`,
+`folders`, `items`, `albums`, `saved_searches`, `people`, `detected_faces` - is `INTEGER PRIMARY
+KEY AUTOINCREMENT` (migrations 25 and 27); without it SQLite gives the highest deleted id to the
+next insert, and a selection, a dialog or a queued write would act on a row the user never saw.
+A new such table is created with it. `AUTOINCREMENT` cannot be added to an existing table, so a
+migration rebuilds it (new table, copy with ids, drop, rename), and a rebuild of a table others
+reference runs through `WITHOUT_FOREIGN_KEYS` in `schema.rs`: dropping it with foreign keys on
+cascades into every row that references it, and the upgrade still succeeds. `run` checks
+`PRAGMA foreign_key_check` before committing and puts foreign keys back on whatever happens. The
+rebuild recreates the table's indexes in their old `sqlite_master` order, because of the tie
+above (`migration_27_keeps_the_tables_shape_and_their_indexes_in_order`). Migration 27 also
+raises the `folders` sequence to a stored `last_folder`, the one id kept across launches, since
+a folder deleted before the upgrade left no trace the sequence could see.
+
 **Reads are pooled, writes are one connection.** `Library::reader()` returns a `Result` and never
 waits on another reader: it hands out an idle pooled connection or opens one (at most eight are
 kept). `writer()` is a single mutexed connection.
