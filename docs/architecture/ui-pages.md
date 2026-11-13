@@ -418,9 +418,10 @@ files, and a keyword's rename or removal is a rule applied as keywords are read.
 
 **What a review of Folders and Tags found, each with its test** (`tests/settings_lists.rs`).
 *A folder whose removal is on its way offers nothing* (`App::removing`, `FolderRow::going`)
-until the folder list read after the answer: a watched folder's number is handed out again
-once it is free, and a second Remove… of the row while the first waited removed the folder
-added meanwhile under that number - `App::deleting`'s trap, met again. Refused, it is a row
+until the folder list read after the answer: a second Remove… of the row while the first
+waited would ask again about a removal already on its way and run it again (cancel,
+cascade, refresh) to no effect; the library does not refuse it, unlike an album's
+second delete, which it answers with "not found". Refused, it is a row
 again (no test: no seam makes the library refuse a removal). *A drop goes into the field
 only while the field is on screen and takes a path* (`add_field_shown`): open in another
 section, the drop went into a field nobody could see, and nothing was watched; and the

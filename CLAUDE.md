@@ -111,7 +111,8 @@ Core and engine:
   `Shown`); any writer creating item rows inherits the folder's hidden flag.
 - **An offset is valid against one index version only**: re-find by id
   (`GridIndex::position_of`). Likewise in the UI: anything held across a rebuild, a frame
-  or a round trip is held by id, never by offset - and library ids are reused once freed.
+  or a round trip is held by id, never by offset. Library ids are never reused
+  (`AUTOINCREMENT`, migration 27); a new table whose ids the window holds is created with it.
 - **Search**: a new fact is a haystack field (set per photo, cleared in
   `Haystacks::truncate`); a new filter is a prefixed term; `search_help.rs`'s tests hold
   its list to the parser.

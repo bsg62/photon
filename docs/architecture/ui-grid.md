@@ -307,12 +307,14 @@ opposite, and on purpose - a menu's items are built again in every frame and say
 they would act on now, while a dialog's words were read once, and what the user was told
 it would act on is what it acts on (a scan can take a photo out of the selection behind
 an open dialog; the keyword is written to the ids its title counted). **By number, which
-is not for ever the same thing**: an id of the library's is handed out again once it is
-free. For an album and a saved search the window closes that itself (below). For a photo
-it cannot - a photo that is hidden has left the grid as well, and is to be written to -
-so a picker left open while its photo is purged and another indexed writes to the other
-one: improbable, and to be closed only by the library never reusing an id, which is a
-migration. The picker closes
+names one row for ever**: an id of the library's is never handed out again (migration 27,
+`library.md`), so a number a dialog holds is the thing it was opened on or nothing. The
+case that was open - a picker left open while its photo is purged and another indexed,
+which wrote to the other one - is closed, by
+`a_keyword_picker_left_open_writes_nothing_to_a_photo_indexed_after_its_own_was_purged`.
+A question about an album or a saved search still closes when the thing is gone or no
+longer called what it said (below): that is no longer the question the user is answering.
+The picker closes
 *before* its write, which is the user's last word on it, and the message afterwards is
 the library's own count and the name it stored, which a rename rule can change.
 
@@ -364,13 +366,15 @@ its own* (a fresh `TextEditState`): it has one id for every picker, egui keeps a
 undo by id, and Ctrl+Z in a new picker brought back the keyword typed in the last.
 
 **What a review of the dialogs found, each with its test.** *A delete on its way takes
-its row's menu away* (`App::deleting`, `going`): an album's number is handed out again
-once it is free, the row stays until the lists are read after the delete's answer, and
-"Delete…" asked of it a second time waited behind an album made meanwhile under that
-number - and deleted it. Refused, the row is a row again. *A question whose album or
-search is no longer listed under the name it was asked under closes* (`App::listed`):
-deleted from elsewhere under the question and another made at once, "Delete the album
-“Porto”?" answered with yes deleted Paris. *The second press of a double click does
+its row's menu away* (`App::deleting`, `going`): the row stays until the lists
+are read after the delete's answer, and "Delete…" asked of it a second time would ask
+again and then be answered with the library's "not found". Refused, the row is a row
+again (the test refuses through a trigger in the library, so that the album stays
+listed; a refusal of an album gone from elsewhere takes the row away and proves
+nothing about it). *A question whose album or search is no longer listed under the name it was
+asked under closes* (`App::listed`): deleted from elsewhere under the question,
+"Delete the album “Porto”?" is no longer the question the user is answering, and
+closes. *The second press of a double click does
 nothing in a dialog* (`DialogView::deaf`): a double click on a menu's item opened the
 picker at its first click and landed its second on a keyword row, which writes at a
 click - a button that goes down within egui's double-click time of the dialog's first

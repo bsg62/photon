@@ -1555,7 +1555,9 @@ impl Engine {
             .find(|w| w.id == watched_id)
             .map(|w| w.path);
         self.lib.remove_watched_folder(watched_id)?;
-        // SQLite may hand a later folder this id again; it must not inherit this one's pace.
+        // The removed folder's last full scan is no longer anything's pace: the id is never
+        // handed out again, so the entry would only stay, and be read for a folder that is
+        // gone, until the process ends.
         self.full_scans.lock().remove(&watched_id);
         if let (Some(service), Some(path)) = (self.watcher_service(), path) {
             service.watch_removed(watched_id, Path::new(&path));

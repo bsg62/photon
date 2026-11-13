@@ -402,13 +402,13 @@ fn escape_in_another_section_closes_settings_and_answers_no_unseen_question() {
 }
 
 // A folder whose removal is on its way offers no Remove… until the list is read again. The
-// row stays until then - for a folder of many photos, seconds of cascade - and a watched
-// folder's number is handed out again once it is free (no AUTOINCREMENT): a folder added
-// meanwhile took it, and a second Remove… on the row, still naming the old path, removed
-// the folder just added. The library's write lock is held (`tests/status.rs`'s seam) so
-// that the three writes wait on the queue together.
+// row stays until then - for a folder of many photos, seconds of cascade - and a second
+// Remove… on it would ask the user again about a removal already on its way and run it
+// again (cancel, cascade, refresh) to no effect. The library's write lock is held
+// (`tests/status.rs`'s seam) so that the removal waits on the queue with the row still
+// listed; a folder added meanwhile waits with it, and has a number of its own.
 #[test]
-fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id() {
+fn a_folder_whose_removal_is_on_its_way_offers_no_second_remove() {
     let dir = tempfile::tempdir().unwrap();
     let more = photos_in(dir.path(), "More", &["c.jpg"]);
     let (mut harness, mut driver, _) = opened_at(dir.path(), "Folders");
@@ -430,11 +430,12 @@ fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id
             .is_some_and(|adding| matches!(adding.dest(), Dest::Passed(_)))
     });
     key(&mut driver, &mut harness, Key::Enter);
-    // The stale row still offers Remove…; pressed again, and agreed to.
+    // The row is still listed, its Remove… pressed again: nothing is asked.
     press(&mut driver, &mut harness, watched_list::REMOVE);
-    if settings(harness.state()).is_some_and(|settings| settings.question().is_some()) {
-        press(&mut driver, &mut harness, watched_list::REMOVE_YES);
-    }
+    assert!(
+        settings(harness.state()).is_some_and(|settings| settings.question().is_none()),
+        "a folder whose removal is on its way asked again to be removed"
+    );
     other.execute_batch("ROLLBACK").unwrap();
     driver.until(&mut harness, "the folder added", |app| {
         settings(app).is_some_and(|settings| settings.adding.is_none())
@@ -448,7 +449,7 @@ fn a_folder_whose_removal_is_on_its_way_is_not_removed_again_under_its_reused_id
     assert_eq!(
         watched,
         [stored(&more)],
-        "the folder just added was removed by a second Remove… of the folder before it"
+        "the removal and the add, once let through, did not both land"
     );
 }
 

@@ -9,7 +9,12 @@ use crate::common::{
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable;
-use photon_core::{grid::GridView, library::Library};
+use photon_core::{
+    grid::GridView,
+    library::{Library, NewItem},
+    media::MediaKind,
+    metadata::CameraMeta,
+};
 use photon_engine::commands;
 use photon_ui::{app::App, dialogs::Dialog, fixture::Fixture, nav::Place, shortcuts::SHEET_TITLE};
 
@@ -558,11 +563,11 @@ fn right_click_row(driver: &mut Driver, harness: &mut Harness<'_>, label: &str) 
     right_click_at(driver, harness, at);
 }
 
-// An album's number is handed out again once it is free. "Delete…" answered with yes
-// is a write on its way, and until the lists have been read after it the row is still
-// there: asked again of that row, a second delete of the same number waited behind
-// whatever was made meanwhile - and deleted it. The row of something that is going has
-// no menu.
+// "Delete…" answered with yes is a write on its way, and until the lists have been read
+// after it the row is still there: asked again of that row, a second "Delete…" would ask
+// the user again and then be answered with the library's "not found". The row of
+// something that is going has no menu. An album's number is never handed out again, so
+// what is made meanwhile is never mistaken for it.
 #[test]
 fn an_album_being_deleted_has_no_menu_until_it_has_left_the_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -609,14 +614,14 @@ fn an_album_being_deleted_has_no_menu_until_it_has_left_the_list() {
     assert!(harness.state().menu_open());
     key(&mut driver, &mut harness, Key::Escape, Modifiers::NONE);
 
-    // The writes land: Porto goes, and Paris is made under the number it had.
+    // The writes land: Porto goes, and Paris is made under a number of its own.
     other.execute_batch("ROLLBACK").unwrap();
     driver.until(&mut harness, "the lists read again", |app| {
         album_names(app) == ["Lisbon", "Paris"]
     });
     driver.settle(&mut harness);
     let paris = harness.state().collections().albums[1].id;
-    assert_eq!(paris, porto, "the number is handed out again");
+    assert_ne!(paris, porto, "a number is never handed out again");
     // And Paris, which is not going anywhere, has its menu and its own question.
     ask_to_delete(&mut driver, &mut harness, "Paris");
     assert!(
@@ -663,9 +668,9 @@ fn a_saved_search_being_deleted_has_no_menu_until_it_has_left_the_list() {
 
 // A question is about one album, under the name it was asked under. Deleted from
 // elsewhere while the question stands - the other photon, open on the same library -
-// and another album made at once, the number is the new album's: "Delete the album
-// “Porto”?" answered with yes deleted Paris. A question whose album is no longer
-// listed under its name is no question, and closes.
+// and another album made at once, a question about something gone or renamed is no
+// longer the question the user is answering: "Delete the album “Porto”?" is not to be
+// answered with yes about Paris. It closes, and deletes nothing.
 #[test]
 fn a_question_whose_album_has_gone_closes_and_deletes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -683,7 +688,7 @@ fn a_question_whose_album_has_gone_closes_and_deletes_nothing() {
     let engine = harness.state().engine().clone();
     commands::delete_album(&engine, porto).unwrap();
     let paris = commands::create_album(&engine, "Paris").unwrap().id;
-    assert_eq!(paris, porto, "the number is handed out again");
+    assert_ne!(paris, porto, "a number is never handed out again");
     // The lists are read when the library says its data changed.
     engine.refresh_grid().unwrap();
     driver.until(&mut harness, "the lists read again", |app| {
@@ -717,7 +722,7 @@ fn a_question_whose_saved_search_has_gone_closes_and_deletes_nothing() {
     let ones = commands::save_search(&engine, "Ones", "IMG_00001")
         .unwrap()
         .id;
-    assert_eq!(ones, tens, "the number is handed out again");
+    assert_ne!(ones, tens, "a number is never handed out again");
     engine.refresh_grid().unwrap();
     driver.until(&mut harness, "the lists read again", |app| {
         search_names(app) == ["Ones"]
@@ -728,12 +733,48 @@ fn a_question_whose_saved_search_has_gone_closes_and_deletes_nothing() {
     assert_eq!(search_names(harness.state()), ["Ones"]);
 }
 
-// A delete the library refuses - the album has gone from elsewhere, and the lists have
-// not been read since - is a message, the lists read again, and a row that is a row
-// again: left as "going", nothing listed under that number could be opened a menu on
-// for the rest of the session.
+// A delete the library refuses is a message, and the row is a row again: left as
+// "going", it could not be opened a menu on for the rest of the session. The refusal
+// here leaves the album listed - a trigger in the library stands in for a library that
+// cannot write (another photon holding it past the busy timeout, a full disk) - so that
+// the row asked about is the row looked at after.
 #[test]
 fn a_delete_the_library_refuses_leaves_the_rows_as_they_are() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    album(&library, "Lisbon", &[]);
+    album(&library, "Porto", &[]);
+    rusqlite::Connection::open(&library.dirs().db_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refused BEFORE DELETE ON albums
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.until(&mut harness, "the albums read", |app| {
+        album_names(app).len() == 2
+    });
+    driver.act(&mut harness);
+    ask_to_delete(&mut driver, &mut harness, "Porto");
+    harness.get_by_label("Delete").click();
+    driver.act(&mut harness);
+    driver.until(&mut harness, "the refusal", |app| !app.toasts().is_empty());
+    driver.settle(&mut harness);
+    assert_eq!(said(&harness).len(), 1);
+    assert_eq!(album_names(harness.state()), ["Lisbon", "Porto"]);
+    right_click_row(&mut driver, &mut harness, "Porto");
+    assert!(
+        harness.state().menu_open(),
+        "the row of an album whose delete was refused has no menu"
+    );
+}
+
+// The commonest refusal is of an album gone from elsewhere - the other photon, open on
+// the same library - with nothing announced: it is said, and the lists are read again,
+// so that its row goes too.
+#[test]
+fn a_delete_of_an_album_gone_from_elsewhere_is_said_and_its_row_goes() {
     let dir = tempfile::tempdir().unwrap();
     let library = library(dir.path(), 900, 0, 0);
     album(&library, "Lisbon", &[]);
@@ -744,7 +785,8 @@ fn a_delete_the_library_refuses_leaves_the_rows_as_they_are() {
     });
     driver.act(&mut harness);
     ask_to_delete(&mut driver, &mut harness, "Porto");
-    // Gone from elsewhere, and Paris made under its number, with nothing announced.
+    // Gone from elsewhere while the question stands; the grid is not on the album, so
+    // the engine announces nothing.
     let engine = harness.state().engine().clone();
     commands::delete_album(&engine, porto).unwrap();
     commands::delete_album(&engine, porto).unwrap_err();
@@ -756,16 +798,6 @@ fn a_delete_the_library_refuses_leaves_the_rows_as_they_are() {
         |app| !app.toasts().is_empty() && album_names(app) == ["Lisbon"],
     );
     assert_eq!(said(&harness).len(), 1);
-    // An album made now takes the number, and has its menu.
-    let paris = commands::create_album(&engine, "Paris").unwrap().id;
-    assert_eq!(paris, porto);
-    engine.refresh_grid().unwrap();
-    driver.until(&mut harness, "Paris listed", |app| {
-        album_names(app) == ["Lisbon", "Paris"]
-    });
-    driver.act(&mut harness);
-    right_click_row(&mut driver, &mut harness, "Paris");
-    assert!(harness.state().menu_open());
 }
 
 // A double click on the menu's item: its first click opens the picker, which stands in
@@ -942,6 +974,93 @@ fn a_click_in_the_frame_a_dialog_is_first_drawn_in_presses_nothing_behind_it() {
     driver.settle(&mut harness);
     driver.until(&mut harness, "at rest", |app| !app.busy());
     assert_eq!(harness.state().settled(), &Place::of(GridView::All));
+}
+
+// The picker holds the photos it was opened on by number. A photo purged and another
+// indexed while it stands must not make the held number the new photo's: ids are never
+// handed out again (migration 27), so the keyword goes nowhere, and the new photo has
+// none. Either the picker closes first or its write finds no photo; both pass.
+#[test]
+fn a_keyword_picker_left_open_writes_nothing_to_a_photo_indexed_after_its_own_was_purged() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 900, 0, 0);
+    let ids = photo_ids(&library);
+    let highest = *ids.iter().max().unwrap();
+    let (mut harness, mut driver) = opened(&library, 900);
+    driver.settle(&mut harness);
+    let at = harness
+        .state()
+        .shown()
+        .iter()
+        .position(|id| *id == highest)
+        .expect("the photo is in the grid");
+    // Its tile is laid out far below the first screenful: the wheel brings it up.
+    harness.event(egui::Event::PointerMoved(Pos2::new(600.0, 300.0)));
+    for _ in 0..20 {
+        let top = harness.state().tile_rect(at).map_or(0.0, |rect| rect.top());
+        if (100.0..450.0).contains(&top) {
+            break;
+        }
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 250.0 - top),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        driver.frames_in(&mut harness, 0.5);
+    }
+    assert!(
+        harness
+            .state()
+            .tile_rect(at)
+            .is_some_and(|rect| rect.bottom() < 650.0),
+        "the photo's tile is on screen"
+    );
+    open_picker(&mut driver, &mut harness, (at, at), "Add keyword to photo…");
+    // Another photon purges the photo and indexes a new one in the same folder.
+    let new_id = {
+        let lib = Library::open(&library.dirs().db_path).unwrap();
+        let (folder_id, path): (i64, String) = rusqlite::Connection::open(&library.dirs().db_path)
+            .unwrap()
+            .query_row(
+                "SELECT folder_id, path FROM items WHERE id = ?1",
+                [highest],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        lib.purge_items(&[highest]).unwrap();
+        let fresh = NewItem {
+            folder_id,
+            file_name: "indexed-later.jpg".to_owned(),
+            path: path.replace(".jpg", "-later.jpg"),
+            kind: MediaKind::Image,
+            size: 1,
+            mtime_ms: 1_700_000_000_000,
+            width: 400,
+            height: 300,
+            orientation: 1,
+            taken_at: 1_700_000_000,
+            rating: None,
+            camera: CameraMeta::default(),
+            tags: Vec::new(),
+            caption: None,
+            duration_ms: None,
+        };
+        lib.insert_items(&[fresh]).unwrap()[0]
+    };
+    typed(&mut driver, &mut harness, "lisbon");
+    key(&mut driver, &mut harness, Key::Enter, Modifiers::NONE);
+    driver.until(&mut harness, "the picker answered", |app| {
+        app.dialog().is_none() && !app.toasts().is_empty()
+    });
+    driver.settle(&mut harness);
+    let lib = Library::open(&library.dirs().db_path).unwrap();
+    assert!(
+        lib.item_tags(new_id).unwrap().is_empty(),
+        "the keyword went to a photo indexed after the one it was meant for"
+    );
+    // The fixture reached the case: the new photo is not the purged one under its number.
+    assert_ne!(new_id, highest, "a number is never handed out again");
 }
 
 // A frame can be long, and a keyword's last letter and its Enter in it together: the

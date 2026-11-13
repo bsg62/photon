@@ -19,13 +19,13 @@
 //! photo that had only ever died once: a photo on an offline drive (never queued, so its
 //! marker - if it somehow had one - would sit untouched forever), a quick relaunch, an
 //! orphaned marker (`process` used to return before clearing one for a missing, purged or
-//! already-failed item), and SQLite id reuse (`items.id` is `INTEGER PRIMARY KEY` without
-//! `AUTOINCREMENT`, so a library rebuild can hand a healthy photo a dead one's id) would all
+//! already-failed item), and an id that came to name another photo (a library deleted and
+//! built again starts its ids at 1, so it can hand a healthy photo a dead one's id) would all
 //! gain a false death at every subsequent launch, forever, with nothing to reset the count. A
 //! record is written once per real death and the marker that produced it is deleted in the
 //! same pass, so a marker can never outlive the launch after the death that left it, and a
-//! record is keyed by the photo's `thumb_key()` so a reused id, a changed file, or a fresh
-//! edit never inherits someone else's deaths.
+//! record is keyed by the photo's `thumb_key()` so a changed file, a fresh edit, or another
+//! photo under the same id in a rebuilt library never inherits someone else's deaths.
 //!
 //! That second version still let `begin` write a marker before its photo's decode actually
 //! held `service.rs`'s exclusive decode lock, so every photo merely *waiting* for a suspect's
@@ -152,9 +152,10 @@ impl InFlight {
     }
 
     /// Deaths recorded against `id` while its content matched `key`. Reports 0 for a record
-    /// left by a different photo now living at the same id (id reuse), or by an earlier
-    /// version of the same photo (a changed file, a fresh edit) - either way `key` no longer
-    /// matches what killed photon, so it must not blame what is there now.
+    /// left by an earlier version of the same photo (a changed file, a fresh edit), or by a
+    /// different photo at the same id (a library deleted and built again, whose ids start at
+    /// 1 once more) - either way `key` no longer matches what killed photon, so it must not
+    /// blame what is there now.
     pub(crate) fn deaths(&self, id: i64, key: u64) -> u32 {
         let key = hex_key(key);
         match self.read_record(id) {
@@ -494,7 +495,8 @@ mod tests {
         assert_eq!(
             inflight.deaths(7, k2),
             0,
-            "a reused id, or a changed file, must not inherit a death from before"
+            "a changed file, or another photo at the id in a rebuilt library, must not \
+             inherit a death from before"
         );
         std::mem::forget(inflight.begin(7, k2));
         inflight.recover();
