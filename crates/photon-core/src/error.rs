@@ -18,7 +18,8 @@ pub enum Error {
     SchemaTooNew { found: i64, supported: i64 },
     #[error(
         "the library's references do not hold together ({violations} broken), \
-         so the upgrade to version {version} was not made"
+         so the upgrade to version {version} was not made; the photon used before still \
+         opens it"
     )]
     ForeignKeyCheck { version: i64, violations: usize },
     #[error("a person needs a name")]

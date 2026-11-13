@@ -606,6 +606,26 @@ fn run(conn: &Connection, migrations: &[&str], without_foreign_keys: &[usize]) -
             supported,
         });
     }
+    // The migrations before the first one run without foreign keys commit one by one, so a
+    // check that failed only at that one would leave the library at a version in between,
+    // which the photon used before may not open - and the window says nothing was changed.
+    // Those earlier migrations run with foreign keys on, so they can neither break a
+    // reference nor (an insert of a broken one failing) mend one: what the check would find
+    // then is there now, and it is looked for before anything is written. When the first
+    // such migration is the next one, its own check already leaves the library as it was,
+    // and a second pass over a large library is not made.
+    let first = (without_foreign_keys.iter().copied())
+        .filter(|&version| version as i64 > current && version <= migrations.len())
+        .min();
+    if let Some(first) = first.filter(|&first| first as i64 > current + 1) {
+        let violations = foreign_key_violations(conn)?;
+        if violations > 0 {
+            return Err(Error::ForeignKeyCheck {
+                version: first as i64,
+                violations,
+            });
+        }
+    }
     for (index, sql) in migrations.iter().enumerate().skip(current as usize) {
         let version = (index + 1) as i64;
         if without_foreign_keys.contains(&(index + 1)) {
@@ -614,7 +634,9 @@ fn run(conn: &Connection, migrations: &[&str], without_foreign_keys: &[usize]) -
             // a transaction, so it is switched before one begins.
             conn.pragma_update(None, "foreign_keys", false)?;
             let done = apply_checked(conn, sql, version);
-            // On every path, or the connection would go on without its cascades.
+            // On every path, or the connection would go on without its cascades. ON, and
+            // not whatever it was before: photon's one caller is `Library::open`, after
+            // `configure()` has turned them on.
             conn.pragma_update(None, "foreign_keys", true)?;
             done?;
         } else {
@@ -633,10 +655,7 @@ fn run(conn: &Connection, migrations: &[&str], without_foreign_keys: &[usize]) -
 fn apply_checked(conn: &Connection, sql: &str, version: i64) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute_batch(sql)?;
-    let violations = tx
-        .prepare("PRAGMA foreign_key_check")?
-        .query_map([], |_| Ok(()))?
-        .count();
+    let violations = foreign_key_violations(&tx)?;
     if violations > 0 {
         return Err(Error::ForeignKeyCheck {
             version,
@@ -646,6 +665,14 @@ fn apply_checked(conn: &Connection, sql: &str, version: i64) -> Result<()> {
     tx.pragma_update(None, "user_version", version)?;
     tx.commit()?;
     Ok(())
+}
+
+/// How many rows reference a row that is not there.
+fn foreign_key_violations(conn: &Connection) -> Result<usize> {
+    Ok(conn
+        .prepare("PRAGMA foreign_key_check")?
+        .query_map([], |_| Ok(()))?
+        .count())
 }
 
 #[cfg(test)]
@@ -1975,6 +2002,94 @@ mod tests {
         "person_contacts",
         "face_rejections",
     ];
+
+    /// A folder whose watched folder is not there, put in with foreign keys off - as no
+    /// photon writes, but another program or a hand at the file might have left.
+    const BROKEN: &str = "PRAGMA foreign_keys = OFF;
+        INSERT INTO watched_folders (id, path) VALUES (1, '/p');
+        INSERT INTO folders (id, watched_id, parent_id, path, name, sort_key)
+        VALUES (1, 1, NULL, '/p', 'p', 'p'), (2, 99, NULL, '/q', 'q', 'q');
+        INSERT INTO albums (id, name, created_ms) VALUES (1, 'Trip', 5);";
+
+    /// The five tables' rows, to hold a failed upgrade to.
+    fn rebuilt_rows(conn: &rusqlite::Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        (REBUILT.iter())
+            .map(|t| values(conn, &format!("SELECT * FROM {t} ORDER BY rowid")))
+            .collect()
+    }
+
+    /// The spec's rollback, through migration 27 itself: a library whose references do not
+    /// hold together is not upgraded, and is left as it was - version 26, its tables as
+    /// they were, foreign keys on - so that photon 0.56 still opens it. The first pending
+    /// migration is 27, so this is the check inside its transaction, not `run`'s check
+    /// beforehand.
+    #[test]
+    fn migration_27_leaves_a_library_whose_references_are_broken_at_version_26() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = version_26_library(&dir, BROKEN);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let before = rebuilt_rows(&conn);
+
+        let err = migrate(&conn).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                Error::ForeignKeyCheck {
+                    version: 27,
+                    violations: 1
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(pragma(&conn, "user_version"), 26);
+        for table in REBUILT {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(!sql.contains("AUTOINCREMENT"), "{table}: {sql}");
+        }
+        assert_eq!(rebuilt_rows(&conn), before);
+        assert_eq!(pragma(&conn, "foreign_keys"), 1);
+    }
+
+    /// Migrations 25 and 26 commit one by one before 27 runs. Had the check been made only
+    /// in 27's transaction, a library at 24 whose references do not hold together was left
+    /// at 26: neither the photon used before, which knows only 24, could open it, nor this
+    /// one, and the window said nothing was changed. It is looked for before anything runs.
+    #[test]
+    fn a_broken_reference_leaves_an_older_library_at_the_version_it_had() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
+        for sql in &MIGRATIONS[..24] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 24i64).unwrap();
+        conn.execute_batch(BROKEN).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let before = rebuilt_rows(&conn);
+
+        let err = migrate(&conn).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                Error::ForeignKeyCheck {
+                    version: 27,
+                    violations: 1
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(pragma(&conn, "user_version"), 24);
+        assert_eq!(rebuilt_rows(&conn), before);
+        assert_eq!(pragma(&conn, "foreign_keys"), 1);
+    }
 
     /// The rebuild drops tables that others reference with `ON DELETE CASCADE`. Run with
     /// foreign keys on, as every photon connection is, the drop of `watched_folders` alone

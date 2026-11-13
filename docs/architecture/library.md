@@ -42,11 +42,19 @@ A new such table is created with it. `AUTOINCREMENT` cannot be added to an exist
 migration rebuilds it (new table, copy with ids, drop, rename), and a rebuild of a table others
 reference runs through `WITHOUT_FOREIGN_KEYS` in `schema.rs`: dropping it with foreign keys on
 cascades into every row that references it, and the upgrade still succeeds. `run` checks
-`PRAGMA foreign_key_check` before committing and puts foreign keys back on whatever happens. The
+`PRAGMA foreign_key_check` before committing and puts foreign keys back on whatever happens; when
+earlier migrations are pending, which commit one by one, it checks once before running any of
+them, so that a failure leaves the library at the version it had and the photon used before
+still opens it (`a_broken_reference_leaves_an_older_library_at_the_version_it_had`). The
 rebuild recreates the table's indexes in their old `sqlite_master` order, because of the tie
 above (`migration_27_keeps_the_tables_shape_and_their_indexes_in_order`). Migration 27 also
 raises the `folders` sequence to a stored `last_folder`, the one id kept across launches, since
-a folder deleted before the upgrade left no trace the sequence could see.
+a folder deleted before the upgrade left no trace the sequence could see. An `INSERT … ON
+CONFLICT DO UPDATE` or `INSERT OR IGNORE` into these tables spends an id even when it updates or
+ignores (`upsert_folder`, the Picasa album write and `register_watched_folder` do, harmlessly):
+a per-scan upsert into `items` would spread its ids and turn the grid's `Positions` table into
+a map (9 MB for 300,000 photos where the table is 1.2), so such a path is written as a lookup
+and then a plain insert.
 
 **Reads are pooled, writes are one connection.** `Library::reader()` returns a `Result` and never
 waits on another reader: it hands out an idle pooled connection or opens one (at most eight are
