@@ -211,6 +211,9 @@ pub struct App {
     theme: ThemeChoice,
     /// Whether the window moves things smoothly, read with the theme.
     animations: bool,
+    /// Whether the viewer fits the photo above its bar and the photo's own caption, read
+    /// with the theme.
+    photo_clear: bool,
     /// The theme the system last said the window has (`keep_title_bar`).
     system_theme: Option<egui::Theme>,
     /// What Settings shows of the stored settings, read as it opens.
@@ -799,6 +802,7 @@ impl App {
         let theme = commands::theme(&engine).unwrap_or_default();
         theme::apply::put(&ctx, theme);
         let animations = commands::animations(&engine).unwrap_or(true);
+        let photo_clear = commands::viewer_clear(&engine).unwrap_or(false);
         let size = commands::grid_tile(&engine).unwrap_or_default();
         engine.startup(pictures);
 
@@ -1428,6 +1432,7 @@ impl App {
             show_settings,
             theme,
             animations,
+            photo_clear,
             system_theme: None,
             settings_read,
             memory_read,

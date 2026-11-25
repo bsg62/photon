@@ -78,6 +78,8 @@ pub(super) enum SettingWrite {
     Theme(ThemeChoice),
     /// Kept for the session if the library will not store it, as the theme is.
     Animations(bool),
+    /// Kept for the session if the library will not store it, as the animations are.
+    PhotoClear(bool),
     /// With the opening of Settings it was sent from.
     Interval {
         seconds: i64,
@@ -146,6 +148,9 @@ pub(super) fn store(engine: &Arc<Engine>, write: SettingWrite) -> Result<Wrote, 
             .map(|()| SettingWrote::Stored)
             .map_err(refused(Refused::Said))?,
         SettingWrite::Animations(on) => commands::set_animations(engine, on)
+            .map(|()| SettingWrote::Stored)
+            .map_err(refused(Refused::Said))?,
+        SettingWrite::PhotoClear(on) => commands::set_viewer_clear(engine, on)
             .map(|()| SettingWrote::Stored)
             .map_err(refused(Refused::Said))?,
         SettingWrite::Interval { seconds, opening } => {
@@ -285,6 +290,7 @@ impl App {
             theme: self.theme,
             size: self.size,
             animations: self.animations,
+            photo_clear: self.photo_clear,
             find_faces: self.engine.face_detection(),
             faces_line: self.scans.faces_line(),
             folders,
@@ -581,6 +587,10 @@ impl App {
                     self.animations = on;
                     self.thumbs.set_fades(on);
                     self.push_setting(SettingWrite::Animations(on));
+                }
+                Asked::PhotoClear(on) => {
+                    self.photo_clear = on;
+                    self.push_setting(SettingWrite::PhotoClear(on));
                 }
                 // The top bar's own control, again.
                 Asked::Size(size) => {
