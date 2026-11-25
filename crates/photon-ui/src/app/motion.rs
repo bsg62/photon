@@ -212,7 +212,7 @@ impl App {
             // panel is shut at every opening.
             None => {
                 let window = frame(ctx.content_rect());
-                let area = viewer_layout::photo_area(window, 0.0);
+                let area = viewer_layout::photo_area(window, 0.0, 0.0);
                 let fit = viewer_layout::contained(entry.aspect, 1.0, area);
                 (Way::Fade, fit, None)
             }

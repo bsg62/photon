@@ -31,7 +31,9 @@ use crate::{
     viewer::wheel_step,
     viewer_faces::{Drawn, On, face_at, face_box, on},
     viewer_info_view::{InfoAction, InfoData, InfoView},
-    viewer_layout::{BAR, CLOSE, EDGE, Frame, INFO_RIGHT, NAV, contained, info_place, photo_area},
+    viewer_layout::{
+        BAR, CAPTION_BOTTOM, CLOSE, EDGE, Frame, INFO_RIGHT, NAV, contained, info_place, photo_area,
+    },
     viewer_levels::level_for,
     viewer_motion::{Passage, Way},
     viewer_zoom::{
@@ -57,8 +59,6 @@ pub const ORIGINAL: &str = "Original";
 const BESIDE_BAR: f32 = 214.0;
 /// How far the message keeps from the window's sides: clear of the two buttons there.
 const MESSAGE_SIDE: f32 = 64.0;
-/// The photo's own caption, over the bar.
-const CAPTION_BOTTOM: f32 = 64.0;
 /// The zoom's slider: how long its track is, and the room its percentage has.
 const SLIDER: f32 = 120.0;
 const SLIDER_LEVEL: f32 = 38.0;
@@ -483,7 +483,7 @@ impl ViewerView {
             width: window.width(),
             height: window.height(),
         };
-        let area = photo_area(whole, data.info_shown);
+        let area = photo_area(whole, data.info_shown, 0.0);
         // Where the panel stands, open or on its way in or out, and the part of it that
         // is drawn: cut off at the right edge it has when open, so that it slides out
         // from under that edge and never crosses the column of the button that closes -

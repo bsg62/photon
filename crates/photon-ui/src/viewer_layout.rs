@@ -28,6 +28,39 @@ pub const INFO_RIGHT: f32 = 56.0;
 pub const INFO_GAP: f32 = 12.0;
 /// How far the panel's foot stands from the window's: clear of the bar and the slider.
 pub const INFO_BOTTOM: f32 = 56.0;
+/// How far the photo's own caption stands from the window's foot: over the bar.
+pub const CAPTION_BOTTOM: f32 = 64.0;
+/// The room kept at the window's foot for the bar, where the photo is kept clear of it:
+/// the bar and the black on either side of it, as far from the photo as from the edge.
+pub const BAR_ROOM: f32 = EDGE + BAR + EDGE;
+
+/// What is known of the photo's own caption, for the room kept under the photo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Caption {
+    /// The library has not said yet what the photo is: a step's round trip.
+    NotKnown,
+    /// It has none, or none is drawn over the photo (the info panel has it, or the crop
+    /// tool is open).
+    Without,
+    /// One is drawn over the bar, this many points high.
+    Lines(f32),
+}
+
+/// The room kept at the window's foot, under the photo: nothing where the photo is not
+/// kept `clear` of the bar, the bar's, or up to the top of a caption drawn over it. Where
+/// the caption is not known yet, the room it `was`: at every step the library's answer
+/// is a round trip away, and the photo shrank to the bar's room and grew back for each
+/// captioned photo stepped to - the jump `bar_place`'s `was` ends for the bar.
+pub fn foot_room(clear: bool, caption: Caption, was: Option<f32>) -> f32 {
+    if !clear {
+        return 0.0;
+    }
+    match caption {
+        Caption::NotKnown => was.unwrap_or(BAR_ROOM),
+        Caption::Without => BAR_ROOM,
+        Caption::Lines(height) => CAPTION_BOTTOM + height + EDGE,
+    }
+}
 
 /// How much of the window's right side the info panel takes from the photo, `shown` of
 /// the way open: nought shut, one open, and between while it slides. The photo is fitted
@@ -38,13 +71,14 @@ pub fn info_room(shown: f32) -> f32 {
 }
 
 /// The area the photo is fitted into, in a window of this frame: all of it, less the
-/// info panel's room as far as the panel is `shown`. What the zoom and the pan are
-/// measured in, and from whose middle - in every frame of a slide, so the photo shrinks
-/// and grows with the panel instead of jumping at either end of it.
-pub fn photo_area(window: Frame, shown: f32) -> Frame {
+/// info panel's room as far as the panel is `shown` and the `foot` kept under the photo
+/// (`foot_room`). What the zoom and the pan are measured in, and from whose middle - in
+/// every frame of a slide, so the photo shrinks and grows with the panel instead of
+/// jumping at either end of it.
+pub fn photo_area(window: Frame, shown: f32, foot: f32) -> Frame {
     Frame {
         width: (window.width - info_room(shown)).max(0.0),
-        height: window.height.max(0.0),
+        height: (window.height - foot).max(0.0),
         ..window
     }
 }
@@ -134,9 +168,9 @@ mod tests {
         };
         // The whole window with the panel closed; what the panel leaves, at the
         // window's full height and from its own corner, while it is open.
-        assert_eq!(photo_area(window, 0.0), window);
+        assert_eq!(photo_area(window, 0.0, 0.0), window);
         assert_eq!(
-            photo_area(window, 1.0),
+            photo_area(window, 1.0, 0.0),
             Frame {
                 width: 1280.0 - 348.0,
                 ..window
@@ -148,7 +182,7 @@ mod tests {
             height: -5.0,
             ..window
         };
-        let area = photo_area(narrow, 1.0);
+        let area = photo_area(narrow, 1.0, 0.0);
         assert_eq!((area.width, area.height), (0.0, 0.0));
     }
 
@@ -171,7 +205,7 @@ mod tests {
             }
         );
         // The gap between the photo's area and the panel is black.
-        let area = photo_area(window, 1.0);
+        let area = photo_area(window, 1.0, 0.0);
         assert_eq!(panel.left - (area.left + area.width), INFO_GAP);
         // A window too low for it has a panel of no height, not of less.
         assert_eq!(
@@ -199,7 +233,7 @@ mod tests {
             height: 800.0,
         };
         assert_eq!(
-            photo_area(window, 0.5).width,
+            photo_area(window, 0.5, 0.0).width,
             window.width - 0.5 * info_room(1.0)
         );
         let shut = info_place(window, 0.0);
@@ -218,8 +252,55 @@ mod tests {
         let half = info_place(window, 0.5);
         assert_eq!(half.left, 10.0 + 1280.0 - 0.5 * (56.0 + 280.0));
         assert_eq!(half.width, INFO_WIDTH);
-        let area = photo_area(window, 0.5);
+        let area = photo_area(window, 0.5, 0.0);
         assert!(half.left > area.left + area.width);
+    }
+
+    #[test]
+    fn the_room_at_the_foot_is_the_bars_or_up_to_the_caption() {
+        assert_eq!(foot_room(false, Caption::Lines(20.0), Some(99.0)), 0.0);
+        assert_eq!(foot_room(true, Caption::Without, Some(99.0)), 62.0);
+        assert_eq!(
+            foot_room(true, Caption::Lines(20.0), None),
+            64.0 + 20.0 + 12.0
+        );
+    }
+
+    // At a step the caption is not known for the round trip the library's answer takes:
+    // the room stays what it was, so a photo does not jump to the bar's room and back.
+    #[test]
+    fn the_room_is_kept_across_a_step_until_the_caption_is_known() {
+        assert_eq!(foot_room(true, Caption::NotKnown, Some(96.0)), 96.0);
+        assert_eq!(foot_room(true, Caption::NotKnown, None), BAR_ROOM);
+    }
+
+    #[test]
+    fn the_photos_area_stops_the_room_above_the_foot() {
+        let window = Frame {
+            left: 10.0,
+            top: 20.0,
+            width: 1280.0,
+            height: 800.0,
+        };
+        assert_eq!(
+            photo_area(window, 1.0, 62.0),
+            Frame {
+                width: 1280.0 - 348.0,
+                height: 800.0 - 62.0,
+                ..window
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_lower_than_the_room_has_an_area_of_nothing() {
+        let low = Frame {
+            left: 0.0,
+            top: 0.0,
+            width: 500.0,
+            height: 40.0,
+        };
+        assert_eq!(photo_area(low, 0.0, BAR_ROOM).height, 0.0);
     }
 
     #[test]

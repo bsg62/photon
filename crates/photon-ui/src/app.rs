@@ -2958,6 +2958,7 @@ impl App {
                 height: window.height(),
             },
             info_shown,
+            0.0,
         );
         let scale = ctx.pixels_per_point();
         let within = (
