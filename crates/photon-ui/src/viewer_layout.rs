@@ -39,10 +39,10 @@ pub const BAR_ROOM: f32 = EDGE + BAR + EDGE;
 pub enum Caption {
     /// The library has not said yet what the photo is: a step's round trip.
     NotKnown,
-    /// It has none, or none is drawn over the photo (the info panel has it, or the crop
-    /// tool is open).
+    /// It has none, or none is drawn over the photo (the crop tool is open).
     Without,
-    /// One is drawn over the bar, this many points high.
+    /// It has one, this many points high over the bar: drawn there while the info panel is
+    /// shut, which has it whole when open.
     Lines(f32),
 }
 
@@ -50,15 +50,20 @@ pub enum Caption {
 /// kept `clear` of the bar, the bar's, or up to the top of a caption drawn over it. Where
 /// the caption is not known yet, the room it `was`: at every step the library's answer
 /// is a round trip away, and the photo shrank to the bar's room and grew back for each
-/// captioned photo stepped to - the jump `bar_place`'s `was` ends for the bar.
-pub fn foot_room(clear: bool, caption: Caption, was: Option<f32>) -> f32 {
+/// captioned photo stepped to - the jump `bar_place`'s `was` ends for the bar. The
+/// caption's share gives way as the info panel comes in (`panel`, nought shut and one
+/// open, as `info_room` takes it): switched at the press, the photo jumped by it in the
+/// one frame while the panel's room at the side slid.
+pub fn foot_room(clear: bool, caption: Caption, was: Option<f32>, panel: f32) -> f32 {
     if !clear {
         return 0.0;
     }
     match caption {
         Caption::NotKnown => was.unwrap_or(BAR_ROOM),
         Caption::Without => BAR_ROOM,
-        Caption::Lines(height) => CAPTION_BOTTOM + height + EDGE,
+        Caption::Lines(height) => {
+            BAR_ROOM + (CAPTION_BOTTOM + height + EDGE - BAR_ROOM) * (1.0 - panel.clamp(0.0, 1.0))
+        }
     }
 }
 
@@ -258,10 +263,10 @@ mod tests {
 
     #[test]
     fn the_room_at_the_foot_is_the_bars_or_up_to_the_caption() {
-        assert_eq!(foot_room(false, Caption::Lines(20.0), Some(99.0)), 0.0);
-        assert_eq!(foot_room(true, Caption::Without, Some(99.0)), 62.0);
+        assert_eq!(foot_room(false, Caption::Lines(20.0), Some(99.0), 0.0), 0.0);
+        assert_eq!(foot_room(true, Caption::Without, Some(99.0), 0.0), 62.0);
         assert_eq!(
-            foot_room(true, Caption::Lines(20.0), None),
+            foot_room(true, Caption::Lines(20.0), None, 0.0),
             64.0 + 20.0 + 12.0
         );
     }
@@ -270,8 +275,23 @@ mod tests {
     // the room stays what it was, so a photo does not jump to the bar's room and back.
     #[test]
     fn the_room_is_kept_across_a_step_until_the_caption_is_known() {
-        assert_eq!(foot_room(true, Caption::NotKnown, Some(96.0)), 96.0);
-        assert_eq!(foot_room(true, Caption::NotKnown, None), BAR_ROOM);
+        assert_eq!(foot_room(true, Caption::NotKnown, Some(96.0), 0.0), 96.0);
+        assert_eq!(foot_room(true, Caption::NotKnown, None, 0.0), BAR_ROOM);
+    }
+
+    // The panel has the caption whole, so the caption is not drawn over the photo while
+    // it is open: the room goes from the caption's to the bar's as the panel comes in, in
+    // step with the panel's room at the side, never at once.
+    #[test]
+    fn the_captions_room_gives_way_as_the_panel_comes_in() {
+        let caption = 64.0 + 20.0 + 12.0;
+        assert_eq!(foot_room(true, Caption::Lines(20.0), None, 0.0), caption);
+        assert_eq!(foot_room(true, Caption::Lines(20.0), None, 1.0), BAR_ROOM);
+        assert_eq!(
+            foot_room(true, Caption::Lines(20.0), None, 0.5),
+            BAR_ROOM + (caption - BAR_ROOM) / 2.0
+        );
+        assert_eq!(foot_room(true, Caption::Without, None, 0.5), BAR_ROOM);
     }
 
     #[test]

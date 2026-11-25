@@ -272,7 +272,11 @@ The bar floats over the photo, and covered the foot of every photo as tall as th
 moving it to the top only moved what it covered. Kept clear, the photo's area stops a room
 above the window's foot (`viewer_layout::foot_room`): the bar's (`BAR_ROOM`, with the zoom's
 slider in the same row), or up to the top of the photo's own caption where one is drawn over
-the bar - not while the panel or the crop tool is open, which do not draw it. **The room is
+the bar - not while the crop tool is open, which does not draw it, and giving way to the
+bar's as the info panel slides in (`foot_room`'s `panel`), which has the caption whole: switched
+at the press, the photo jumped by the caption's room in one frame while the panel slid, the
+jump the slide is there to prevent. The caption comes back over the photo once the panel has
+slid out, not at the press that shuts it, or it lay over the photo's foot meanwhile. **The room is
 worked out by the application, once a frame, and handed to the view** (`ViewerData::foot`):
 the box the fitted copy is asked for (`within`) and the area the photo is drawn in are then
 one number, as they must be, or the copy is made for a size nothing is drawn at and the

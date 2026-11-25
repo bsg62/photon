@@ -512,9 +512,11 @@ impl ViewerView {
 
         // Where the controls stand, before anything is read: a press on one is its own.
         // (The photo's own caption is not drawn beside the open panel, which has it
-        // whole.)
+        // whole - nor while the panel slides out: the room kept for it under a photo kept
+        // clear of the bar comes back over the slide, and drawn at once it lay over the
+        // photo's foot until then.)
         let caption = (data.photo_caption)
-            .filter(|_| !data.info_open && !hidden)
+            .filter(|_| !data.info_open && data.info_shown == 0.0 && !hidden)
             .map(|line| caption_place(ui, window, line));
         let side = |left: f32| {
             Rect::from_min_size(pos2(left, window.center().y - NAV / 2.0), vec2(NAV, NAV))
@@ -5315,6 +5317,20 @@ mod tests {
         let (_, at) = f.photo().expect("the picture");
         assert!(at.bottom() <= 638.5, "{at:?}");
         assert!((at.height() - 638.0).abs() < 0.5, "{at:?}");
+    }
+
+    // The photo's own caption comes back over the photo once the panel has slid out, not
+    // at the press that shuts it: the room kept for it comes back over the slide.
+    #[test]
+    fn the_photos_own_caption_waits_for_the_panel_to_slide_out() {
+        let mut f = Fixture::new();
+        f.photo_caption = Some("Lisbon, at dusk");
+        f.info_shown = Some(0.5);
+        f.frame(Vec::new());
+        assert!(f.drew("Lisbon, at dusk").is_none(), "drawn mid-slide");
+        f.info_shown = Some(0.0);
+        f.frame(Vec::new());
+        assert!(f.drew("Lisbon, at dusk").is_some());
     }
 
     // The application keeps room for the photo's own caption by its height, which is the

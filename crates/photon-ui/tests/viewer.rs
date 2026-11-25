@@ -4496,3 +4496,47 @@ fn a_photo_kept_clear_fades_in_above_the_bar() {
         first.photo
     );
 }
+
+// The info panel slides in and the photo shrinks beside it over the slide, and the room
+// under the photo goes from the caption's (drawn while the panel is shut) to the bar's
+// (the panel has the caption) over the same slide: switched at the press, the photo's
+// area grew by the caption's room in one frame and the photo jumped.
+#[test]
+fn the_room_under_a_captioned_photo_slides_with_the_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    Library::open(&library.dirs().db_path)
+        .unwrap()
+        .set_viewer_clear(true)
+        .unwrap();
+    doctored(
+        &library,
+        "UPDATE items SET caption = 'Evening over Lisbon' WHERE id = ?1",
+        &ids,
+    );
+    let (mut harness, mut driver) = opened_animated(&library, 12);
+    driver.settle(&mut harness);
+    opened_on(&mut driver, &mut harness, 0);
+    let window = harness.ctx.content_rect();
+    let painter = harness.ctx.layer_painter(egui::LayerId::background());
+    let caption = caption_height(&painter, window, "Evening over Lisbon");
+    let shut = window.height() - (viewer_layout::CAPTION_BOTTOM + caption + EDGE);
+    let open = window.height() - viewer_layout::BAR_ROOM;
+    assert!((box_height(&harness) - shut).abs() < 1.0);
+    let start = driver.now;
+    harness.key_press_modifiers(Modifiers::NONE, Key::I);
+    let mut heights = vec![box_height(&harness)];
+    for k in 1..=20 {
+        driver.frame(&mut harness, start + f64::from(k) * 0.016);
+        heights.push(box_height(&harness));
+    }
+    assert!((heights.last().unwrap() - open).abs() < 1.0, "{heights:?}");
+    let most = (heights.windows(2))
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        most < (open - shut) / 2.0,
+        "a step of {most} in {heights:?}"
+    );
+}

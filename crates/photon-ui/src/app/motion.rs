@@ -214,7 +214,8 @@ impl App {
             None => {
                 let window = frame(ctx.content_rect());
                 let clear = self.photo_clear && entry.kind != photon_core::media::MediaKind::Video;
-                let foot = viewer_layout::foot_room(clear, viewer_layout::Caption::NotKnown, None);
+                let foot =
+                    viewer_layout::foot_room(clear, viewer_layout::Caption::NotKnown, None, 0.0);
                 let area = viewer_layout::photo_area(window, 0.0, foot);
                 let fit = viewer_layout::contained(entry.aspect, 1.0, area);
                 (Way::Fade, fit, None)

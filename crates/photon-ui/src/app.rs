@@ -2964,12 +2964,12 @@ impl App {
         // None for a video, which stops above its strip already, nor in a show, whose bar
         // is gone at rest: fitted to it, the photo would grow and shrink as the controls
         // come and go. The photo's own caption is drawn over the photo only while the
-        // panel and the crop tool are shut; until the library has said what the photo is,
-        // the room is the one it was.
+        // panel and the crop tool are shut, and its room gives way as the panel slides;
+        // until the library has said what the photo is, the room is the one it was.
         let clear = self.photo_clear && !open.viewer.is_video() && !open.show.active();
         let caption = match (&open.item, &photo_caption) {
             (None, _) => viewer_layout::Caption::NotKnown,
-            (Some(_), Some(line)) if !open.info && open.crop.is_none() => {
+            (Some(_), Some(line)) if open.crop.is_none() => {
                 let painter = ctx.layer_painter(egui::LayerId::background());
                 viewer_layout::Caption::Lines(crate::viewer_view::caption_height(
                     &painter, window, line,
@@ -2977,7 +2977,7 @@ impl App {
             }
             (Some(_), _) => viewer_layout::Caption::Without,
         };
-        let foot = viewer_layout::foot_room(clear, caption, open.foot);
+        let foot = viewer_layout::foot_room(clear, caption, open.foot, info_shown);
         if clear {
             open.foot = Some(foot);
         }
