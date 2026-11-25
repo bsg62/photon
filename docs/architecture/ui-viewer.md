@@ -266,6 +266,31 @@ It is the grid's rule for a key that writes (`Asked`), met again. What the Peopl
 says of a photo with no face is the engine's switch (`Engine::face_detection`, a flag in
 memory) and whether a pass is running (`Scans::looking_for_faces`).
 
+**The photo can be kept clear of the bar** (Settings → Appearance, the library's
+`viewer_clear`, off by default; spec `2026-11-25-photon-viewer-photo-clear-of-bar-design.md`).
+The bar floats over the photo, and covered the foot of every photo as tall as the window;
+moving it to the top only moved what it covered. Kept clear, the photo's area stops a room
+above the window's foot (`viewer_layout::foot_room`): the bar's (`BAR_ROOM`, with the zoom's
+slider in the same row), or up to the top of the photo's own caption where one is drawn over
+the bar - not while the crop tool is open, which does not draw it, and giving way to the
+bar's as the info panel slides in (`foot_room`'s `panel`), which has the caption whole: switched
+at the press, the photo jumped by the caption's room in one frame while the panel slid, the
+jump the slide is there to prevent. The caption comes back over the photo once the panel has
+slid out, not at the press that shuts it, or it lay over the photo's foot meanwhile. **The room is
+worked out by the application, once a frame, and handed to the view** (`ViewerData::foot`):
+the box the fitted copy is asked for (`within`) and the area the photo is drawn in are then
+one number, as they must be, or the copy is made for a size nothing is drawn at and the
+levels are drawn for good. The caption's height is `viewer_view::caption_height`, laid out as
+`caption_place` lays it, so the room and the caption cannot disagree. **Until the library has
+said what the photo stepped to is, the room is the one it was** (`Viewing::foot`), the bar's
+`was` met again: the caption is a round trip behind a step, and between two captioned photos
+the photo shrank to the bar's room and grew back at every step. From a captioned photo to one
+without, it resizes once, when the answer comes. No room is kept for a video, which stops
+above its strip already, nor in a show: its controls go at rest, and fitted to the bar the
+photo would grow and shrink as they come and go. A fade at the opening lands in the bar's
+room (`motion.rs`), nothing being known of the photo then; the crop tool's box is fitted in
+the same room, or its bar stood over an upright photo's foot and handles.
+
 **A link of the panel that leaves the viewer shuts it first**, and goes where a row of the
 sidebar would, through `App::go`, which tells the search box: a camera, a lens and "Photos
 nearby" are searches, a person is their view. The photo is not handed back to the grid where

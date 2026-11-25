@@ -752,6 +752,15 @@ pub fn set_animations(engine: &Engine, on: bool) -> CmdResult<()> {
     Ok(engine.lib.set_animations(on)?)
 }
 
+/// Whether the viewer keeps the photo clear of its bar.
+pub fn viewer_clear(engine: &Engine) -> CmdResult<bool> {
+    Ok(engine.lib.viewer_clear()?)
+}
+
+pub fn set_viewer_clear(engine: &Engine, on: bool) -> CmdResult<()> {
+    Ok(engine.lib.set_viewer_clear(on)?)
+}
+
 /// How large the grid draws its tiles.
 pub fn grid_tile(engine: &Engine) -> CmdResult<GridTile> {
     Ok(engine.lib.grid_tile()?)

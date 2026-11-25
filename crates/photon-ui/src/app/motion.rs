@@ -209,10 +209,14 @@ impl App {
         let (way, from, tile) = match tile.filter(|_| grows) {
             Some(tile) => (Way::Zoom, frame(tile), Some(tile)),
             // Where the viewer will fit it, by the shape the grid's index gives it: the
-            // panel is shut at every opening.
+            // panel is shut at every opening, and nothing is known of the photo yet, so
+            // the room kept under it is the bar's (`show_viewer`).
             None => {
                 let window = frame(ctx.content_rect());
-                let area = viewer_layout::photo_area(window, 0.0);
+                let clear = self.photo_clear && entry.kind != photon_core::media::MediaKind::Video;
+                let foot =
+                    viewer_layout::foot_room(clear, viewer_layout::Caption::NotKnown, None, 0.0);
+                let area = viewer_layout::photo_area(window, 0.0, foot);
                 let fit = viewer_layout::contained(entry.aspect, 1.0, area);
                 (Way::Fade, fit, None)
             }

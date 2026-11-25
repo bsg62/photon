@@ -31,7 +31,9 @@ use crate::{
     viewer::wheel_step,
     viewer_faces::{Drawn, On, face_at, face_box, on},
     viewer_info_view::{InfoAction, InfoData, InfoView},
-    viewer_layout::{BAR, CLOSE, EDGE, Frame, INFO_RIGHT, NAV, contained, info_place, photo_area},
+    viewer_layout::{
+        BAR, CAPTION_BOTTOM, CLOSE, EDGE, Frame, INFO_RIGHT, NAV, contained, info_place, photo_area,
+    },
     viewer_levels::level_for,
     viewer_motion::{Passage, Way},
     viewer_zoom::{
@@ -57,8 +59,6 @@ pub const ORIGINAL: &str = "Original";
 const BESIDE_BAR: f32 = 214.0;
 /// How far the message keeps from the window's sides: clear of the two buttons there.
 const MESSAGE_SIDE: f32 = 64.0;
-/// The photo's own caption, over the bar.
-const CAPTION_BOTTOM: f32 = 64.0;
 /// The zoom's slider: how long its track is, and the room its percentage has.
 const SLIDER: f32 = 120.0;
 const SLIDER_LEVEL: f32 = 38.0;
@@ -180,6 +180,11 @@ pub struct ViewerData<'a> {
     /// beside it as far as it is in, in every frame of its slide. Shut while `info_open`
     /// is, open while it is open, but for the slide's time.
     pub info_shown: f32,
+    /// The room kept at the window's foot, under the photo (`viewer_layout::foot_room`):
+    /// nothing unless the photo is kept clear of the bar. Worked out by the application,
+    /// once a frame, which asks for the fitted copy by the same area: the view measures
+    /// the photo's area and the crop tool's box with it, and never works it out itself.
+    pub foot: f32,
     /// What the panel says, once the library has said it of this photo.
     pub info: Option<InfoData<'a>>,
     /// The photo's faces, named and not, as the library says they are: outlined while
@@ -475,7 +480,7 @@ impl ViewerView {
         let edited = self.edited;
 
         // The photo's area: the window, less the info panel's room as far as the panel
-        // is drawn. The fit, the zoom's bounds, the point a zoom holds still and the pan
+        // is drawn and the room kept at the foot. The fit, the zoom's bounds, the point a zoom holds still and the pan
         // are all measured in it, and the picture is cut off at its edge.
         let whole = Frame {
             left: window.left(),
@@ -483,7 +488,7 @@ impl ViewerView {
             width: window.width(),
             height: window.height(),
         };
-        let area = photo_area(whole, data.info_shown);
+        let area = photo_area(whole, data.info_shown, data.foot);
         // Where the panel stands, open or on its way in or out, and the part of it that
         // is drawn: cut off at the right edge it has when open, so that it slides out
         // from under that edge and never crosses the column of the button that closes -
@@ -507,9 +512,11 @@ impl ViewerView {
 
         // Where the controls stand, before anything is read: a press on one is its own.
         // (The photo's own caption is not drawn beside the open panel, which has it
-        // whole.)
+        // whole - nor while the panel slides out: the room kept for it under a photo kept
+        // clear of the bar comes back over the slide, and drawn at once it lay over the
+        // photo's foot until then.)
         let caption = (data.photo_caption)
-            .filter(|_| !data.info_open && !hidden)
+            .filter(|_| !data.info_open && data.info_shown == 0.0 && !hidden)
             .map(|line| caption_place(ui, window, line));
         let side = |left: f32| {
             Rect::from_min_size(pos2(left, window.center().y - NAV / 2.0), vec2(NAV, NAV))
@@ -767,11 +774,13 @@ impl ViewerView {
         // handed to the button.
         ui.interact(window, Id::new("viewer-photo"), Sense::CLICK);
 
+        // The whole window but the room kept at the foot, where the tool's bar stands as
+        // the viewer's does.
         let whole = Frame {
             left: window.left(),
             top: window.top(),
             width: window.width(),
-            height: window.height(),
+            height: (window.height() - data.foot).max(0.0),
         };
         let fitted = contained(crop.size.0 as f32, crop.size.1 as f32, whole);
         let picture = Rect::from_min_size(
@@ -2273,6 +2282,30 @@ fn bar(ui: &egui::Ui, rect: Rect, data: &ViewerData<'_>, edited: bool) -> Vec<Vi
 /// centred like it, two lines at most, so that a long one does not climb over the photo.
 /// The info panel has it whole.
 fn caption_place(ui: &egui::Ui, window: Rect, line: &str) -> (Rect, std::sync::Arc<egui::Galley>) {
+    let (size, galley) = caption_laid(ui.painter(), window, line);
+    let rect = Rect::from_min_size(
+        pos2(
+            window.center().x - size.x / 2.0,
+            window.bottom() - CAPTION_BOTTOM - size.y,
+        ),
+        size,
+    );
+    (rect, galley)
+}
+
+/// How high the photo's own caption stands over the bar, glass and all: what the
+/// application keeps room for when the photo is kept clear of it. Laid out as
+/// `caption_place` lays it, so the two cannot disagree.
+pub fn caption_height(painter: &egui::Painter, window: Rect, line: &str) -> f32 {
+    caption_laid(painter, window, line).0.y
+}
+
+/// The photo's own caption laid out for a window: the size of its glass, and its words.
+fn caption_laid(
+    painter: &egui::Painter,
+    window: Rect,
+    line: &str,
+) -> (Vec2, std::sync::Arc<egui::Galley>) {
     let most = (window.width() - 2.0 * BESIDE_BAR - 2.0 * S[2]).max(0.0);
     let mut job = egui::text::LayoutJob::simple(
         line.to_owned(),
@@ -2282,16 +2315,9 @@ fn caption_place(ui: &egui::Ui, window: Rect, line: &str) -> (Rect, std::sync::A
     );
     job.wrap.max_rows = 2;
     job.halign = egui::Align::Center;
-    let galley = ui.painter().layout_job(job);
+    let galley = painter.layout_job(job);
     let size = galley.size() + vec2(2.0 * S[2], 2.0 * S[0]);
-    let rect = Rect::from_min_size(
-        pos2(
-            window.center().x - size.x / 2.0,
-            window.bottom() - CAPTION_BOTTOM - size.y,
-        ),
-        size,
-    );
-    (rect, galley)
+    (size, galley)
 }
 
 /// The photo's own caption, drawn where `caption_place` put it.
@@ -2363,6 +2389,8 @@ mod tests {
         can_prev: bool,
         can_next: bool,
         info_open: bool,
+        /// The room kept at the window's foot, under the photo.
+        foot: f32,
         /// How far the panel is drawn; as `info_open` says, unless a test says otherwise.
         info_shown: Option<f32>,
         editable: bool,
@@ -2427,6 +2455,7 @@ mod tests {
                 can_prev: true,
                 can_next: true,
                 info_open: false,
+                foot: 0.0,
                 info_shown: None,
                 editable: true,
                 copyable: true,
@@ -2508,6 +2537,7 @@ mod tests {
                 can_next: self.can_next,
                 info_open: self.info_open,
                 info_shown: (self.info_shown).unwrap_or(if self.info_open { 1.0 } else { 0.0 }),
+                foot: self.foot,
                 editable: self.editable,
                 copyable: self.copyable,
                 edited: self.edited,
@@ -2690,6 +2720,20 @@ mod tests {
                 "{theme:?}"
             );
         }
+    }
+
+    // With room kept at the foot the photo is fitted above it, centred in what is left:
+    // the bar stands in black, not over the photo's foot.
+    #[test]
+    fn the_picture_stops_above_the_room_at_the_foot() {
+        let mut f = Fixture::new().with_preview([800, 1600]);
+        f.foot = 62.0;
+        f.frame(Vec::new());
+        let (_, at) = f.photo().unwrap();
+        assert!(same(
+            at,
+            Rect::from_min_size(pos2(340.5, 0.0), vec2(319.0, 638.0))
+        ));
     }
 
     #[test]
@@ -5260,6 +5304,58 @@ mod tests {
         // (Past the second press of a double click that opened it.)
         f.time += 0.5;
         f
+    }
+
+    // The crop tool's box is fitted above the room kept at the foot too, or its bar
+    // stands over the bottom edge and handles of an upright photo.
+    #[test]
+    fn the_crop_box_stops_above_the_room_at_the_foot() {
+        let mut f = Fixture::new().with_levels(&[[1200, 2400]]);
+        f.foot = 62.0;
+        f.crop = Some((CropTool::begin(None, 1200, 2400), (1200, 2400), ALL, false));
+        f.frame(Vec::new());
+        let (_, at) = f.photo().expect("the picture");
+        assert!(at.bottom() <= 638.5, "{at:?}");
+        assert!((at.height() - 638.0).abs() < 0.5, "{at:?}");
+    }
+
+    // The photo's own caption comes back over the photo once the panel has slid out, not
+    // at the press that shuts it: the room kept for it comes back over the slide.
+    #[test]
+    fn the_photos_own_caption_waits_for_the_panel_to_slide_out() {
+        let mut f = Fixture::new();
+        f.photo_caption = Some("Lisbon, at dusk");
+        f.info_shown = Some(0.5);
+        f.frame(Vec::new());
+        assert!(f.drew("Lisbon, at dusk").is_none(), "drawn mid-slide");
+        f.info_shown = Some(0.0);
+        f.frame(Vec::new());
+        assert!(f.drew("Lisbon, at dusk").is_some());
+    }
+
+    // The application keeps room for the photo's own caption by its height, which is the
+    // height of the glass the view draws it on, one line or two.
+    #[test]
+    fn caption_height_is_what_the_caption_is_drawn_at() {
+        let window = Rect::from_min_size(Pos2::ZERO, WINDOW);
+        let long = "Lisbon, at dusk, from the hill above the river, on the last evening \
+                    of a week in which it rained on every day but this one";
+        for line in ["Lisbon, at dusk", long] {
+            let mut f = Fixture::new();
+            f.photo_caption = Some(line);
+            f.frame(Vec::new());
+            let words = f.drew(line).expect("the caption");
+            let glass = (f.fills.iter())
+                .find(|(rect, fill)| *fill == color(GLASS) && rect.contains(words.center()))
+                .map(|(rect, _)| *rect)
+                .expect("the caption's glass");
+            let painter = f.ctx.layer_painter(egui::LayerId::background());
+            let height = caption_height(&painter, window, line);
+            assert!(
+                (height - glass.height()).abs() < 0.5,
+                "{height} for {glass:?}"
+            );
+        }
     }
 
     fn tool(f: &Fixture) -> CropTool {

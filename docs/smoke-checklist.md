@@ -843,3 +843,9 @@ library, a file changed in the file manager, or Picasa will do.
 - [ ] Close the viewer in a slideshow, and over the People page: it fades out where it stands.
 - [ ] Zoom into a photo opened over the People page, press Escape and at once Enter: the photo comes back from where it was fading. Note whether it jumps to its fitted place when the viewer's own picture returns (known: it may).
 - [ ] Open Settings and press Escape: it grows from its middle with the backdrop darkening, and fades with it in a blink; a click on a photo where it stood selects that photo. Open the keyword picker: it grows from the middle of its first frame and does not move as it is typed in.
+
+### The photo kept clear of the bar
+
+- [ ] Settings → Appearance → "Keep photos clear of the viewer's bar" on. Open a portrait photo (or any photo in a wide, low window): its foot is in full sight above the bar and the zoom slider, which stand in black. Open a photo with a caption of its own: the photo stops above the caption, too. Off again: the photo is fitted to the whole window, under the bar, as before.
+- [ ] With it on, hold an arrow key through a folder that mixes captioned and uncaptioned photos: between two alike the photo does not move; from one to the other it resizes once, a moment after the step, and never shrinks and grows back.
+- [ ] With it on, open the crop tool on a portrait photo: its bottom edge and handles are above the tool's bar, and can be dragged. Start a slideshow: the photo takes the whole window; move the mouse and the bar comes back over it.

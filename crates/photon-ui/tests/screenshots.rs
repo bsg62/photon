@@ -948,6 +948,21 @@ fn native_viewer_dark() {
     shot(ThemeChoice::Dark, "native-viewer-dark.png", viewing);
 }
 
+/// The viewer with the photo kept clear of its bar (Settings → Appearance): fitted above
+/// the bar and the slider, which stand in black.
+#[test]
+#[ignore = "renders through a GPU adapter: cargo run -p xtask -- native-shot"]
+fn native_viewer_clear_dark() {
+    shot(
+        ThemeChoice::Dark,
+        "native-viewer-clear-dark.png",
+        |harness| {
+            harness.state_mut().set_photo_clear(true);
+            viewing(harness);
+        },
+    );
+}
+
 /// The same, zoomed in by the keys and moved by a drag: the slider says how far.
 fn zoomed(harness: &mut Harness<'_>) {
     viewing(harness);

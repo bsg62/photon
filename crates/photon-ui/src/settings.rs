@@ -78,6 +78,7 @@ pub const SLIDESHOW_HINT: &str = "Press S in the viewer to play the current view
 pub const INTERVAL_BEFORE: &str = "Show each photo for";
 pub const INTERVAL_AFTER: &str = "seconds";
 pub const ANIMATIONS: &str = "Animations: open, close and move things smoothly";
+pub const PHOTO_CLEAR: &str = "Keep photos clear of the viewer's bar";
 pub const SHUFFLE: &str = "Shuffle: play the photos in a mixed order";
 
 /// One choice of the look-alikes: the Hamming distance the library stores, which it
@@ -184,6 +185,9 @@ pub struct Seen {
     pub size: GridTile,
     /// Whether the window moves things smoothly: the window's own flag, as the theme is.
     pub animations: bool,
+    /// Whether the viewer fits the photo above its bar: the window's own flag, as the
+    /// animations are.
+    pub photo_clear: bool,
     /// Whether photon looks for faces: the engine's switch, a flag in memory.
     pub find_faces: bool,
     /// The face pass's line while it runs.
@@ -198,6 +202,7 @@ impl Default for Seen {
             theme: ThemeChoice::System,
             size: GridTile::Medium,
             animations: true,
+            photo_clear: false,
             find_faces: false,
             faces_line: None,
             folders: Vec::new(),
@@ -227,6 +232,7 @@ pub enum Asked {
     Theme(ThemeChoice),
     Size(GridTile),
     Animations(bool),
+    PhotoClear(bool),
     /// What the interval's field holds now, and whether it is to be stored: Enter, or the
     /// field left.
     Interval {

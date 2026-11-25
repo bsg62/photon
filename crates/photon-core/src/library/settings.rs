@@ -29,6 +29,8 @@ const SLIDESHOW_SHUFFLE: &str = "slideshow_shuffle";
 /// Which colour scheme the UI uses.
 const THEME: &str = "theme";
 const ANIMATIONS: &str = "animations";
+/// Whether the viewer fits the photo above its bar, not under it.
+const VIEWER_CLEAR: &str = "viewer_clear";
 
 /// Whether an export writes edited photos as they are shown. Remembered because it is a
 /// choice about how the user works, not about one export.
@@ -319,6 +321,18 @@ impl Library {
         self.set_setting(ANIMATIONS, if on { "1" } else { "0" })
     }
 
+    /// Whether the viewer keeps the photo clear of its bar. False until the user says
+    /// otherwise: nobody's viewer changes at an upgrade.
+    pub fn viewer_clear(&self) -> Result<bool> {
+        Ok(self
+            .setting(VIEWER_CLEAR)?
+            .is_some_and(|stored| stored == "1"))
+    }
+
+    pub fn set_viewer_clear(&self, on: bool) -> Result<()> {
+        self.set_setting(VIEWER_CLEAR, if on { "1" } else { "0" })
+    }
+
     /// How large the grid draws its tiles; `Medium` when never set.
     pub fn grid_tile(&self) -> Result<GridTile> {
         Ok(self
@@ -485,6 +499,16 @@ mod tests {
         assert!(!lib.animations().unwrap());
         lib.set_animations(true).unwrap();
         assert!(lib.animations().unwrap());
+    }
+
+    #[test]
+    fn the_viewer_is_not_kept_clear_until_switched_on() {
+        let (_dir, lib) = temp_library();
+        assert!(!lib.viewer_clear().unwrap());
+        lib.set_viewer_clear(true).unwrap();
+        assert!(lib.viewer_clear().unwrap());
+        lib.set_viewer_clear(false).unwrap();
+        assert!(!lib.viewer_clear().unwrap());
     }
 
     #[test]

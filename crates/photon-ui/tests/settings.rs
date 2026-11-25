@@ -423,3 +423,19 @@ fn animations_ticked_off_in_settings_are_off_at_once() {
         "the sidebar slides"
     );
 }
+
+// The box that keeps the viewer's photo clear of its bar is stored as it is ticked.
+#[test]
+fn the_clear_box_ticked_in_settings_is_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 6, 0, 0);
+    let (mut harness, mut driver) = opened_animated(&library, 6);
+    gear(&mut driver, &mut harness);
+    press(&mut driver, &mut harness, "Appearance");
+    harness
+        .get_by_role_and_label(Role::CheckBox, photon_ui::settings::PHOTO_CLEAR)
+        .click();
+    driver.act(&mut harness);
+    driver.settle(&mut harness);
+    assert!(stored(&library).viewer_clear().unwrap());
+}

@@ -21,6 +21,7 @@ use photon_ui::{
     folder_drop::CARD,
     grid::scroll::Notch,
     viewer_layout::{self, CLOSE, EDGE, Frame},
+    viewer_view::caption_height,
 };
 use std::{
     io::Cursor,
@@ -4343,4 +4344,199 @@ fn a_tile_whose_thumbnail_cannot_be_had_is_not_gone_back_into() {
     assert!(!hollowed(&harness));
     driver.frame(&mut harness, p + 0.1);
     assert_eq!(motion(&harness).photo, first.photo);
+}
+
+/// A library of twelve photos, kept clear of the viewer's bar from the launch, with
+/// `caption` written on the photos at `captioned`; the application over it.
+fn kept_clear<'a>(
+    dir: &Path,
+    caption: &str,
+    captioned: std::ops::Range<usize>,
+) -> (Harness<'a>, Driver, Vec<i64>) {
+    let library = library(dir, 12, 0, 0);
+    let ids = photo_ids(&library);
+    Library::open(&library.dirs().db_path)
+        .unwrap()
+        .set_viewer_clear(true)
+        .unwrap();
+    doctored(
+        &library,
+        &format!("UPDATE items SET caption = '{caption}' WHERE id = ?1"),
+        &ids[captioned],
+    );
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    let shown = harness.state().shown();
+    (harness, driver, shown)
+}
+
+/// Opens the viewer on the photo at `offset` of the grid and waits for its facts.
+fn opened_on(driver: &mut Driver, harness: &mut Harness<'_>, offset: usize) {
+    click(driver, harness, offset);
+    click(driver, harness, offset);
+    driver.until(harness, "its facts", |app| app.viewer_item().is_some());
+    driver.settle(harness);
+}
+
+/// The photo's area the viewer last drew, in points, as the box it asked for says it.
+fn box_height(harness: &Harness<'_>) -> f32 {
+    let (_, height) = harness.state().viewer_box().expect("the viewer drawn");
+    height as f32 / harness.ctx.pixels_per_point()
+}
+
+// Kept clear of the bar, the photo is fitted above it: the area it is fitted into, and
+// so the copy the engine is asked to scale, stops the bar's room above the window's foot.
+#[test]
+fn a_photo_kept_clear_stands_above_the_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = kept_clear(dir.path(), "", 0..0);
+    opened_on(&mut driver, &mut harness, 0);
+    let window = harness.ctx.content_rect();
+    assert!((box_height(&harness) - (window.height() - viewer_layout::BAR_ROOM)).abs() < 1.0);
+    let (at, _, _) = harness.state().viewer_photo().expect("the photo drawn");
+    assert!(
+        at.bottom() <= window.bottom() - viewer_layout::BAR_ROOM + 0.5,
+        "{at:?}"
+    );
+}
+
+// And above the photo's own caption, which stands over the bar.
+#[test]
+fn a_photo_with_a_caption_stands_above_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = kept_clear(dir.path(), "Evening over Lisbon", 0..12);
+    opened_on(&mut driver, &mut harness, 0);
+    let window = harness.ctx.content_rect();
+    let painter = harness.ctx.layer_painter(egui::LayerId::background());
+    let caption = caption_height(&painter, window, "Evening over Lisbon");
+    let room = viewer_layout::CAPTION_BOTTOM + caption + EDGE;
+    assert!((box_height(&harness) - (window.height() - room)).abs() < 1.0);
+}
+
+// At a step the library's word on the next photo is a round trip away, and with it its
+// caption: the room stays what it was meanwhile, so between two captioned photos the
+// photo does not shrink to the bar's room and grow back.
+#[test]
+fn stepping_between_captioned_photos_does_not_resize_the_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, shown) = kept_clear(dir.path(), "Evening over Lisbon", 0..12);
+    opened_on(&mut driver, &mut harness, 0);
+    let was = harness.state().viewer_box();
+    key(&mut driver, &mut harness, Key::ArrowRight);
+    driver.until(&mut harness, "the next photo's facts", |app| {
+        assert_eq!(app.viewer_box(), was, "the photo's area moved");
+        app.viewer_item().is_some_and(|item| item.id == shown[1])
+    });
+    driver.settle(&mut harness);
+    assert_eq!(harness.state().viewer_box(), was);
+}
+
+// The box ticked while the viewer is open refits the photo at once.
+#[test]
+fn the_clear_box_ticked_with_the_viewer_open_refits_the_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let (mut harness, mut driver) = opened(&library, 12);
+    driver.settle(&mut harness);
+    opened_on(&mut driver, &mut harness, 0);
+    let window = harness.ctx.content_rect();
+    assert!((box_height(&harness) - window.height()).abs() < 1.0);
+    harness.state_mut().set_photo_clear(true);
+    driver.act(&mut harness);
+    assert!((box_height(&harness) - (window.height() - viewer_layout::BAR_ROOM)).abs() < 1.0);
+}
+
+// A show takes the whole window, kept clear or not: its bar is gone at rest, and fitted
+// to the bar the photo would grow and shrink as the controls come and go.
+#[test]
+fn a_slideshow_takes_the_whole_window_even_kept_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut harness, mut driver, _) = kept_clear(dir.path(), "", 0..0);
+    opened_on(&mut driver, &mut harness, 0);
+    key(&mut driver, &mut harness, Key::S);
+    assert!(
+        harness
+            .state()
+            .slideshow()
+            .is_some_and(|show| show.active())
+    );
+    driver.act(&mut harness);
+    let window = harness.ctx.content_rect();
+    assert!((box_height(&harness) - window.height()).abs() < 1.0);
+}
+
+// Kept clear, a photo with no thumbnail to grow fades in where the viewer will draw it -
+// above the bar's room - and not where the whole window would have it, from which it
+// slid up as it faded.
+#[test]
+fn a_photo_kept_clear_fades_in_above_the_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = pictures(dir.path());
+    std::fs::write(folder.join("d.jpg"), b"not a picture").unwrap();
+    let (mut harness, mut driver, _) = over_animated(dir.path(), Some(&folder));
+    driver.until(&mut harness, "the four photos shown", |app| {
+        app.photos() == 4 && app.last_frame().is_some_and(|frame| frame.settled)
+    });
+    driver.settle(&mut harness);
+    harness.state_mut().set_photo_clear(true);
+    let engine = harness.state().engine().clone();
+    let ids = harness.state().shown();
+    let broken = (ids.iter())
+        .position(|id| commands::viewer_item(&engine, *id).unwrap().file_name == "d.jpg")
+        .unwrap();
+    let p = double_click(&mut driver, &mut harness, broken);
+    driver.frame(&mut harness, p);
+    let first = motion(&harness);
+    assert!(!first.zoom, "{first:?}");
+    let window = harness.ctx.content_rect();
+    let middle = window.top() + (window.height() - viewer_layout::BAR_ROOM) / 2.0;
+    assert!(
+        (first.photo.center().y - middle).abs() < 0.5,
+        "{:?} centred above the bar",
+        first.photo
+    );
+}
+
+// The info panel slides in and the photo shrinks beside it over the slide, and the room
+// under the photo goes from the caption's (drawn while the panel is shut) to the bar's
+// (the panel has the caption) over the same slide: switched at the press, the photo's
+// area grew by the caption's room in one frame and the photo jumped.
+#[test]
+fn the_room_under_a_captioned_photo_slides_with_the_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = library(dir.path(), 12, 0, 0);
+    let ids = photo_ids(&library);
+    Library::open(&library.dirs().db_path)
+        .unwrap()
+        .set_viewer_clear(true)
+        .unwrap();
+    doctored(
+        &library,
+        "UPDATE items SET caption = 'Evening over Lisbon' WHERE id = ?1",
+        &ids,
+    );
+    let (mut harness, mut driver) = opened_animated(&library, 12);
+    driver.settle(&mut harness);
+    opened_on(&mut driver, &mut harness, 0);
+    let window = harness.ctx.content_rect();
+    let painter = harness.ctx.layer_painter(egui::LayerId::background());
+    let caption = caption_height(&painter, window, "Evening over Lisbon");
+    let shut = window.height() - (viewer_layout::CAPTION_BOTTOM + caption + EDGE);
+    let open = window.height() - viewer_layout::BAR_ROOM;
+    assert!((box_height(&harness) - shut).abs() < 1.0);
+    let start = driver.now;
+    harness.key_press_modifiers(Modifiers::NONE, Key::I);
+    let mut heights = vec![box_height(&harness)];
+    for k in 1..=20 {
+        driver.frame(&mut harness, start + f64::from(k) * 0.016);
+        heights.push(box_height(&harness));
+    }
+    assert!((heights.last().unwrap() - open).abs() < 1.0, "{heights:?}");
+    let most = (heights.windows(2))
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        most < (open - shut) / 2.0,
+        "a step of {most} in {heights:?}"
+    );
 }
