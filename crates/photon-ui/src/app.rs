@@ -3222,6 +3222,7 @@ impl App {
             edited: (open.item.as_ref()).is_some_and(|item| item.edit.is_some()),
             info_open: open.info,
             info_shown,
+            foot: 0.0,
             info: (open.item.as_ref()).map(|item| InfoData {
                 item,
                 albums: &collections.albums,
