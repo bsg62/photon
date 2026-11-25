@@ -2000,6 +2000,12 @@ impl App {
         open.within.map(|(within, _)| within)
     }
 
+    /// Keeps the viewer's photo clear of its bar, or not, for this session, as the box in
+    /// Settings does: for a test, which cannot open Settings over the viewer.
+    pub fn set_photo_clear(&mut self, on: bool) {
+        self.photo_clear = on;
+    }
+
     /// Where the viewer's last frame drew the photo, cut off at the photo's area, the part
     /// of its picture drawn there, and the size of that picture.
     pub fn viewer_photo(&self) -> Option<(egui::Rect, egui::Rect, egui::Vec2)> {
@@ -2441,6 +2447,7 @@ impl App {
             within: None,
             info: false,
             info_slide: Slide::at(0.0),
+            foot: None,
             crop: None,
             show: Slideshow::default(),
             shuffle: None,
@@ -2950,6 +2957,30 @@ impl App {
         if open.info_slide.running(now) {
             ctx.request_repaint();
         }
+        let photo_caption = (open.item.as_ref())
+            .and_then(|item| viewer_caption::caption_line(item.caption.as_deref()));
+        // The room kept under the photo, worked out here once and handed to the view, so
+        // that the box the copy is asked for and the area the photo is drawn in are one.
+        // None for a video, which stops above its strip already, nor in a show, whose bar
+        // is gone at rest: fitted to it, the photo would grow and shrink as the controls
+        // come and go. The photo's own caption is drawn over the photo only while the
+        // panel and the crop tool are shut; until the library has said what the photo is,
+        // the room is the one it was.
+        let clear = self.photo_clear && !open.viewer.is_video() && !open.show.active();
+        let caption = match (&open.item, &photo_caption) {
+            (None, _) => viewer_layout::Caption::NotKnown,
+            (Some(_), Some(line)) if !open.info && open.crop.is_none() => {
+                let painter = ctx.layer_painter(egui::LayerId::background());
+                viewer_layout::Caption::Lines(crate::viewer_view::caption_height(
+                    &painter, window, line,
+                ))
+            }
+            (Some(_), _) => viewer_layout::Caption::Without,
+        };
+        let foot = viewer_layout::foot_room(clear, caption, open.foot);
+        if clear {
+            open.foot = Some(foot);
+        }
         let area = viewer_layout::photo_area(
             viewer_layout::Frame {
                 left: window.left(),
@@ -2958,7 +2989,7 @@ impl App {
                 height: window.height(),
             },
             info_shown,
-            0.0,
+            foot,
         );
         let scale = ctx.pixels_per_point();
         let within = (
@@ -3118,8 +3149,6 @@ impl App {
             }
             _ => None,
         };
-        let photo_caption = (open.item.as_ref())
-            .and_then(|item| viewer_caption::caption_line(item.caption.as_deref()));
         let said = if open.viewer.gone() {
             Some((GONE.to_owned(), false))
         } else if open.viewer.is_video() {
@@ -3222,7 +3251,7 @@ impl App {
             edited: (open.item.as_ref()).is_some_and(|item| item.edit.is_some()),
             info_open: open.info,
             info_shown,
-            foot: 0.0,
+            foot,
             info: (open.item.as_ref()).map(|item| InfoData {
                 item,
                 albums: &collections.albums,
@@ -5542,6 +5571,9 @@ struct Viewing {
     /// How far the panel is drawn towards `info`: slid by its button and `I` alone, and
     /// shut at once by everything else that shuts it.
     info_slide: Slide,
+    /// The room last kept under the photo, while it is kept clear of the bar: kept while
+    /// the library has not said what the photo stepped to is (`foot_room`).
+    foot: Option<f32>,
     /// The crop tool, while it is open.
     crop: Option<Cropping>,
     /// The slideshow, running or not.
