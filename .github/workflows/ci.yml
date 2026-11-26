@@ -1,5 +1,8 @@
 name: ci
 
+permissions:
+  contents: read
+
 on:
   push:
     # `native-ui` as well as `main`: a pull request reads the caches of the branch it is
@@ -76,18 +79,18 @@ jobs:
       # two GB each for every open pull request evicted the branches' own: `main`'s Linux
       # and macOS caches were gone on 2026-10-09 and those jobs took twenty minutes for
       # five. Not saving also spares a pull request the save itself, five minutes on Windows.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # nextest runs every test binary's tests in one pool, where `cargo test` runs the
       # binaries one after another, each ending on its slowest few tests with the other
       # cores idle. The workspace has no doctests, which nextest does not run.
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - run: cargo nextest run --workspace --profile ci
+      - run: cargo nextest run --locked --workspace --profile ci
         # What each runner's own framework decodes (the spike, 2026-10-14): a video test
         # that passes over a codec named here fails instead - else a runner that lost its
         # decoders would pass every test of them, with nothing in the log to say so.
@@ -101,20 +104,20 @@ jobs:
       # The macOS runners are arm64, where it does not build (photon-core's Cargo.toml), so
       # there it is only built, for the x86-64 dmg release.yml cross-compiles.
       - if: runner.os != 'macOS'
-        run: "cargo test -p photon-core --features avif-asm --lib -- avif:: colour:: decode:: edit::"
+        run: "cargo test --locked -p photon-core --features avif-asm --lib -- avif:: colour:: decode:: edit::"
       - if: runner.os == 'macOS'
         run: |
           rustup target add x86_64-apple-darwin
-          cargo build -p photon-core --features avif-asm --target x86_64-apple-darwin
+          cargo build --locked -p photon-core --features avif-asm --target x86_64-apple-darwin
       # Reads the real Cargo.toml (xtask's unit tests only cover string literals), so a
       # broken version or missing metadata fails on the pull request rather than after a
       # release tag already exists.
       - if: runner.os == 'Linux'
         run: |
-          cargo run -p xtask -- versions
-          cargo run -p xtask -- metadata
+          cargo run --locked -p xtask -- versions
+          cargo run --locked -p xtask -- metadata
       # That the benchmark still compiles. Its code is the same on every platform, and a
       # release build of photon-core and everything under it is a minute and a half on
       # Windows and a large part of each platform's cache: one platform is enough.
       - if: runner.os == 'Linux'
-        run: cargo bench -p photon-core --bench grid --no-run
+        run: cargo bench --locked -p photon-core --bench grid --no-run

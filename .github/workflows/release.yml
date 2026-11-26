@@ -1,5 +1,8 @@
 name: release
 
+permissions:
+  contents: read
+
 # photon's installers (`xtask package`; spec 2026-10-16-photon-native-platform-design.md,
 # decision 8), built and read on every platform. A tag makes them a draft release; anything
 # else leaves them as the run's artifacts.
@@ -32,13 +35,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: false
       - name: The version is the tag's
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: |
-          cargo run -p xtask -- versions --tag "${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}"
-          cargo run -p xtask -- metadata
+          cargo run --locked -p xtask -- versions --tag "$TAG"
+          cargo run --locked -p xtask -- metadata
 
   linux:
     needs: version-check
@@ -57,11 +62,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # Caches are saved from main and native-ui alone, as ci.yml's are (the 10 GB cap): a
       # tag's run restores main's, the only branch's a tag can read, so main saves them too.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
-      - run: cargo run -p xtask -- package deb --binary target/release/photon --out dist
+      - run: cargo run --locked -p xtask -- package deb --binary target/release/photon --out dist
       - name: The .deb installs what it says and links nothing it does not declare
         run: |
           set -euo pipefail
@@ -69,7 +74,7 @@ jobs:
           dpkg-deb --info "$deb"
           depends=$(dpkg-deb --field "$deb" Depends)
           echo "$depends" | grep -q libgstreamer1.0 || { echo "::error::no GStreamer in Depends"; exit 1; }
-          ver=$(cargo run -q -p xtask -- versions | sed 's/.*passed: //')
+          ver=$(cargo run --locked -q -p xtask -- versions | sed 's/.*passed: //')
           dpkg-deb --field "$deb" Version | grep -qx "$ver" || { echo "::error::Version is not $ver"; exit 1; }
           dpkg-deb -x "$deb" "$RUNNER_TEMP/deb"
           bin="$RUNNER_TEMP/deb/usr/bin/photon"
@@ -84,13 +89,15 @@ jobs:
           test -s "$RUNNER_TEMP/deb/usr/share/doc/photon/THIRD-PARTY-NOTICES.md"
       - name: linuxdeploy
         run: |
+          set -euo pipefail
           curl -fsSL -o "$RUNNER_TEMP/linuxdeploy" \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage
+          echo "4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a  $RUNNER_TEMP/linuxdeploy" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/linuxdeploy"
           echo "LINUXDEPLOY=$RUNNER_TEMP/linuxdeploy" >> "$GITHUB_ENV"
           # No FUSE on the runner.
           echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
-      - run: cargo run -p xtask -- package appimage --binary target/release/photon --out dist
+      - run: cargo run --locked -p xtask -- package appimage --binary target/release/photon --out dist
       - name: The AppImage names photon, carries no GStreamer plugin, and its GStreamer off the runpath
         run: |
           set -euo pipefail
@@ -125,12 +132,16 @@ jobs:
       matrix:
         include:
           # `avif-asm` is x86-64 only (photon-core's Cargo.toml says why).
+          # `minos` matches the advertised macOS baseline (10.15 Catalina on Intel, 11.0
+          # Big Sur on Apple Silicon, the first release that ran on arm64).
           - target: aarch64-apple-darwin
             arch: aarch64
             features: ''
+            deployment_target: '11.0'
           - target: x86_64-apple-darwin
             arch: x86_64
             features: --features avif-asm
+            deployment_target: '10.15'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -138,23 +149,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --target ${{ matrix.target }} ${{ matrix.features }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
       - run: >
-          cargo run -p xtask -- package dmg --arch ${{ matrix.arch }}
+          cargo run --locked -p xtask -- package dmg --arch ${{ matrix.arch }}
           --binary target/${{ matrix.target }}/release/photon --out dist
       - name: The disk image holds photon.app, signed
+        env:
+          EXPECTED_MINOS: ${{ matrix.deployment_target }}
         run: |
           set -euo pipefail
           dmg=$(ls dist/*.dmg)
           mkdir -p "$RUNNER_TEMP/mnt"
           hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/mnt" "$dmg"
-          test -x "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
+          bin="$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
+          test -x "$bin"
           codesign --verify --verbose "$RUNNER_TEMP/mnt/photon.app"
-          lipo -archs "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
+          lipo -archs "$bin"
+          vtool -show-build "$bin"
+          vtool -show-build "$bin" | grep -q "minos $EXPECTED_MINOS" \
+            || { echo "::error::minos is not $EXPECTED_MINOS"; exit 1; }
           test -s "$RUNNER_TEMP/mnt/photon.app/Contents/Resources/LICENSE"
           test -s "$RUNNER_TEMP/mnt/photon.app/Contents/Resources/THIRD-PARTY-NOTICES.md"
           hdiutil detach "$RUNNER_TEMP/mnt"
@@ -171,13 +190,13 @@ jobs:
       - uses: actions/checkout@v5
       - run: choco install nasm -y --no-progress; echo 'C:\Program Files\NASM' >> $env:GITHUB_PATH
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/native-ui' }}
       - run: cargo build --release --locked -p photon-ui --features avif-asm
       # Media Foundation's DLLs are delay-loaded (`crates/photon-ui/build.rs`), or a Windows
       # "N" edition without them could not start photon at all.
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
       - name: Media Foundation is delay-loaded
         shell: pwsh
         run: |
@@ -200,10 +219,14 @@ jobs:
       - name: WiX 3
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile "$env:RUNNER_TEMP\wix.zip"
+          $expected = '6AC824E1642D6F7277D0ED7EA09411A508F6116BA6FAE0AA5F2C7DAA2FF43D31'
+          $actual = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\wix.zip").Hash
+          if ($actual -ne $expected) { Write-Output "::error::wix314-binaries.zip SHA-256 mismatch: $actual"; exit 1 }
           Expand-Archive "$env:RUNNER_TEMP\wix.zip" -DestinationPath "$env:RUNNER_TEMP\wix"
           echo "$env:RUNNER_TEMP\wix" >> $env:GITHUB_PATH
-      - run: cargo run -p xtask -- package msi --binary target\release\photon.exe --out dist
+      - run: cargo run --locked -p xtask -- package msi --binary target\release\photon.exe --out dist
       # The MSI's own tables: nobody can click through one here.
       - name: The MSI replaces the Tauri one, installs photon.exe, and asks for its shortcut
         shell: pwsh
