@@ -4105,7 +4105,7 @@ dependencies = [
 
 [[package]]
 name = "photon-core"
-version = "0.58.0"
+version = "0.59.0"
 dependencies = [
  "criterion",
  "dunce",
@@ -4140,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "photon-engine"
-version = "0.58.0"
+version = "0.59.0"
 dependencies = [
  "image",
  "libc",
@@ -4157,7 +4157,7 @@ dependencies = [
 
 [[package]]
 name = "photon-ui"
-version = "0.58.0"
+version = "0.59.0"
 dependencies = [
  "arboard",
  "async-io",
@@ -6852,7 +6852,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.58.0"
+version = "0.59.0"
 dependencies = [
  "toml 0.9.12+spec-1.1.0",
 ]
