@@ -237,18 +237,22 @@ impl Library {
     /// The other live photos that look like `item_id`, by path.
     pub fn similar_of(&self, item_id: i64) -> Result<Vec<ItemCopy>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(&format!(
-            "SELECT {COPY_COLUMNS} FROM items i
-             JOIN items o ON o.similar_group = i.similar_group AND o.id <> i.id
-             WHERE i.id = ?1 AND i.similar_group IS NOT NULL AND o.missing_since IS NULL
-               AND i.hidden = 0 AND o.hidden = 0
-             ORDER BY o.path"
-        ))?;
-        let rows = stmt
-            .query_map([item_id], shown_copy)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        similar_of_on(&conn, item_id)
     }
+}
+
+pub(super) fn similar_of_on(conn: &rusqlite::Connection, item_id: i64) -> Result<Vec<ItemCopy>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {COPY_COLUMNS} FROM items i
+         JOIN items o ON o.similar_group = i.similar_group AND o.id <> i.id
+         WHERE i.id = ?1 AND i.similar_group IS NOT NULL AND o.missing_since IS NULL
+           AND i.hidden = 0 AND o.hidden = 0
+         ORDER BY o.path"
+    ))?;
+    let rows = stmt
+        .query_map([item_id], shown_copy)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]

@@ -6,10 +6,19 @@ mod av1;
 mod yuv;
 
 use std::borrow::Cow;
+use std::io::{BufRead, Seek, SeekFrom};
 
 use image::error::{DecodingError, ImageFormatHint};
 use image::{DynamicImage, ImageError, ImageFormat, ImageResult, RgbImage, imageops};
 use zenavif_parse::{AvifParser, ColorInformation, DecodeConfig, Unstoppable};
+
+/// Maximum bytes read from a single AVIF file before decoding. Matches `MAX_DECODE_BYTES` so
+/// a corrupt multi-gigabyte file misnamed `.avif` cannot exhaust memory before parsing starts.
+pub(crate) const MAX_FILE_BYTES: u64 = MAX_DECODE_BYTES;
+
+/// Maximum metadata bytes (`ftyp` + `meta`) read when streaming an AVIF header for dimensions
+/// or colour information, skipping multi-megabyte `mdat` payloads.
+const MAX_META_BYTES: usize = 16 * 1024 * 1024;
 
 /// The bound `image`'s default limits put on every other format's decode, which
 /// `decode::decode_oriented`'s memory reasoning relies on. AVIF is *not* bounded by
@@ -55,8 +64,17 @@ fn is_avif_brand(brand: &[u8; 4]) -> bool {
 /// Decodes an AVIF to the picture as it is meant to be shown: grid tiles stitched, alpha
 /// attached, and the container's crop, rotation and mirror applied.
 pub fn decode_avif(bytes: &[u8]) -> ImageResult<DynamicImage> {
+    decode_avif_with_colours(bytes).map(|(img, _)| img)
+}
+
+/// [`decode_avif`], also returning the container's colour description from the same parse so
+/// callers that convert to sRGB do not re-read and re-parse the file.
+pub(crate) fn decode_avif_with_colours(
+    bytes: &[u8],
+) -> ImageResult<(DynamicImage, Option<Colours>)> {
     let bytes = with_avif_major(bytes);
     let parser = parse(&bytes)?;
+    let colours = colours_of(&parser);
     let img = if parser.grid_tile_count() > 0 {
         // A grid's alpha would be a second grid; photon shows such a photo opaque.
         DynamicImage::ImageRgb8(grid(&parser)?)
@@ -77,7 +95,7 @@ pub fn decode_avif(bytes: &[u8]) -> ImageResult<DynamicImage> {
             }
         }
     };
-    Ok(transform(&parser, img))
+    Ok((transform(&parser, img), colours))
 }
 
 /// The dimensions `decode_avif` would return, read from the container and the AV1 sequence
@@ -150,6 +168,10 @@ pub(crate) enum Colours {
 pub(crate) fn colour_information(bytes: &[u8]) -> Option<Colours> {
     let bytes = with_avif_major(bytes);
     let parser = parse(&bytes).ok()?;
+    colours_of(&parser)
+}
+
+fn colours_of(parser: &AvifParser<'_>) -> Option<Colours> {
     match parser.color_info()? {
         ColorInformation::IccProfile(icc) => Some(Colours::Icc(icc.clone())),
         ColorInformation::Nclx {
@@ -161,6 +183,259 @@ pub(crate) fn colour_information(bytes: &[u8]) -> Option<Colours> {
             transfer: *transfer_characteristics,
         }),
     }
+}
+
+/// Reads an AVIF's colour information from `r` without reading `mdat` pixel payloads.
+pub(crate) fn colour_information_from_reader<R: BufRead + Seek>(r: &mut R) -> Option<Colours> {
+    let head = read_meta_boxes(r)?;
+    colour_information(&head.combined)
+}
+
+/// Reads an AVIF's dimensions from `r` using only its `ftyp` and `meta` boxes (`ispe`,
+/// `clap`, `irot`), seeking over `mdat` so scanning a library does not read multi-megabyte
+/// compressed frames. Falls back to bounded full-file [`avif_dimensions`] if `meta` lacks an
+/// `ispe` property for the primary item.
+pub(crate) fn dimensions_from_reader<R: BufRead + Seek>(r: &mut R) -> Option<(u32, u32)> {
+    if let Some(head) = read_meta_boxes(r)
+        && let Some((w, h)) = primary_ispe(&head.meta_body)
+        && let Ok(parser) = parse(&with_avif_major(&head.combined))
+    {
+        let (w, h) = clean_aperture(&parser, w, h).map_or((w, h), |(_, _, cw, ch)| (cw, ch));
+        return Some(match parser.rotation().map(|rot| rot.angle) {
+            Some(90 | 270) => (h, w),
+            _ => (w, h),
+        });
+    }
+    r.seek(SeekFrom::Start(0)).ok()?;
+    let bytes = read_bounded(r, MAX_FILE_BYTES).ok()?;
+    avif_dimensions(&bytes)
+}
+
+/// Reads up to `limit` bytes from `r`, returning `InvalidData` if the stream exceeds `limit`.
+pub(crate) fn read_bounded<R: BufRead>(r: &mut R, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut limited = std::io::Read::take(r, limit.saturating_add(1));
+    std::io::Read::read_to_end(&mut limited, &mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "AVIF exceeds maximum file size",
+        ));
+    }
+    Ok(bytes)
+}
+
+struct MetaBoxes {
+    /// `ftyp` followed by `meta`, suitable for `zenavif_parse::AvifParser`.
+    combined: Vec<u8>,
+    /// Payload of the `meta` box (starting at its 4-byte FullBox version/flags).
+    meta_body: Vec<u8>,
+}
+
+/// Walks top-level ISO BMFF boxes from the start of `r`, collecting `ftyp` and `meta` while
+/// seeking past `mdat` and other boxes.
+fn read_meta_boxes<R: BufRead + Seek>(r: &mut R) -> Option<MetaBoxes> {
+    r.seek(SeekFrom::Start(0)).ok()?;
+    let mut ftyp: Option<Vec<u8>> = None;
+    let mut meta: Option<(Vec<u8>, usize)> = None;
+    let mut total_kept = 0usize;
+
+    loop {
+        let mut hdr = [0u8; 8];
+        if r.read_exact(&mut hdr).is_err() {
+            break;
+        }
+        let raw_size = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let kind = [hdr[4], hdr[5], hdr[6], hdr[7]];
+        let (box_size, header_len, ext) = match raw_size {
+            0 => {
+                // Box extends to EOF.
+                let pos = r.stream_position().ok()?;
+                let end = r.seek(SeekFrom::End(0)).ok()?;
+                r.seek(SeekFrom::Start(pos)).ok()?;
+                let payload = end.checked_sub(pos)?;
+                (payload.checked_add(8)?, 8usize, None)
+            }
+            1 => {
+                let mut ext_bytes = [0u8; 8];
+                r.read_exact(&mut ext_bytes).ok()?;
+                let size = u64::from_be_bytes(ext_bytes);
+                if size < 16 {
+                    return None;
+                }
+                (size, 16usize, Some(ext_bytes))
+            }
+            n if n >= 8 => (u64::from(n), 8usize, None),
+            _ => return None,
+        };
+        let payload_len = box_size - header_len as u64;
+        let want = (kind == *b"ftyp" && ftyp.is_none()) || (kind == *b"meta" && meta.is_none());
+        if want {
+            let box_len = usize::try_from(box_size).ok()?;
+            if total_kept.saturating_add(box_len) > MAX_META_BYTES {
+                return None;
+            }
+            let payload_usize = usize::try_from(payload_len).ok()?;
+            let mut buf = Vec::with_capacity(box_len);
+            buf.extend_from_slice(&hdr);
+            if let Some(ext_bytes) = ext {
+                buf.extend_from_slice(&ext_bytes);
+            }
+            let start = buf.len();
+            buf.resize(start + payload_usize, 0);
+            r.read_exact(&mut buf[start..]).ok()?;
+            total_kept += box_len;
+            if kind == *b"ftyp" {
+                ftyp = Some(buf);
+            } else {
+                meta = Some((buf, header_len));
+            }
+            if ftyp.is_some() && meta.is_some() {
+                break;
+            }
+        } else {
+            let skip_i64 = i64::try_from(payload_len).ok()?;
+            r.seek(SeekFrom::Current(skip_i64)).ok()?;
+        }
+    }
+
+    let ftyp = ftyp?;
+    let (meta_box, meta_hdr_len) = meta?;
+    let meta_body = meta_box[meta_hdr_len..].to_vec();
+    let mut combined = Vec::with_capacity(ftyp.len() + meta_box.len());
+    combined.extend_from_slice(&ftyp);
+    combined.extend_from_slice(&meta_box);
+    Some(MetaBoxes {
+        combined,
+        meta_body,
+    })
+}
+
+/// Iterates ISO BMFF child boxes within `buf`, yielding `(box_type, payload)`.
+fn iter_boxes(mut buf: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
+    std::iter::from_fn(move || {
+        if buf.len() < 8 {
+            return None;
+        }
+        let raw_size = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let kind = [buf[4], buf[5], buf[6], buf[7]];
+        let (size, header_len) = match raw_size {
+            0 => (buf.len(), 8),
+            1 => {
+                if buf.len() < 16 {
+                    return None;
+                }
+                let ext = usize::try_from(u64::from_be_bytes(buf[8..16].try_into().ok()?)).ok()?;
+                if ext < 16 || ext > buf.len() {
+                    return None;
+                }
+                (ext, 16)
+            }
+            n => {
+                let n = n as usize;
+                if n < 8 || n > buf.len() {
+                    return None;
+                }
+                (n, 8)
+            }
+        };
+        let payload = &buf[header_len..size];
+        buf = &buf[size..];
+        Some((kind, payload))
+    })
+}
+
+/// Extracts the primary image item's `ispe` (width, height) from a `meta` box payload
+/// (`pitm` + `iprp` → `ipco`/`ipma`).
+fn primary_ispe(meta_body: &[u8]) -> Option<(u32, u32)> {
+    // `meta` is a FullBox: 4 bytes version+flags before child boxes.
+    let children = meta_body.get(4..)?;
+    let mut primary_id: Option<u32> = None;
+    let mut iprp_body: Option<&[u8]> = None;
+
+    for (kind, body) in iter_boxes(children) {
+        match &kind {
+            b"pitm" if primary_id.is_none() => {
+                let version = *body.first()?;
+                primary_id = if version == 0 {
+                    Some(u32::from(u16::from_be_bytes(
+                        body.get(4..6)?.try_into().ok()?,
+                    )))
+                } else {
+                    Some(u32::from_be_bytes(body.get(4..8)?.try_into().ok()?))
+                };
+            }
+            b"iprp" if iprp_body.is_none() => iprp_body = Some(body),
+            _ => {}
+        }
+    }
+
+    let primary_id = primary_id?;
+    let iprp = iprp_body?;
+    let mut ispe_by_idx: Vec<(usize, (u32, u32))> = Vec::new();
+    let mut ipmas: Vec<&[u8]> = Vec::new();
+
+    for (kind, body) in iter_boxes(iprp) {
+        match &kind {
+            b"ipco" => {
+                for (i, (prop_kind, prop_body)) in iter_boxes(body).enumerate() {
+                    if &prop_kind == b"ispe" && prop_body.len() >= 12 {
+                        let w = u32::from_be_bytes(prop_body[4..8].try_into().ok()?);
+                        let h = u32::from_be_bytes(prop_body[8..12].try_into().ok()?);
+                        if w > 0 && h > 0 {
+                            ispe_by_idx.push((i + 1, (w, h)));
+                        }
+                    }
+                }
+            }
+            b"ipma" => ipmas.push(body),
+            _ => {}
+        }
+    }
+
+    if ispe_by_idx.is_empty() {
+        return None;
+    }
+
+    for ipma in ipmas {
+        if ipma.len() < 8 {
+            continue;
+        }
+        let version = ipma[0];
+        let flags = u32::from_be_bytes([0, ipma[1], ipma[2], ipma[3]]);
+        let entry_count = u32::from_be_bytes(ipma[4..8].try_into().ok()?);
+        let mut cur = &ipma[8..];
+        for _ in 0..entry_count {
+            let item_id = if version < 1 {
+                let id = u32::from(u16::from_be_bytes(cur.get(..2)?.try_into().ok()?));
+                cur = &cur[2..];
+                id
+            } else {
+                let id = u32::from_be_bytes(cur.get(..4)?.try_into().ok()?);
+                cur = &cur[4..];
+                id
+            };
+            let assoc_count = usize::from(*cur.first()?);
+            cur = &cur[1..];
+            for _ in 0..assoc_count {
+                let prop_idx = if flags & 1 != 0 {
+                    let raw = u16::from_be_bytes(cur.get(..2)?.try_into().ok()?);
+                    cur = &cur[2..];
+                    usize::from(raw & 0x7FFF)
+                } else {
+                    let raw = *cur.first()?;
+                    cur = &cur[1..];
+                    usize::from(raw & 0x7F)
+                };
+                if item_id == primary_id
+                    && let Some(&(_, dims)) = ispe_by_idx.iter().find(|&&(idx, _)| idx == prop_idx)
+                {
+                    return Some(dims);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The container's `colr` description where it has one, else the AV1 sequence header's -
@@ -691,5 +966,77 @@ mod tests {
             ),
             other => panic!("expected a Decoding error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn streaming_dimensions_and_colour_match_and_skip_mdat() {
+        use crate::testutil::Counting;
+        use std::io::{BufReader, Cursor};
+
+        let fixtures = [
+            "red_blue_709_limited.avif",
+            "icc_709_limited.avif",
+            "progressive.avif",
+            "red_blue_444_full.avif",
+            "grid_10bit.avif",
+            "grid_padded.avif",
+            "irot90.avif",
+            "imir.avif",
+            "clap.avif",
+            "alpha.avif",
+            "mono.avif",
+            "odd_420.avif",
+            "top_bottom_422.avif",
+        ];
+        for name in fixtures {
+            let bytes = avif_fixture(name);
+            let want_dims = avif_dimensions(&bytes);
+            let mut reader = BufReader::new(Cursor::new(bytes.as_slice()));
+            assert_eq!(
+                dimensions_from_reader(&mut reader),
+                want_dims,
+                "{name}: streaming dimensions"
+            );
+            let (img, colours) = decode_avif_with_colours(&bytes).unwrap();
+            assert_eq!(Some((img.width(), img.height())), want_dims, "{name}");
+            let mut reader = BufReader::new(Cursor::new(bytes.as_slice()));
+            let streamed_colours = colour_information_from_reader(&mut reader);
+            assert_eq!(
+                streamed_colours.is_some(),
+                colours.is_some(),
+                "{name}: streaming colours presence"
+            );
+        }
+
+        // Pad an AVIF with a 256 KiB `mdat` box placed *before* `meta` so skipping `mdat`
+        // is proven to seek rather than read.
+        let bytes = avif_fixture("icc_709_limited.avif");
+        let ftyp_size = u32::from_be_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let meta_pos = bytes.windows(4).position(|w| w == b"meta").unwrap() - 4;
+        let meta_size =
+            u32::from_be_bytes(bytes[meta_pos..meta_pos + 4].try_into().unwrap()) as usize;
+        let fake_mdat_size: u32 = 256 * 1024;
+        let mut padded = Vec::new();
+        padded.extend_from_slice(&bytes[..ftyp_size]);
+        padded.extend_from_slice(&fake_mdat_size.to_be_bytes());
+        padded.extend_from_slice(b"mdat");
+        padded.resize(padded.len() + fake_mdat_size as usize - 8, 0);
+        padded.extend_from_slice(&bytes[meta_pos..meta_pos + meta_size]);
+
+        let mut buf = BufReader::new(Counting::new(Cursor::new(padded.as_slice())));
+        assert_eq!(dimensions_from_reader(&mut buf), Some((64, 32)));
+        let read_dims = buf.get_ref().read;
+        assert!(
+            read_dims < 32 * 1024,
+            "dimensions_from_reader read {read_dims} bytes instead of skipping mdat"
+        );
+
+        let mut buf = BufReader::new(Counting::new(Cursor::new(padded.as_slice())));
+        assert!(colour_information_from_reader(&mut buf).is_some());
+        let read_colour = buf.get_ref().read;
+        assert!(
+            read_colour < 32 * 1024,
+            "colour_information_from_reader read {read_colour} bytes instead of skipping mdat"
+        );
     }
 }

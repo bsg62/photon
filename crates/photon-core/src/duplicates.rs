@@ -25,16 +25,27 @@ use xxhash_rust::xxh3::Xxh3;
 /// has stopped.
 const CHUNK: usize = 1 << 20;
 
+/// Number of content hashes written per SQLite transaction in [`hash_candidates`].
+const HASH_WRITE_BATCH: usize = 64;
+
 /// XXH3-128 of a file's bytes, or `None` if cancelled partway.
 pub fn hash_file(path: &Path, cancel: &AtomicBool) -> std::io::Result<Option<[u8; 16]>> {
+    let mut buf = vec![0u8; CHUNK];
+    hash_file_with_buf(path, &mut buf, cancel)
+}
+
+fn hash_file_with_buf(
+    path: &Path,
+    buf: &mut [u8],
+    cancel: &AtomicBool,
+) -> std::io::Result<Option<[u8; 16]>> {
     let mut file = File::open(path)?;
     let mut hasher = Xxh3::new();
-    let mut buf = vec![0u8; CHUNK];
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let n = file.read(&mut buf)?;
+        let n = file.read(buf)?;
         if n == 0 {
             break;
         }
@@ -50,11 +61,16 @@ pub fn hash_file(path: &Path, cancel: &AtomicBool) -> std::io::Result<Option<[u8
 /// or between chunks; what was hashed so far is kept.
 pub fn hash_candidates(lib: &Library, cancel: &AtomicBool) -> Result<u64> {
     let mut hashed = 0;
+    // Reused across every file so glibc does not mmap/munmap a 1 MiB buffer per candidate.
+    let mut buf = vec![0u8; CHUNK];
+    let mut pending = Vec::with_capacity(HASH_WRITE_BATCH);
     for candidate in lib.hash_candidates()? {
-        match hash_file(Path::new(&candidate.path), cancel) {
+        match hash_file_with_buf(Path::new(&candidate.path), &mut buf, cancel) {
             Ok(Some(hash)) => {
-                if lib.set_content_hash(&candidate, &hash)? {
-                    hashed += 1;
+                pending.push((candidate, hash));
+                if pending.len() >= HASH_WRITE_BATCH {
+                    hashed += lib.set_content_hashes(&pending)?;
+                    pending.clear();
                 }
             }
             Ok(None) => break,
@@ -62,6 +78,9 @@ pub fn hash_candidates(lib: &Library, cancel: &AtomicBool) -> Result<u64> {
                 tracing::debug!(path = %candidate.path, %err, "could not hash a duplicate candidate");
             }
         }
+    }
+    if !pending.is_empty() {
+        hashed += lib.set_content_hashes(&pending)?;
     }
     Ok(hashed)
 }
@@ -249,5 +268,17 @@ mod tests {
         let (_dir, lib, _) = library_with_a_pair();
         assert_eq!(hash_candidates(&lib, &AtomicBool::new(true)).unwrap(), 0);
         assert_eq!(lib.hash_candidates().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn hash_candidates_batches_writes_into_a_single_transaction() {
+        let (_dir, lib, _) = library_with_a_pair();
+        let writes_before = lib.writes_for_test();
+        assert_eq!(hash_candidates(&lib, &never()).unwrap(), 3);
+        assert_eq!(
+            lib.writes_for_test() - writes_before,
+            1,
+            "expected all three hashes to land in one batched write"
+        );
     }
 }

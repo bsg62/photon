@@ -13,10 +13,18 @@ const TEM: u8 = 0x01;
 const RST0: u8 = 0xD0;
 const RST7: u8 = 0xD7;
 const APP1: u8 = 0xE1;
+const APP2: u8 = 0xE2;
 
 /// What opens an APP1 segment holding EXIF, ahead of the TIFF structure inside it - the
 /// same test kamadak-exif makes.
 const EXIF_ID: &[u8] = b"Exif\0\0";
+
+/// What opens an APP2 segment carrying an ICC profile chunk (ICC.1 Annex B.4), followed by
+/// the 1-based sequence number and total chunk count.
+const ICC_ID: &[u8] = b"ICC_PROFILE\0";
+
+/// Cap on the reassembled ICC profile from JPEG APP2 chunks, matching `colour::PROFILE_LIMIT`.
+const MAX_ICC_BYTES: usize = 16 * 1024 * 1024;
 
 /// One marker segment ahead of the scan data: its marker code and how many body bytes
 /// follow the two length bytes.
@@ -180,6 +188,91 @@ pub(crate) fn head<R: BufRead + Seek>(r: &mut R) -> Option<Head> {
         }
         skip(r, rest)?;
     }
+}
+
+/// Outcome of walking a JPEG's header segments for an embedded ICC profile.
+pub(crate) enum IccWalk {
+    /// Complete ICC profile reassembled from APP2 chunks before the first scan.
+    Found(Vec<u8>),
+    /// Reached SOS/EOI cleanly with no complete ICC profile.
+    Absent,
+    /// Encountered malformed markers before SOS/EOI; callers may fall back to a full decoder.
+    Broken,
+}
+
+/// Reassembles an embedded ICC profile from a JPEG's APP2 header segments without reading
+/// past the first scan (`SOS`).
+///
+/// `image`'s `JpegDecoder::new` reads the entire file to EOF before inspecting headers; on a
+/// large JPEG over a network share or spinning disk, reading the profile through it doubles
+/// full-file I/O when opening a photo in the viewer.
+pub(crate) fn icc_profile<R: BufRead + Seek>(r: &mut R) -> IccWalk {
+    if !read_soi(r) {
+        return IccWalk::Broken;
+    }
+    let mut expected_count: Option<usize> = None;
+    let mut chunks: Vec<Option<Vec<u8>>> = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut invalid_icc = false;
+
+    loop {
+        let segment = match next(r) {
+            Next::Segment(segment) => segment,
+            Next::End => break,
+            Next::Broken => return IccWalk::Broken,
+        };
+        let mut rest = segment.len;
+        if !invalid_icc && segment.marker == APP2 && rest >= ICC_ID.len() + 2 {
+            let mut prefix = [0u8; ICC_ID.len() + 2];
+            if r.read_exact(&mut prefix).is_err() {
+                return IccWalk::Broken;
+            }
+            rest -= prefix.len();
+            if &prefix[..ICC_ID.len()] == ICC_ID {
+                let seq = usize::from(prefix[ICC_ID.len()]);
+                let count = usize::from(prefix[ICC_ID.len() + 1]);
+                if seq == 0 || count == 0 || seq > count {
+                    invalid_icc = true;
+                } else {
+                    match expected_count {
+                        None => {
+                            expected_count = Some(count);
+                            chunks.resize(count, None);
+                        }
+                        Some(prev) if prev != count => {
+                            invalid_icc = true;
+                        }
+                        Some(_) => {}
+                    }
+                    if !invalid_icc {
+                        if total_bytes.saturating_add(rest) > MAX_ICC_BYTES {
+                            invalid_icc = true;
+                        } else if chunks[seq - 1].is_none() {
+                            let mut payload = vec![0u8; rest];
+                            if r.read_exact(&mut payload).is_err() {
+                                return IccWalk::Broken;
+                            }
+                            total_bytes += rest;
+                            chunks[seq - 1] = Some(payload);
+                            rest = 0;
+                        }
+                    }
+                }
+            }
+        }
+        if skip(r, rest).is_none() {
+            return IccWalk::Broken;
+        }
+    }
+
+    if invalid_icc || chunks.is_empty() || chunks.iter().any(Option::is_none) {
+        return IccWalk::Absent;
+    }
+    let mut icc = Vec::with_capacity(total_bytes);
+    for chunk in chunks.into_iter().flatten() {
+        icc.extend_from_slice(&chunk);
+    }
+    IccWalk::Found(icc)
 }
 
 /// The start-of-frame markers, SOF0 to SOF15, less the three codes inside that range that
@@ -487,5 +580,41 @@ mod tests {
             let bytes = [&jpeg[..2], defect, &jpeg[2..]].concat();
             assert_eq!(size(&bytes), None, "{what}");
         }
+    }
+
+    #[test]
+    fn icc_profile_reassembles_out_of_order_chunks_without_reading_scan_data() {
+        use crate::testutil::Counting;
+
+        let chunk2 = [ICC_ID, &[2, 2], b"world"].concat();
+        let chunk1 = [ICC_ID, &[1, 2], b"hello "].concat();
+        let mut with_icc = jpeg_with_segments(16, 16, &[(APP2, &chunk2), (APP2, &chunk1)]);
+        // Append 128 KiB of trailing bytes so a full-file read stands out.
+        with_icc.resize(with_icc.len() + 128 * 1024, 0xAB);
+
+        let mut buf_reader =
+            std::io::BufReader::new(Counting::new(Cursor::new(with_icc.as_slice())));
+        match icc_profile(&mut buf_reader) {
+            IccWalk::Found(icc) => assert_eq!(icc, b"hello world"),
+            IccWalk::Absent => panic!("expected ICC profile to be found"),
+            IccWalk::Broken => panic!("expected valid JPEG headers"),
+        }
+        let bytes_read = buf_reader.get_ref().read;
+        assert!(
+            bytes_read < 16 * 1024,
+            "expected header-only read, read {bytes_read} bytes of {}",
+            with_icc.len()
+        );
+
+        // A JPEG with no APP2 ICC segment returns Absent without reading past SOS.
+        let mut jpeg = jpeg_bytes(16, 16);
+        jpeg.resize(jpeg.len() + 128 * 1024, 0xAB);
+        let mut buf_reader = std::io::BufReader::new(Counting::new(Cursor::new(jpeg.as_slice())));
+        assert!(matches!(icc_profile(&mut buf_reader), IccWalk::Absent));
+        let bytes_read = buf_reader.get_ref().read;
+        assert!(
+            bytes_read < 16 * 1024,
+            "expected header-only read for no-ICC JPEG, read {bytes_read} bytes"
+        );
     }
 }

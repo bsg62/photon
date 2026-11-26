@@ -257,6 +257,34 @@ impl Library {
         Ok(changed == 1)
     }
 
+    /// Batched [`Self::set_content_hash`] in a single transaction, returning how many rows
+    /// took a hash.
+    pub fn set_content_hashes(&self, updates: &[(HashCandidate, [u8; 16])]) -> Result<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let mut written = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE items SET content_hash = ?2
+                 WHERE id = ?1 AND size = ?3 AND mtime_ms = ?4 AND missing_since IS NULL",
+            )?;
+            for (candidate, hash) in updates {
+                let changed = stmt.execute(params![
+                    candidate.id,
+                    hash.as_slice(),
+                    candidate.size,
+                    candidate.mtime_ms
+                ])?;
+                written += changed as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(written)
+    }
+
     /// How many photos have a byte-identical twin or a look-alike. Counts photos, not
     /// groups, because it labels a view that shows photos.
     pub fn duplicate_count(&self) -> Result<usize> {
@@ -288,12 +316,16 @@ impl Library {
     /// The other live files with the same bytes as `item_id`, by path.
     pub fn copies_of(&self, item_id: i64) -> Result<Vec<ItemCopy>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(&copies_sql())?;
-        let rows = stmt
-            .query_map([item_id], shown_copy)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        copies_of_on(&conn, item_id)
     }
+}
+
+pub(super) fn copies_of_on(conn: &rusqlite::Connection, item_id: i64) -> Result<Vec<ItemCopy>> {
+    let mut stmt = conn.prepare_cached(&copies_sql())?;
+    let rows = stmt
+        .query_map([item_id], shown_copy)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]

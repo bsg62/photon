@@ -749,13 +749,9 @@ impl ThumbService {
         // this never causes a fresh `decode_lock` attempt on the suspect's behalf.
         //
         // A video waits on `videos`, where the window rather than a worker makes the frame.
-        let video = self
-            .lib
-            .item(id)?
-            .is_some_and(|item| item.kind == MediaKind::Video);
-        let queue = if video { &self.videos } else { &*self.queue };
         for _ in 0..2 {
-            if let Some(path) = self.cached(id, size)? {
+            let (cached, video) = self.cached(id, size)?;
+            if let Some(path) = cached {
                 return Ok(path);
             }
             if video
@@ -766,20 +762,23 @@ impl ThumbService {
                 // could not draw this one: waiting would hold the request open for nothing.
                 return Err(Error::ThumbUnavailable(id));
             }
+            let queue = if video { &self.videos } else { &*self.queue };
             queue.push(id, Priority::Visible);
             queue.wait(id).await;
         }
-        self.cached(id, size)?.ok_or(Error::ThumbUnavailable(id))
+        self.cached(id, size)?.0.ok_or(Error::ThumbUnavailable(id))
     }
 
-    /// The cached thumbnail for `id` at `size`, or `None` if it has not been built yet.
+    /// The cached thumbnail for `id` at `size`, or `None` if it has not been built yet,
+    /// paired with whether the item is a video (so `request_async` queries the row once
+    /// instead of twice on a cache hit).
     ///
     /// The checks `request` makes before and after waiting, in one place rather than two
     /// copies of four lines: `missing_since` was added to the copy inside the loop only, so
     /// an item that went missing *while* its thumbnail was being built reported
     /// `ThumbUnavailable` rather than `NotFound` - a 503 the tile would keep retrying
     /// instead of a 404 it can give up on.
-    fn cached(&self, id: i64, size: ThumbSize) -> Result<Option<PathBuf>> {
+    fn cached(&self, id: i64, size: ThumbSize) -> Result<(Option<PathBuf>, bool)> {
         let item = self.lib.item(id)?.ok_or(Error::NotFound(id))?;
         if item.missing_since.is_some() {
             return Err(Error::NotFound(id));
@@ -787,8 +786,9 @@ impl ThumbService {
         if item.thumb_state == ThumbState::Failed {
             return Err(Error::ThumbFailed(item.thumb_error.unwrap_or_default()));
         }
+        let video = item.kind == MediaKind::Video;
         let path = self.cache.path_for(item.thumb_key(), size);
-        Ok(path.is_file().then_some(path))
+        Ok((path.is_file().then_some(path), video))
     }
 
     /// The tonal histogram of `item` as shown, from its cached grid thumbnail; `None` while
@@ -814,19 +814,28 @@ impl ThumbService {
     /// else: no database read, no render, no wait. An error when none is cached there,
     /// which is how a caller learns to ask for it (`request_async`).
     pub fn decoded(&self, key: u64, size: ThumbSize) -> Result<image::RgbaImage> {
-        Ok(self.cache.read(key, size)?.to_rgba8())
+        self.cache.read_rgba(key, size)
     }
 
     /// The thumbnail file at `path` - one `request_async` answered with - decoded the same
     /// way.
     pub fn decode_file(path: &Path) -> Result<image::RgbaImage> {
-        Ok(ThumbCache::decode(path)?.into_rgba8())
+        ThumbCache::decode_rgba(path)
     }
 
     /// A face's crop from the cached preview under `key`; see `ThumbCache::face_crop`. Never
     /// renders.
     pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> crate::Result<Vec<u8>> {
         self.cache.face_crop(key, rect)
+    }
+
+    /// A face's crop as straight RGBA bytes; see `ThumbCache::face_crop_rgba`. Never renders.
+    pub fn face_crop_rgba(
+        &self,
+        key: u64,
+        rect: &crate::face_detect::Rect,
+    ) -> crate::Result<Vec<u8>> {
+        self.cache.face_crop_rgba(key, rect)
     }
 
     /// Lets go of the previews `face_crop` kept; see `ThumbCache::forget_decoded`.

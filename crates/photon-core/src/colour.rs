@@ -10,7 +10,7 @@
 //! and the copy for the clipboard are not converted: that is a decision about every
 //! photo photon has ever made a picture of, and it has not been taken.
 
-use crate::avif;
+use crate::{avif, jpeg};
 use image::codecs::{jpeg::JpegDecoder, png::PngDecoder, tiff::TiffDecoder, webp::WebPDecoder};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use moxcms::{
@@ -18,8 +18,9 @@ use moxcms::{
     ProfileClass, TransferCharacteristics, TransformOptions,
 };
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::LazyLock;
 
 /// The colour space a file says its pixels are in: RGB, and not known to be sRGB until
 /// its colours are converted (`to_srgb` says whether it changed anything).
@@ -109,12 +110,18 @@ const PROFILE_LIMIT: u64 = 16 * 1024 * 1024;
 /// A read of its own, after the decode and not part of it: every full decode goes
 /// through `decode::decode_image`, and its other callers want no profile.
 pub fn embedded_profile(path: &Path) -> Option<Profile> {
-    match said(path)? {
-        avif::Colours::Icc(icc) => Profile::from_icc(&icc),
-        avif::Colours::Named {
-            primaries,
-            transfer,
-        } => Profile::from_cicp(primaries, transfer),
+    Profile::from_colours(said(path)?)
+}
+
+impl Profile {
+    pub(crate) fn from_colours(colours: avif::Colours) -> Option<Self> {
+        match colours {
+            avif::Colours::Icc(icc) => Self::from_icc(&icc),
+            avif::Colours::Named {
+                primaries,
+                transfer,
+            } => Self::from_cicp(primaries, transfer),
+        }
     }
 }
 
@@ -122,11 +129,24 @@ pub fn embedded_profile(path: &Path) -> Option<Profile> {
 /// bytes, or an AVIF's numbers.
 fn said(path: &Path) -> Option<avif::Colours> {
     let mut reader = BufReader::new(File::open(path).ok()?);
+    said_from_reader(&mut reader)
+}
+
+/// [`said`] over an already-open seekable reader positioned at byte 0.
+pub(crate) fn said_from_reader<R: BufRead + Seek>(reader: &mut R) -> Option<avif::Colours> {
+    let head = reader.fill_buf().ok()?;
     // By the file's bytes, as `decode_image` tells an AVIF from the rest.
-    if avif::is_avif(reader.fill_buf().ok()?) {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).ok()?;
-        return avif::colour_information(&bytes);
+    if avif::is_avif(head) {
+        return avif::colour_information_from_reader(reader);
+    }
+    if jpeg::is_jpeg(head) {
+        match jpeg::icc_profile(reader) {
+            jpeg::IccWalk::Found(icc) => return Some(avif::Colours::Icc(icc)),
+            jpeg::IccWalk::Absent => return None,
+            jpeg::IccWalk::Broken => {
+                reader.seek(SeekFrom::Start(0)).ok()?;
+            }
+        }
     }
     // (By its bytes alone: a file whose bytes do not say what it is is none of the four
     // formats that carry a profile.)
@@ -181,10 +201,10 @@ pub fn to_srgb(rgba: &mut [u8], profile: &Profile) -> bool {
     // called and however it is written - and it is nearly every profile there is.
     let spread = spread();
     let mut moved = vec![0; spread.len()];
-    if conversion.transform(&spread, &mut moved).is_err() {
+    if conversion.transform(spread, &mut moved).is_err() {
         return false;
     }
-    let same = unmoved(&spread, &moved);
+    let same = unmoved(spread, &moved);
     // (Nor bytes that are no whole number of pixels: no picture, and the one thing the
     // conversion below refuses.)
     if same || rgba.is_empty() || !rgba.len().is_multiple_of(4) {
@@ -207,11 +227,14 @@ pub fn to_srgb(rgba: &mut [u8], profile: &Profile) -> bool {
 /// taken for sRGB with its greys seventeen steps out.) A profile that is a table of the
 /// whole space could in principle keep all of these and move a mixture; none that does
 /// is known, and one would be shown as its numbers are.
-fn spread() -> Vec<u8> {
-    (0..=255u8)
-        .flat_map(|v| [[v, v, v], [v, 0, 0], [0, v, 0], [0, 0, v]])
-        .flat_map(|[r, g, b]| [r, g, b, 255])
-        .collect()
+fn spread() -> &'static [u8] {
+    static SPREAD: LazyLock<Vec<u8>> = LazyLock::new(|| {
+        (0..=255u8)
+            .flat_map(|v| [[v, v, v], [v, 0, 0], [0, v, 0], [0, 0, v]])
+            .flat_map(|[r, g, b]| [r, g, b, 255])
+            .collect()
+    });
+    &SPREAD
 }
 
 /// Whether a conversion left colours where they were: none of their numbers moved by
@@ -225,15 +248,20 @@ fn unmoved(was: &[u8], is: &[u8]) -> bool {
     (was.iter().zip(is)).all(|(was, is)| was.abs_diff(*is) <= 1)
 }
 
+/// `picture`, converted to straight RGBA in sRGB using `profile` when present.
+pub fn apply_profile(picture: DynamicImage, profile: Option<&Profile>) -> DynamicImage {
+    let mut rgba = picture.into_rgba8();
+    if let Some(profile) = profile {
+        to_srgb(&mut rgba, profile);
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
 /// `picture`, decoded from `path`'s file, as straight RGBA in sRGB: converted where the
 /// file says its colours are another space's, and as its numbers are where it says
 /// nothing photon applies.
 pub fn in_srgb(picture: DynamicImage, path: &Path) -> DynamicImage {
-    let mut rgba = picture.into_rgba8();
-    if let Some(profile) = embedded_profile(path) {
-        to_srgb(&mut rgba, &profile);
-    }
-    DynamicImage::ImageRgba8(rgba)
+    apply_profile(picture, embedded_profile(path).as_ref())
 }
 
 #[cfg(test)]

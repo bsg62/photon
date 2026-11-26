@@ -433,9 +433,18 @@ pub fn set_tag_view(engine: &Engine, tag: &str) -> CmdResult<Option<u64>> {
 /// that are not already listed. The menu's count is this list's length, so the two cannot
 /// disagree about what a copy is.
 fn item_copies(engine: &Engine, id: i64) -> CmdResult<Vec<ItemCopy>> {
-    let identical = engine.lib.copies_of(id)?;
+    Ok(merge_copies(
+        engine.lib.copies_of(id)?,
+        engine.lib.similar_of(id)?,
+    ))
+}
+
+fn merge_copies(
+    identical: Vec<photon_core::library::ItemCopy>,
+    similar: Vec<photon_core::library::ItemCopy>,
+) -> Vec<ItemCopy> {
     let identical_ids: std::collections::HashSet<i64> = identical.iter().map(|c| c.id).collect();
-    Ok(identical
+    identical
         .into_iter()
         .map(|c| ItemCopy {
             id: c.id,
@@ -447,9 +456,7 @@ fn item_copies(engine: &Engine, id: i64) -> CmdResult<Vec<ItemCopy>> {
         // A look-alike that is also a byte-identical twin is already listed above; a
         // photo appearing twice in the info panel is a bug the user sees, not a detail.
         .chain(
-            engine
-                .lib
-                .similar_of(id)?
+            similar
                 .into_iter()
                 .filter(|c| !identical_ids.contains(&c.id))
                 .map(|c| ItemCopy {
@@ -460,7 +467,7 @@ fn item_copies(engine: &Engine, id: i64) -> CmdResult<Vec<ItemCopy>> {
                     height: c.height,
                 }),
         )
-        .collect())
+        .collect()
 }
 
 /// How many copies the tile menu may offer to show; 0 hides the item.
@@ -805,20 +812,20 @@ impl UnnamedFace {
 /// asks this after `grid_offset_of_item` comes back empty, to tell "left the current view"
 /// (keep showing it) from "gone" (say so), and a missing row is the second case.
 pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
-    let item = engine.lib.item(id)?.ok_or(Error::NotFound(id))?;
-    if item.missing_since.is_some() {
-        return Err(Error::NotFound(id).into());
-    }
+    let snapshot = engine
+        .lib
+        .viewer_item_snapshot(id)?
+        .ok_or(Error::NotFound(id))?;
+    let item = snapshot.item;
     let file_name = Path::new(&item.path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tags = engine.lib.item_tags(item.id)?;
-    let caption = engine.lib.item_caption(item.id)?;
+    let tags = snapshot.tags;
+    let caption = snapshot.caption;
     let edit = item.edit;
-    let mut faces: Vec<ItemFace> = engine
-        .lib
-        .item_faces(item.id)?
+    let mut faces: Vec<ItemFace> = snapshot
+        .faces
         .into_iter()
         .filter_map(|face| {
             let rect = merge::shown(
@@ -851,8 +858,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
             bottom: f.bottom,
         })
         .collect();
-    let named_detected = engine.lib.item_named_detected_faces(item.id)?;
-    let detected = engine.lib.item_detected_faces_with_ids(item.id)?;
+    let named_detected = snapshot.named_detected;
+    let detected = snapshot.detected;
     // A Picasa plate of a person photon knows is acted on through the detection beneath it
     // that is confirmed as that same person. A `c:` plate (a contact no person is linked
     // to) gets none: the face beneath may well be someone else's.
@@ -894,9 +901,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         });
     }
     // One rule for both readers (`face_detect::merge`): search counts exactly these.
-    let picasa: Vec<(Rect, bool)> = engine
-        .lib
-        .item_picasa_faces(item.id)?
+    let picasa: Vec<(Rect, bool)> = snapshot
+        .picasa_faces
         .into_iter()
         .filter_map(|(rect, named)| Some((merge::shown(edit, rect)?, named)))
         .collect();
@@ -939,8 +945,8 @@ pub fn viewer_item(engine: &Engine, id: i64) -> CmdResult<ViewerItem> {
         let (w, h) = edit.dims(upright_w, upright_h);
         (w, h, 1)
     };
-    let albums = engine.lib.item_albums(item.id)?;
-    let copies = item_copies(engine, item.id)?;
+    let albums = snapshot.albums;
+    let copies = merge_copies(snapshot.copies, snapshot.similar);
     let thumb_key = hex_key(item.thumb_key());
     let video_crashed = photon_core::thumbs::video_crashed(&item);
     // A video's poster frame is one instant of it; its histogram would say nothing of the
@@ -1084,14 +1090,13 @@ pub fn viewer_picture(
     };
     let _one_at_a_time = crate::engine::RENDERING.lock();
     let path = Path::new(&item.path);
-    let picture =
-        photon_core::edit::render_picture(path, item.orientation, edit).map_err(unreadable)?;
     // The window draws sRGB: a photo whose file says its colours are another space's -
     // a phone's Display P3, a camera's Adobe RGB - is converted, as a web view converts
     // it, or its numbers read as sRGB are duller colours than were taken. Pixel by
     // pixel, so it is the same before a turn or a crop as after; and before the copy
     // for the box is scaled, so that the two pictures of one photo are of one colour.
-    let picture = photon_core::colour::in_srgb(picture, path);
+    let picture = photon_core::edit::render_picture_in_srgb(path, item.orientation, edit)
+        .map_err(unreadable)?;
     let fitted = fit.and_then(|within| photon_core::edit::fitted_copy(&picture, within));
     Ok(ViewerPicture {
         thumb_key: item.thumb_key(),

@@ -26,6 +26,39 @@ pub fn decode_image(path: &Path) -> Result<DynamicImage> {
     decode_from(BufReader::new(File::open(path)?), path)
 }
 
+/// [`decode_image`], also returning the file's embedded colour description (ICC profile or
+/// AVIF CICP) without re-opening or re-reading the file for JPEG and AVIF.
+pub(crate) fn decode_image_with_colours(
+    path: &Path,
+) -> Result<(DynamicImage, Option<avif::Colours>)> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let head = reader.fill_buf()?;
+    if sniffed_avif(head) {
+        let bytes = avif::read_bounded(&mut reader, avif::MAX_FILE_BYTES)?;
+        return Ok(avif::decode_avif_with_colours(&bytes)?);
+    }
+    if jpeg::is_jpeg(head) {
+        // `image`'s `JpegDecoder::new` buffers the entire file with `read_to_end` anyway;
+        // reading once into memory lets both the header ICC walk and the decode share those
+        // bytes without touching disk twice.
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        let colours = match jpeg::icc_profile(&mut Cursor::new(bytes.as_slice())) {
+            jpeg::IccWalk::Found(icc) => Some(avif::Colours::Icc(icc)),
+            jpeg::IccWalk::Absent => None,
+            jpeg::IccWalk::Broken => {
+                crate::colour::said_from_reader(&mut Cursor::new(bytes.as_slice()))
+            }
+        };
+        let img = decode_from(Cursor::new(bytes), path)?;
+        return Ok((img, colours));
+    }
+    let colours = crate::colour::said_from_reader(&mut reader);
+    reader.seek(SeekFrom::Start(0))?;
+    let img = decode_from(reader, path)?;
+    Ok((img, colours))
+}
+
 /// [`decode_image`] over a reader already open on `path`'s contents: the file itself, or the
 /// bytes [`preview_decode`] read to try libjpeg-turbo first and then handed back.
 fn decode_from<R: BufRead + Seek>(mut reader: R, path: &Path) -> Result<DynamicImage> {
@@ -34,8 +67,7 @@ fn decode_from<R: BufRead + Seek>(mut reader: R, path: &Path) -> Result<DynamicI
     // (metadata.rs) needs from this on every describe().
     let is_avif = sniffed_avif(reader.fill_buf()?);
     if is_avif {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
+        let bytes = avif::read_bounded(&mut reader, avif::MAX_FILE_BYTES)?;
         return Ok(avif::decode_avif(&bytes)?);
     }
     let mut image = ImageReader::new(reader);
@@ -49,8 +81,7 @@ fn decode_from<R: BufRead + Seek>(mut reader: R, path: &Path) -> Result<DynamicI
 
 /// Stored dimensions from a reader at any position (it is rewound first), and whether the
 /// file is an AVIF, whose orientation lives in its container rather than its EXIF. A header
-/// read, not a decode, as `describe()` needs - except for an AVIF, whose container is
-/// read to the end before it is parsed.
+/// read, not a decode, as `describe()` needs.
 ///
 /// A JPEG's size comes from `jpeg::dimensions`, not from `image`, whose JPEG decoder reads
 /// the whole file into memory before parsing a byte of it (`JpegDecoder::new` in image
@@ -65,12 +96,7 @@ pub(crate) fn dimensions<R: BufRead + Seek>(reader: &mut R) -> (Option<(u32, u32
     // new or changed file, so an extra seek-and-reread here is the whole scan paying for it.
     let is_avif = reader.fill_buf().is_ok_and(sniffed_avif);
     if is_avif {
-        let mut bytes = Vec::new();
-        let dims = reader
-            .read_to_end(&mut bytes)
-            .ok()
-            .and_then(|_| avif::avif_dimensions(&bytes));
-        return (dims, true);
+        return (avif::dimensions_from_reader(reader), true);
     }
     if reader.fill_buf().is_ok_and(jpeg::is_jpeg) {
         if let Some(dims) = jpeg::dimensions(reader) {

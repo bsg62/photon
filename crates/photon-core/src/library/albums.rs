@@ -213,15 +213,20 @@ impl Library {
     /// The ids of the albums one photo is in.
     pub fn item_albums(&self, item_id: i64) -> Result<Vec<i64>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY album_id",
-        )?;
-        let ids = stmt
-            .query_map(params![item_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<i64>>>()?;
-        Ok(ids)
+        item_albums_on(&conn, item_id)
     }
+}
 
+pub(super) fn item_albums_on(conn: &rusqlite::Connection, item_id: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY album_id")?;
+    let ids = stmt
+        .query_map(params![item_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
+    Ok(ids)
+}
+
+impl Library {
     // ---- Picasa albums, written only by the scan ----
 
     /// Inserts the albums one INI defines and the tokens its photos name, and returns every

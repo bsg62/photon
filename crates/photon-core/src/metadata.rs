@@ -1073,11 +1073,11 @@ mod tests {
         }
     }
 
-    /// An AVIF's size is read from the whole file, so a phone's multi-megabyte AVIF is read
-    /// through past the prefix: on from where the prefix read left the file, every byte
-    /// read once and no seek spent getting back to where the file already is.
+    /// An AVIF's dimensions come from its `ftyp` and `meta` boxes without reading past them:
+    /// a phone's multi-megabyte AVIF whose `meta` sits inside the prefix is answered from the
+    /// prefix already read, with zero extra bytes read and zero seeks.
     #[test]
-    fn a_large_avif_is_read_once_straight_through() {
+    fn a_large_avif_is_read_only_for_its_head() {
         let mut bytes = avif_fixture("exif_orientation6.avif");
         // A top-level `free` box is how an encoder pads a file; the parser steps over it.
         bytes.extend_from_slice(&crate::testutil::mp4_box(b"free", &vec![0; 300_000]));
@@ -1087,7 +1087,7 @@ mod tests {
         let mut file = crate::testutil::Counting::new(File::open(&path).unwrap());
         let (meta, _) = read_image_from(&mut file, 1_800_000_000);
         assert_eq!((meta.width, meta.height, meta.orientation), (32, 64, 1));
-        assert_eq!((file.read, file.seeks), (bytes.len() as u64, 0));
+        assert_eq!((file.read, file.seeks), (crate::xmp::MAX_PREFIX as u64, 0));
     }
 
     /// The one read answers what the two separate reads it replaced answer, for every kind
