@@ -16,7 +16,8 @@
   - the binary installed as photon.exe, where the Tauri MSI put its own.
 
   Preprocessor variables, given by xtask: Version, Binary (photon.exe), Icon
-  (icon.ico), LicenseRtf (the licence as RTF).
+  (icon.ico), LicenseRtf (the licence as RTF), LicenseFile (LICENSE), NoticesFile
+  (THIRD-PARTY-NOTICES.md).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
     <Product
@@ -105,6 +106,12 @@
             <Component Id="Path" Guid="*" Win64="yes">
                 <File Id="Path" Name="photon.exe" Source="$(var.Binary)" KeyPath="yes" Checksum="yes"/>
             </Component>
+            <Component Id="LicenseDoc" Guid="*" Win64="yes">
+                <File Id="LicenseFile" Name="LICENSE.txt" Source="$(var.LicenseFile)" KeyPath="yes"/>
+            </Component>
+            <Component Id="NoticesDoc" Guid="*" Win64="yes">
+                <File Id="NoticesFile" Name="THIRD-PARTY-NOTICES.md" Source="$(var.NoticesFile)" KeyPath="yes"/>
+            </Component>
             <Component Id="CMP_UninstallShortcut" Guid="*">
                 <Shortcut Id="UninstallShortcut"
                           Name="Uninstall photon"
@@ -141,6 +148,8 @@
                 Display="expand"
                 Absent="disallow">
             <ComponentRef Id="RegistryEntries"/>
+            <ComponentRef Id="LicenseDoc"/>
+            <ComponentRef Id="NoticesDoc"/>
             <Feature Id="ShortcutsFeature" Title="Shortcuts" Level="1">
                 <ComponentRef Id="Path"/>
                 <ComponentRef Id="CMP_UninstallShortcut" />
