@@ -241,8 +241,12 @@ fn open_reader(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     // Readers never write or change journal mode: setting `busy_timeout` first and skipping
     // `journal_mode = WAL` / `synchronous = NORMAL` avoids unnecessary lock checks when
-    // opening burst readers under write load.
-    conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")?;
+    // opening burst readers under write load. Cap each pooled reader's page cache at 512 KiB
+    // (instead of SQLite's 2 MiB default) to avoid duplicating ~16 MiB of OS page cache
+    // across idle reader connections.
+    conn.execute_batch(
+        "PRAGMA busy_timeout = 5000; PRAGMA query_only = ON; PRAGMA cache_size = -512;",
+    )?;
     Ok(conn)
 }
 
@@ -367,6 +371,10 @@ mod tests {
             .query_row("PRAGMA query_only", [], |r| r.get(0))
             .unwrap();
         assert_eq!(query_only, 1);
+        let cache_size: i64 = reader
+            .query_row("PRAGMA cache_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cache_size, -512);
         drop(reader);
 
         let (_, folder) = crate::testutil::seed_folder(&lib, Path::new("/photos"));

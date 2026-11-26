@@ -242,6 +242,16 @@ fn a_zoom_past_the_levels_held_has_the_whole_picture_made() {
     key(&mut driver, &mut harness, Key::Num0);
     driver.frames_in(&mut harness, 0.5);
     assert_eq!(harness.state().pictures_asked(), asked + 1);
+    assert_eq!(
+        harness.state().viewer_levels(),
+        Some(vec![1050, 525, 262]),
+        "returning to fit trims deep zoom levels without asking for a new render"
+    );
+    // Zooming back in re-requests the full-resolution level cleanly.
+    key(&mut driver, &mut harness, Key::Plus);
+    driver.until(&mut harness, "the whole picture again", |app| {
+        app.viewer_levels().is_some_and(|levels| levels[0] == 4200)
+    });
 }
 
 // Zoomed in, a window of another size has the copy made again for it as deep as the

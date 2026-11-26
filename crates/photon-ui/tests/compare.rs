@@ -255,6 +255,20 @@ fn every_panes_full_picture_is_made_once_zoomed_and_none_at_fit() {
         harness.state().compare_pictures(),
         Some(vec![Some(1200), Some(1200), Some(600)])
     );
+    // Zooming back out to fit drops every pane's full picture from VRAM.
+    harness.event(egui::Event::PointerMoved(place.center()));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -10.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    driver.act(&mut harness);
+    assert!(harness.state().compare().unwrap().zoom().is_fit());
+    assert_eq!(
+        harness.state().compare_pictures(),
+        Some(vec![None, None, None])
+    );
 }
 
 // A pane's full picture has no level past twice the pane until a zoom outgrows the

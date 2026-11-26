@@ -1044,6 +1044,9 @@ pub struct ViewerPicture {
     /// (`edit::fitted_copy`); none where no box was given, or the picture fits it as it
     /// is.
     pub fitted: Option<Pixels>,
+    /// True when the source photo had no alpha channel (all pixels have `a == 255`), so
+    /// the UI can upload straight RGBA without premultiplying every pixel.
+    pub opaque: bool,
 }
 
 /// Straight RGBA, row by row.
@@ -1097,11 +1100,15 @@ pub fn viewer_picture(
     // for the box is scaled, so that the two pictures of one photo are of one colour.
     let picture = photon_core::edit::render_picture_in_srgb(path, item.orientation, edit)
         .map_err(unreadable)?;
+    let opaque = !picture.color().has_alpha();
+    // Run `fitted_copy` while opaque photos are still RGB8 (3 channels instead of 4) so
+    // the Lanczos intermediate and full RGBA buffer do not overlap in RAM.
     let fitted = fit.and_then(|within| photon_core::edit::fitted_copy(&picture, within));
     Ok(ViewerPicture {
         thumb_key: item.thumb_key(),
         full: picture.into_rgba8().into(),
         fitted: fitted.map(Pixels::from),
+        opaque,
     })
 }
 

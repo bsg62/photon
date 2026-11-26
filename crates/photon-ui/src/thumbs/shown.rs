@@ -36,7 +36,8 @@ impl Thumbs {
     /// in theirs.
     pub fn previews(loader: Loader) -> Self {
         Self {
-            textures: Textures::new(PREVIEW_LIMIT),
+            // No 64 MiB grid floor: evict stepped-past previews down to `SLACK * in_view`.
+            textures: Textures::with_floor(PREVIEW_LIMIT, 0),
             loader,
             fades: false,
         }

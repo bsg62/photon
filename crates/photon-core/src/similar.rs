@@ -236,20 +236,6 @@ fn group_with_cancel(
     }
     let is_cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
-    // Bucket by band. The key mixes the band's index in, so the same 16 bits in two
-    // different bands do not collide into one bucket.
-    let mut buckets: HashMap<(u32, u16), Vec<usize>> = HashMap::new();
-    for (index, (_, hash)) in hashes.iter().enumerate() {
-        if pairs_with_anything(*hash, distance) {
-            continue;
-        }
-        for band in 0..BANDS {
-            let shift = band * BAND_BITS;
-            let key = ((hash >> shift) & 0xffff) as u16;
-            buckets.entry((band, key)).or_default().push(index);
-        }
-    }
-
     let mut parent: Vec<usize> = (0..hashes.len()).collect();
     let mut consider = |a: usize, b: usize| {
         if a != b
@@ -260,40 +246,92 @@ fn group_with_cancel(
             union(&mut parent, a, b);
         }
     };
+
+    // Process one 16-bit band at a time in a flat CSR array (`offsets` + `u32` `entries`)
+    // instead of a `HashMap<(u32, u16), Vec<usize>>` across all four bands: cuts regroup
+    // peak RAM at 300k photos from ~40 MB of scattered bucket Vecs to ~1.7 MB contiguous.
+    const BAND_BUCKETS: usize = 1 << BAND_BITS;
+    let mut offsets = vec![0u32; BAND_BUCKETS + 1];
+    let mut cursor = vec![0u32; BAND_BUCKETS];
+    let mut entries: Vec<u32> = Vec::new();
     let mut cut_short = false;
-    'buckets: for (&(band, key), indexes) in &buckets {
+
+    'bands: for band in 0..BANDS {
         if is_cancelled() {
             cut_short = true;
-            break 'buckets;
+            break 'bands;
         }
-        for (i, &a) in indexes.iter().enumerate() {
-            for &b in &indexes[i + 1..] {
-                if is_cancelled() {
-                    cut_short = true;
-                    break 'buckets;
-                }
-                consider(a, b);
-            }
-        }
-        // The buckets one bit away, each neighbouring pair of buckets visited once: from
-        // the lower key.
-        for bit in 0..BAND_BITS {
-            if is_cancelled() {
-                cut_short = true;
-                break 'buckets;
-            }
-            let other = key ^ (1 << bit);
-            if other < key {
+        let shift = band * BAND_BITS;
+        offsets.fill(0);
+        for (_, hash) in hashes {
+            if pairs_with_anything(*hash, distance) {
                 continue;
             }
-            if let Some(neighbours) = buckets.get(&(band, other)) {
+            let key = ((hash >> shift) & 0xffff) as usize;
+            offsets[key + 1] += 1;
+        }
+        for key in 0..BAND_BUCKETS {
+            offsets[key + 1] += offsets[key];
+        }
+        let total = offsets[BAND_BUCKETS] as usize;
+        if total < 2 {
+            continue;
+        }
+        cursor.copy_from_slice(&offsets[..BAND_BUCKETS]);
+        entries.resize(total, 0);
+        for (index, (_, hash)) in hashes.iter().enumerate() {
+            if pairs_with_anything(*hash, distance) {
+                continue;
+            }
+            let key = ((hash >> shift) & 0xffff) as usize;
+            let slot = cursor[key] as usize;
+            cursor[key] = (slot + 1) as u32;
+            entries[slot] = index as u32;
+        }
+
+        for key in 0..BAND_BUCKETS {
+            let start = offsets[key] as usize;
+            let end = offsets[key + 1] as usize;
+            if start == end {
+                continue;
+            }
+            if is_cancelled() {
+                cut_short = true;
+                break 'bands;
+            }
+            let indexes = &entries[start..end];
+            for (i, &a) in indexes.iter().enumerate() {
+                for &b in &indexes[i + 1..] {
+                    if is_cancelled() {
+                        cut_short = true;
+                        break 'bands;
+                    }
+                    consider(a as usize, b as usize);
+                }
+            }
+            // The buckets one bit away, each neighbouring pair of buckets visited once:
+            // from the lower key.
+            for bit in 0..BAND_BITS {
+                if is_cancelled() {
+                    cut_short = true;
+                    break 'bands;
+                }
+                let other = key ^ (1 << bit);
+                if other < key {
+                    continue;
+                }
+                let n_start = offsets[other] as usize;
+                let n_end = offsets[other + 1] as usize;
+                if n_start == n_end {
+                    continue;
+                }
                 for &a in indexes {
-                    for &b in neighbours {
+                    for &b in &entries[n_start..n_end] {
                         if is_cancelled() {
                             cut_short = true;
-                            break 'buckets;
+                            break 'bands;
                         }
-                        consider(a, b);
+                        consider(a as usize, b as usize);
                     }
                 }
             }

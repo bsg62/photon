@@ -79,18 +79,20 @@ pub(crate) fn decode_avif_with_colours(
         // A grid's alpha would be a second grid; photon shows such a photo opaque.
         DynamicImage::ImageRgb8(grid(&parser)?)
     } else {
-        let planes = av1::decode(&parser.primary_data().map_err(parse_failed)?).map_err(failed)?;
-        let (matrix, full_range) = colour(&parser, &planes);
-        let rgb = yuv::to_rgb(&planes, matrix, full_range);
-        // Every sample widened to two bytes: 72 MB of planes for a 24 MP photo, not to be
-        // held while the alpha is decoded and attached.
-        drop(planes);
+        let rgb = av1::decode_with(&parser.primary_data().map_err(parse_failed)?, |frame| {
+            let (matrix, full_range) = colour(&parser, frame);
+            yuv::to_rgb(frame, matrix, full_range)
+        })
+        .map_err(failed)?;
         match parser.alpha_data() {
             None => DynamicImage::ImageRgb8(rgb),
             Some(alpha) => {
-                let alpha = av1::decode(&alpha.map_err(parse_failed)?).map_err(failed)?;
-                let rgba =
-                    yuv::attach_alpha(rgb, &alpha, parser.premultiplied_alpha()).map_err(failed)?;
+                let premultiplied = parser.premultiplied_alpha();
+                let rgba = av1::decode_with(&alpha.map_err(parse_failed)?, |frame| {
+                    yuv::attach_alpha(rgb, frame, premultiplied)
+                })
+                .map_err(failed)?
+                .map_err(failed)?;
                 DynamicImage::ImageRgba8(rgba)
             }
         }
@@ -440,14 +442,14 @@ fn primary_ispe(meta_body: &[u8]) -> Option<(u32, u32)> {
 
 /// The container's `colr` description where it has one, else the AV1 sequence header's -
 /// libavif's order. An ICC-only `colr` says nothing about the matrix, so it falls through.
-fn colour(parser: &AvifParser<'_>, planes: &av1::Planes) -> (u16, bool) {
+fn colour(parser: &AvifParser<'_>, frame: &av1::Frame<'_>) -> (u16, bool) {
     match parser.color_info() {
         Some(ColorInformation::Nclx {
             matrix_coefficients,
             full_range,
             ..
         }) => (*matrix_coefficients, *full_range),
-        _ => (planes.matrix, planes.full_range),
+        _ => (frame.matrix, frame.full_range),
     }
 }
 
@@ -462,10 +464,11 @@ fn grid(parser: &AvifParser<'_>) -> ImageResult<RgbImage> {
     let mut canvas: Option<RgbImage> = None;
     let mut tile_size = (0, 0);
     for index in 0..count {
-        let planes =
-            av1::decode(&parser.tile_data(index).map_err(parse_failed)?).map_err(failed)?;
-        let (matrix, full_range) = colour(parser, &planes);
-        let tile = yuv::to_rgb(&planes, matrix, full_range);
+        let tile = av1::decode_with(&parser.tile_data(index).map_err(parse_failed)?, |frame| {
+            let (matrix, full_range) = colour(parser, frame);
+            yuv::to_rgb(frame, matrix, full_range)
+        })
+        .map_err(failed)?;
         let canvas = match &mut canvas {
             Some(canvas) => canvas,
             None => {

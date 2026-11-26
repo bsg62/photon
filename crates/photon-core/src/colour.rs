@@ -181,6 +181,22 @@ pub(crate) fn said_from_reader<R: BufRead + Seek>(reader: &mut R) -> Option<avif
 /// effect - one under which a spread of colours comes out where it went in, to within a
 /// step - is not applied, and one moxcms will not make a conversion from is not either.
 pub fn to_srgb(rgba: &mut [u8], profile: &Profile) -> bool {
+    to_srgb_layout(rgba, profile, Layout::Rgba, 4, spread())
+}
+
+/// Converts packed RGB pixels from `profile`'s colours to sRGB, in place, avoiding an
+/// `Rgb8 -> Rgba8` expansion before colour conversion.
+pub fn to_srgb_rgb(rgb: &mut [u8], profile: &Profile) -> bool {
+    to_srgb_layout(rgb, profile, Layout::Rgb, 3, spread_rgb())
+}
+
+fn to_srgb_layout(
+    pixels: &mut [u8],
+    profile: &Profile,
+    layout: Layout,
+    channels: usize,
+    spread: &[u8],
+) -> bool {
     let srgb = ColorProfile::new_srgb();
     // The curves are the ones the profile carries (or `from_cicp` made), and not the one
     // a `cicp` tag in the profile names, which is moxcms's default: by that, a profile
@@ -191,15 +207,12 @@ pub fn to_srgb(rgba: &mut [u8], profile: &Profile) -> bool {
         allow_use_cicp_transfer: false,
         ..TransformOptions::default()
     };
-    let Ok(conversion) =
-        (profile.0).create_transform_8bit(Layout::Rgba, &srgb, Layout::Rgba, options)
-    else {
+    let Ok(conversion) = (profile.0).create_transform_8bit(layout, &srgb, layout, options) else {
         return false;
     };
     // A spread of colours first, and where none of them moves the picture is left as it
     // is. This is how a profile that is sRGB is told - by what it does, whatever it is
     // called and however it is written - and it is nearly every profile there is.
-    let spread = spread();
     let mut moved = vec![0; spread.len()];
     if conversion.transform(spread, &mut moved).is_err() {
         return false;
@@ -207,11 +220,12 @@ pub fn to_srgb(rgba: &mut [u8], profile: &Profile) -> bool {
     let same = unmoved(spread, &moved);
     // (Nor bytes that are no whole number of pixels: no picture, and the one thing the
     // conversion below refuses.)
-    if same || rgba.is_empty() || !rgba.len().is_multiple_of(4) {
+    if same || pixels.is_empty() || !pixels.len().is_multiple_of(channels) {
         return false;
     }
-    let mut aside = vec![0; CHUNK_PIXELS * 4];
-    for chunk in rgba.chunks_mut(CHUNK_PIXELS * 4) {
+    let chunk_bytes = CHUNK_PIXELS * channels;
+    let mut aside = vec![0; chunk_bytes];
+    for chunk in pixels.chunks_mut(chunk_bytes) {
         let aside = &mut aside[..chunk.len()];
         aside.copy_from_slice(chunk);
         let _ = conversion.transform(aside, chunk);
@@ -237,6 +251,16 @@ fn spread() -> &'static [u8] {
     &SPREAD
 }
 
+fn spread_rgb() -> &'static [u8] {
+    static SPREAD_RGB: LazyLock<Vec<u8>> = LazyLock::new(|| {
+        (0..=255u8)
+            .flat_map(|v| [[v, v, v], [v, 0, 0], [0, v, 0], [0, 0, v]])
+            .flatten()
+            .collect()
+    });
+    &SPREAD_RGB
+}
+
 /// Whether a conversion left colours where they were: none of their numbers moved by
 /// more than a step. A step, and not none, so that a profile which says sRGB in numbers
 /// of its own rounding is still told for sRGB: one step of 255 is nothing anyone sees,
@@ -255,6 +279,23 @@ pub fn apply_profile(picture: DynamicImage, profile: Option<&Profile>) -> Dynami
         to_srgb(&mut rgba, profile);
     }
     DynamicImage::ImageRgba8(rgba)
+}
+
+/// `picture`, converted to sRGB in place while keeping opaque photos as `ImageRgb8` so
+/// downstream downscales do not allocate an alpha channel unnecessarily.
+pub(crate) fn apply_profile_preserving_alpha(
+    picture: DynamicImage,
+    profile: Option<&Profile>,
+) -> DynamicImage {
+    if picture.color().has_alpha() {
+        apply_profile(picture, profile)
+    } else {
+        let mut rgb = picture.into_rgb8();
+        if let Some(profile) = profile {
+            to_srgb_rgb(&mut rgb, profile);
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
 }
 
 /// `picture`, decoded from `path`'s file, as straight RGBA in sRGB: converted where the
@@ -1030,5 +1071,57 @@ mod by_hand {
         std::fs::write(&path, &bytes).unwrap();
         assert!(crate::decode::decode_image(&path).is_ok(), "it is decoded");
         assert!(embedded_profile(&path).is_some());
+    }
+
+    #[test]
+    fn to_srgb_rgb_matches_rgba_and_preserves_opaque_format() {
+        let samples: [[u8; 4]; 6] = [
+            [200, 100, 50, 255],
+            [255, 0, 0, 128],
+            [10, 200, 30, 0],
+            [128, 128, 128, 255],
+            [40, 90, 160, 7],
+            [230, 220, 60, 255],
+        ];
+        for (name, icc) in [
+            (
+                "Display P3",
+                ColorProfile::new_display_p3().encode().unwrap(),
+            ),
+            ("Adobe RGB", ColorProfile::new_adobe_rgb().encode().unwrap()),
+        ] {
+            let profile = Profile::from_icc(&icc).unwrap();
+            let mut rgba = samples.concat();
+            let mut rgb: Vec<u8> = samples
+                .iter()
+                .flat_map(|px| [px[0], px[1], px[2]])
+                .collect();
+            assert!(to_srgb(&mut rgba, &profile), "{name}");
+            assert!(to_srgb_rgb(&mut rgb, &profile), "{name}");
+            let expected_rgb: Vec<u8> = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|px| [px[0], px[1], px[2]])
+                .collect();
+            assert_eq!(rgb, expected_rgb, "{name}: RGB and RGBA conversions match");
+        }
+
+        let profile = Profile::from_icc(&ColorProfile::new_display_p3().encode().unwrap()).unwrap();
+        let opaque = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([200, 100, 50]),
+        ));
+        let out_opaque = apply_profile_preserving_alpha(opaque, Some(&profile));
+        assert!(matches!(out_opaque, DynamicImage::ImageRgb8(_)));
+
+        let alpha = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([200, 100, 50, 128]),
+        ));
+        let out_alpha = apply_profile_preserving_alpha(alpha, Some(&profile));
+        assert!(matches!(out_alpha, DynamicImage::ImageRgba8(_)));
     }
 }
