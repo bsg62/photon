@@ -630,6 +630,15 @@ impl Library {
             if !seen.insert(item) {
                 continue;
             }
+            // A photo purged by a background scan between selection and this write is
+            // silently skipped rather than aborting the rest of the batch (same tolerance
+            // as `name_faces`).
+            let exists = tx
+                .prepare_cached("SELECT 1 FROM items WHERE id = ?1")?
+                .exists(params![item])?;
+            if !exists {
+                continue;
+            }
             let picasa = picasa_here(&tx, item)?;
             let theirs = match person {
                 Some(person) => on_person_view(&tx, person, item)?,
@@ -3021,5 +3030,22 @@ mod tests {
                 },
             ]
         );
+    }
+
+    // A photo purged between selection and naming is skipped rather than aborting the
+    // whole batch with `QueryReturnedNoRows`.
+    #[test]
+    fn name_items_skips_purged_ids_without_aborting_the_batch() {
+        let (l, f) = library(&[&[0.0], &[1.0]]);
+        let gone = 999_999;
+        let r = l.lib.name_items(&[gone, l.items[0]], "Anna").unwrap();
+        assert_eq!(r.named, 1);
+        assert_eq!(r.none.count, 0);
+        assert_eq!(person_of(&l.lib, f[0]), (r.person, true));
+        assert_eq!(person_of(&l.lib, f[1]), (None, false));
+
+        // When every selected id is gone, nothing fails and no empty person is created.
+        let r2 = l.lib.name_items(&[gone], "Nobody").unwrap();
+        assert_eq!((r2.named, r2.none.count, r2.person), (0, 0, None));
     }
 }

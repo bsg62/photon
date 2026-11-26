@@ -652,6 +652,29 @@ impl Library {
         Ok(())
     }
 
+    /// Clears `missing_since` for files that disappeared briefly (e.g. a share hiccup or
+    /// move-out-and-back) and reappeared at the same path with unchanged size and mtime.
+    ///
+    /// Unlike `update_items`, the file's content and fingerprint did not change, so
+    /// confirmed faces, face rejections, hashes, look-alike group and thumbnails stay intact
+    /// and the thumbnail GC epoch is not bumped.
+    pub fn revive_items(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare_cached("UPDATE items SET missing_since = NULL WHERE id = ?1")?;
+            for &id in ids {
+                stmt.execute(params![id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Rewrites only what `metadata::read_image_meta` and `keywords::read_embedded`
     /// produce (the camera columns, the keywords, the caption and `exif_version`) for files
     /// the scanner found unchanged but whose stored metadata predates the current reader.

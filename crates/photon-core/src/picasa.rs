@@ -427,6 +427,9 @@ const IGNORED_CONTACT: &str = "ffffffffffffffff";
 fn parse_folder(text: &str) -> FolderIni {
     let mut ini = FolderIni::default();
     let mut section: Option<String> = None;
+    // Strip a leading UTF-8 BOM: `str::trim` leaves U+FEFF intact, which would stop the
+    // first `[section]` header from matching `strip_prefix('[')`.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for line in text.lines() {
         match classify(line) {
             Line::Header(name) => section = name,
@@ -547,24 +550,26 @@ fn rewrite(bytes: &[u8], file_name: &str, starred: bool) -> Option<Vec<u8>> {
     let mut changed = false;
     let mut in_match = false;
     // Where `star=yes` goes if the first matching section turns out to have no star line:
-    // the position in `out` just after that section's header.
-    let mut insert_at: Option<usize> = None;
+    // the position in `out` just after that section's header, and whether that header was
+    // an unterminated final line that still needs a newline before the inserted key.
+    let mut insert_at: Option<(usize, bool)> = None;
     let mut star_placed = false;
 
-    for chunk in bytes.split_inclusive(|&b| b == b'\n') {
+    for (line_idx, chunk) in bytes.split_inclusive(|&b| b == b'\n').enumerate() {
         let (text, line_eol) = split_eol(chunk);
-        match classify(&String::from_utf8_lossy(text)) {
+        // Strip a leading UTF-8 BOM only for classification so the original BOM bytes are
+        // preserved untouched in `out`.
+        let classified = if line_idx == 0 {
+            text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text)
+        } else {
+            text
+        };
+        match classify(&String::from_utf8_lossy(classified)) {
             Line::Header(name) => {
                 in_match = name.as_deref() == Some(wanted.as_str());
                 out.extend_from_slice(chunk);
                 if in_match && insert_at.is_none() {
-                    // A header that is the file's unterminated last line needs its newline
-                    // before anything can follow it, or the inserted key glues onto it.
-                    if line_eol.is_empty() {
-                        out.extend_from_slice(eol);
-                        changed = true;
-                    }
-                    insert_at = Some(out.len());
+                    insert_at = Some((out.len(), line_eol.is_empty()));
                 }
             }
             Line::Key { key, value } if in_match && is_star_key(key) => {
@@ -590,11 +595,17 @@ fn rewrite(bytes: &[u8], file_name: &str, starred: bool) -> Option<Vec<u8>> {
         let mut key = b"star=yes".to_vec();
         key.extend_from_slice(eol);
         match insert_at {
-            Some(at) => {
-                out.splice(at..at, key);
+            Some((at, needs_eol)) => {
+                if needs_eol {
+                    let mut inserted = eol.to_vec();
+                    inserted.extend_from_slice(&key);
+                    out.splice(at..at, inserted);
+                } else {
+                    out.splice(at..at, key);
+                }
             }
             None => {
-                if !out.is_empty() && out.last() != Some(&b'\n') {
+                if !out.is_empty() && out != b"\xEF\xBB\xBF" && out.last() != Some(&b'\n') {
                     out.extend_from_slice(eol);
                 }
                 out.extend_from_slice(b"[");
@@ -1530,5 +1541,42 @@ mod tests {
         assert!(set_stars(dir.path(), &[("a.jpg", true), ("b.jpg", true)]).unwrap());
         assert_eq!(entries(dir.path()), vec!["Picasa.ini"]);
         assert_eq!(stars(dir.path()), vec!["a.jpg", "b.jpg", "z.jpg"]);
+    }
+
+    // A Windows UTF-8 BOM before the first section header must neither drop that section
+    // on read nor append a duplicate section when starring/unstarring.
+    #[test]
+    fn utf8_bom_first_section_is_read_and_edited_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            ".picasa.ini",
+            b"\xEF\xBB\xBF[a.jpg]\r\nbackuphash=42\r\n[b.jpg]\r\nstar=yes\r\n",
+        );
+        // Star a.jpg in place under the BOM-prefixed first section (preserving the BOM).
+        assert!(set_star(dir.path(), "a.jpg", true).unwrap());
+        assert_eq!(
+            ini(dir.path(), ".picasa.ini"),
+            b"\xEF\xBB\xBF[a.jpg]\r\nstar=yes\r\nbackuphash=42\r\n[b.jpg]\r\nstar=yes\r\n"
+        );
+        assert_eq!(stars(dir.path()), vec!["a.jpg", "b.jpg"]);
+
+        // Re-starring is a no-op; unstarring removes the star without dropping the BOM.
+        assert!(!set_star(dir.path(), "a.jpg", true).unwrap());
+        assert!(set_star(dir.path(), "a.jpg", false).unwrap());
+        assert_eq!(
+            ini(dir.path(), ".picasa.ini"),
+            b"\xEF\xBB\xBF[a.jpg]\r\nbackuphash=42\r\n[b.jpg]\r\nstar=yes\r\n"
+        );
+        assert_eq!(stars(dir.path()), vec!["b.jpg"]);
+    }
+
+    #[test]
+    fn unstarring_an_unterminated_section_header_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let before: &[u8] = b"[a.jpg]";
+        write_file(dir.path(), ".picasa.ini", before);
+        assert!(!set_star(dir.path(), "a.jpg", false).unwrap());
+        assert_eq!(ini(dir.path(), ".picasa.ini"), before);
     }
 }

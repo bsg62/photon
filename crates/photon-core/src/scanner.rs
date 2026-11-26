@@ -726,6 +726,7 @@ fn walk_tree(
     };
     let mut new_batch: Vec<NewItem> = Vec::new();
     let mut changed_batch: Vec<(i64, NewItem)> = Vec::new();
+    let mut revived_batch: Vec<i64> = Vec::new();
     let mut meta_batch: Vec<(i64, NewItem)> = Vec::new();
     // One for the whole walk: it asks each watched root once whether its drive is there.
     let mut probe = moved::Probe::new(watched_id);
@@ -830,8 +831,14 @@ fn walk_tree(
         }
 
         match known.remove(path_str) {
-            Some(k) if k.size == size && k.mtime_ms == mtime_ms && !k.missing => {
-                report.unchanged += 1;
+            Some(k) if k.size == size && k.mtime_ms == mtime_ms => {
+                if k.missing {
+                    // File returned at the same path with identical size and mtime: revive
+                    // the row without wiping confirmed faces, hashes or thumbnails.
+                    revived_batch.push(k.id);
+                } else {
+                    report.unchanged += 1;
+                }
                 // The file is as it was, but the reader that last looked at it knew less
                 // than the current one does (a camera column added since). This is the
                 // only place an unchanged file is ever re-read, and it is what backfills
@@ -865,6 +872,9 @@ fn walk_tree(
         if changed_batch.len() >= BATCH {
             flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
         }
+        if revived_batch.len() >= BATCH {
+            flush_revived(lib, &mut revived_batch, &mut report, &mut seen, progress)?;
+        }
         if meta_batch.len() >= BATCH {
             flush_meta(lib, &mut meta_batch, &mut report)?;
         }
@@ -879,6 +889,7 @@ fn walk_tree(
         progress,
     )?;
     flush_changed(lib, &mut changed_batch, &mut report, &mut seen, progress)?;
+    flush_revived(lib, &mut revived_batch, &mut report, &mut seen, progress)?;
     flush_meta(lib, &mut meta_batch, &mut report)?;
     // Here rather than in either caller, because both prune afterwards and the prune deletes
     // every empty folder whose `seen_scan` is older than this scan: a folder the walk reached
@@ -1525,6 +1536,24 @@ fn flush_changed(
     seen.changed = report.changed;
     batch.clear();
     progress.indexed(&ids);
+    progress.progress(seen);
+    Ok(())
+}
+
+fn flush_revived(
+    lib: &Library,
+    batch: &mut Vec<i64>,
+    report: &mut ScanReport,
+    seen: &mut ScanProgress,
+    progress: &mut dyn ScanSink,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    lib.revive_items(batch)?;
+    report.changed += batch.len() as u64;
+    seen.changed = report.changed;
+    batch.clear();
     progress.progress(seen);
     Ok(())
 }
@@ -3169,6 +3198,41 @@ mod tests {
         assert_eq!((report.changed, report.purged), (1, 0));
         assert_eq!(lib.known_items(watched.id).unwrap()[&key(&a)].id, id);
         assert_eq!(lib.item(id).unwrap().unwrap().missing_since, None);
+    }
+
+    // A file briefly absent (e.g. share hiccup or move-out-and-back) that returns at the
+    // same path with identical size and mtime must keep its confirmed faces, hashes and
+    // thumbnail state rather than going through `update_items`.
+    #[test]
+    fn transiently_missing_unchanged_file_preserves_faces_and_hashes() {
+        let (dir, lib) = temp_library();
+        let root = photos_root(&dir);
+        let a = write_file(&root, "a.jpg", &jpeg_bytes(8, 8));
+        write_file(&root, "keep.jpg", &jpeg_bytes(8, 8));
+        let watched = lib.add_watched_folder(&root, &[]).unwrap();
+        scan(&lib, &watched, 1);
+        let id = id_at(&lib, &watched, &a);
+
+        lib.set_thumb_state(id, crate::media::ThumbState::Ready, None)
+            .unwrap();
+        let album = decorate(&lib, id);
+
+        // Move away (preserving exact mtime when moved back) so scan 2 marks it missing.
+        let aside = dir.path().join("aside.jpg");
+        fs::rename(&a, &aside).unwrap();
+        let report = scan(&lib, &watched, 2);
+        assert_eq!(report.marked_missing, 1);
+        assert!(lib.item(id).unwrap().unwrap().missing_since.is_some());
+
+        // Move back with identical size + mtime.
+        fs::rename(&aside, &a).unwrap();
+        let report = scan(&lib, &watched, 3);
+        assert_eq!((report.changed, report.purged), (1, 0));
+        assert!(report.touched_rows());
+        let revived = lib.item(id).unwrap().unwrap();
+        assert_eq!(revived.missing_since, None);
+        assert_eq!(revived.thumb_state, crate::media::ThumbState::Ready);
+        assert_followed(&lib, id, album, &a);
     }
 
     #[test]
