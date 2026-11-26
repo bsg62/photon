@@ -120,18 +120,12 @@ windows-core = "0.62.2"
 # Its libraries are linked (the core, and plugins-base's app and video); its plugins are
 # looked for when a video is opened.
 [target.'cfg(target_os = "linux")'.dependencies]
-# The folder picker on Linux (`platform.rs`): the XDG desktop portal over D-Bus, through
-# the client rfd itself uses there - pure Rust, no GTK. `async-std` is the executor it
-# runs on outside a runtime of its own (with tokio, its default, zbus panics with none
-# running); a request is waited for with `pollster`, above.
-ashpd = { version = "0.11.1", default-features = false, features = ["async-std"] }
-# The time the portal is given to open its picker: the timer and the race of the executor
-# ashpd runs on, at their versions.
+# The time the portal is given to accept `OpenFile` and open its picker (`platform.rs`),
+# and the `StreamExt` combinator for reading its `Response` signal.
 async-io = "2.6.0"
 futures-lite = "2.6.1"
-# The file manager's D-Bus interface, which shows a file in its folder (`platform.rs`):
-# the D-Bus client ashpd runs on, and the crate that makes a path a `file://` address, at
-# their versions.
+# The XDG desktop portal (`OpenFile`) and the file manager's D-Bus interface (`ShowItems`),
+# plus `url` to turn paths into `file://` URIs (`platform.rs`): pure Rust, no GTK.
 zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 url = "2.5.8"
 gstreamer = "0.25.4"

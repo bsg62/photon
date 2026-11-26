@@ -41,32 +41,58 @@ pub fn can_play() -> bool {
 /// every way into Media Foundation comes through `started`.
 const DLLS: [&str; 2] = ["mfplat.dll", "mfreadwrite.dll"];
 
-/// Whether Media Foundation's DLLs are on this system.
+/// Whether Media Foundation's DLLs are on this system. Checked and loaded at most once
+/// per process so repeated calls do not leak DLL reference counts.
 fn installed() -> Result<(), Failure> {
+    use std::sync::OnceLock;
     use windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
-    for dll in DLLS {
-        // SAFETY: a library of the system's own, from System32, kept loaded for the delay
-        // load to find.
-        unsafe { LoadLibraryExW(&HSTRING::from(dll), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
-            .map_err(|err| {
-                Failure::Unsupported(format!(
-                    "Media Foundation is not installed ({dll}: {err}): a Windows \"N\" edition \
-                     needs Microsoft's Media Feature Pack to play videos"
-                ))
-            })?;
-    }
-    Ok(())
+    static LOADED: OnceLock<Result<(), String>> = OnceLock::new();
+    LOADED
+        .get_or_init(|| {
+            for dll in DLLS {
+                // SAFETY: a library of the system's own, from System32, kept loaded for the delay
+                // load to find.
+                unsafe { LoadLibraryExW(&HSTRING::from(dll), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+                    .map_err(|err| {
+                        format!(
+                            "Media Foundation is not installed ({dll}: {err}): a Windows \"N\" \
+                             edition needs Microsoft's Media Feature Pack to play videos"
+                        )
+                    })?;
+            }
+            Ok(())
+        })
+        .clone()
+        .map_err(Failure::Unsupported)
 }
 
-/// COM on this thread, and Media Foundation in this process. Each is a no-op the second
-/// time it is asked for.
+/// COM on this thread (initialized at most once per thread) and Media Foundation in this
+/// process (started at most once per process so `MFStartup` refcounts do not leak).
 fn started() -> Result<(), Failure> {
+    use std::sync::OnceLock;
     installed()?;
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        MFStartup(MF_VERSION, MFSTARTUP_FULL)
-            .map_err(|e| Failure::Unsupported(format!("Media Foundation: {e}")))
+    thread_local! {
+        static COM_INIT: Cell<bool> = const { Cell::new(false) };
     }
+    COM_INIT.with(|init| {
+        if !init.get() {
+            // SAFETY: initializes COM on this thread once; ignoring `RPC_E_CHANGED_MODE`
+            // when a caller initialized STA first.
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            init.set(true);
+        }
+    });
+    static MF_STARTED: OnceLock<Result<(), String>> = OnceLock::new();
+    MF_STARTED
+        .get_or_init(|| {
+            // SAFETY: called once per process after `installed()` verified the DLLs exist.
+            unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }
+                .map_err(|e| format!("Media Foundation: {e}"))
+        })
+        .clone()
+        .map_err(Failure::Unsupported)
 }
 
 /// "No suitable transform", "unsupported" and their kind: the system has no decoder for
@@ -125,7 +151,12 @@ unsafe fn layout(reader: &IMFSourceReader) -> Result<Layout, Failure> {
                 };
                 (at(2), at(6), side(8), side(12))
             })
-            .filter(|&(left, top, w, h)| w > 0 && h > 0 && left + w <= width && top + h <= height);
+            .filter(|&(left, top, w, h)| {
+                w > 0
+                    && h > 0
+                    && left.checked_add(w).is_some_and(|right| right <= width)
+                    && top.checked_add(h).is_some_and(|bottom| bottom <= height)
+            });
         let (left, top, shown_width, shown_height) = aperture.unwrap_or((0, 0, width, height));
         Ok(Layout {
             width,
@@ -207,20 +238,39 @@ pub fn poster(path: &Path, at: f64) -> Result<Picture, Failure> {
             buffer
                 .Lock(&mut data, None, Some(&mut length))
                 .map_err(failure)?;
+            struct Unlock<'a>(&'a IMFMediaBuffer);
+            impl Drop for Unlock<'_> {
+                fn drop(&mut self) {
+                    // SAFETY: balances the `Lock` above even on early return or panic.
+                    unsafe {
+                        let _ = self.0.Unlock();
+                    }
+                }
+            }
+            let _unlock = Unlock(&buffer);
+            if data.is_null() || length == 0 {
+                return Err(Failure::Broken("a frame of no size".into()));
+            }
             let bytes = std::slice::from_raw_parts(data, length as usize);
-            let stride = layout.width as usize * 4;
-            let first = layout.top as usize * stride + layout.left as usize * 4;
-            let picture = bytes.get(first..).and_then(|from| {
-                Picture::from_rows(
-                    layout.shown_width,
-                    layout.shown_height,
-                    shown,
-                    from,
-                    stride,
-                    true,
-                )
-            });
-            let _ = buffer.Unlock();
+            let stride = (layout.width as usize)
+                .checked_mul(4)
+                .ok_or(Failure::Broken("a frame of invalid stride".into()))?;
+            let first = (layout.top as usize)
+                .checked_mul(stride)
+                .and_then(|rows| rows.checked_add((layout.left as usize).checked_mul(4)?));
+            let picture = first
+                .and_then(|offset| bytes.get(offset..))
+                .and_then(|from| {
+                    Picture::from_rows(
+                        layout.shown_width,
+                        layout.shown_height,
+                        shown,
+                        from,
+                        stride,
+                        true,
+                    )
+                });
+            drop(_unlock);
             let picture = picture.ok_or(Failure::Broken("a frame of no size".into()))?;
             return Ok(turn(picture, layout.rotation / 90));
         }
@@ -447,6 +497,9 @@ impl Player {
             let mut size = 0u32;
             let mut data = std::ptr::null_mut();
             lock.GetDataPointer(&mut size, &mut data).ok()?;
+            if data.is_null() || size == 0 {
+                return None;
+            }
             let bytes = std::slice::from_raw_parts(data, size as usize);
             Picture::from_rows(width, height, stamp as f64 / 1e7, bytes, stride, true)
         }

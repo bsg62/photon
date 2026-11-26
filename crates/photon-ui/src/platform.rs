@@ -11,10 +11,11 @@
 //!
 //! The picker is the system's own on Windows and macOS, through rfd, the crate Tauri's
 //! dialog plugin is built on. On Linux it is the XDG desktop portal over D-Bus, through
-//! ashpd, the client rfd itself uses there - pure Rust, no GTK - and where the portal does
-//! not answer, `zenity`, as rfd falls back to it; where neither is there, photon says that
-//! no picker could be opened, which rfd would have answered as a cancel. rfd is not used
-//! on Linux: built there it must have GTK or the portal, and refuses both at once.
+//! zbus directly (pure Rust, no GTK) so the timeout bounds only the `OpenFile` call that
+//! opens the picker and never the user's browsing time; where the portal does not answer,
+//! `zenity`, as rfd falls back to it; where neither is there, photon says that no picker
+//! could be opened, which rfd would have answered as a cancel. rfd is not used on Linux:
+//! built there it must have GTK or the portal, and refuses both at once.
 
 use std::{
     ffi::OsStr,
@@ -255,45 +256,135 @@ fn reveal(path: &Path) -> Result<(), String> {
     })
 }
 
-/// How long the portal is given to open its picker.
+/// How long the portal is given to accept `OpenFile` and open its picker.
 #[cfg(target_os = "linux")]
 const PORTAL_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The portal's file chooser, asked for a folder.
+/// The portal's file chooser, asked for a folder over D-Bus (`org.freedesktop.portal.FileChooser`).
+///
+/// Calls `OpenFile` directly via `zbus` rather than `ashpd::Request::send`: `ashpd` joins
+/// `OpenFile` with waiting for the `Response` signal in one future, so timing out `send()`
+/// timed out while the user was still browsing directories. Here `PORTAL_PATIENCE` bounds
+/// only connecting and `OpenFile` returning its request handle; once the picker is open,
+/// waiting for the user's `Response` signal has no timeout.
 #[cfg(target_os = "linux")]
-fn portal_folder(title: &str) -> Result<Picked, ashpd::Error> {
-    use ashpd::desktop::{ResponseError, file_chooser::SelectedFiles};
-    let request = SelectedFiles::open_file()
-        .title(title)
-        .directory(true)
-        .multiple(false)
-        .modal(true);
-    // The call that opens the picker has a time of its own; the user's choosing has none.
-    // A portal that accepts the call and never opens anything - one dying as it starts -
-    // would otherwise hold the picker open for the session.
-    let opened = pollster::block_on(futures_lite::future::or(
-        async { Some(request.send().await) },
-        async {
-            async_io::Timer::after(PORTAL_PATIENCE).await;
-            None
-        },
-    ));
-    let Some(opened) = opened else {
-        return Err(ashpd::Error::Response(ResponseError::Other));
+fn portal_folder(title: &str) -> Result<Picked, String> {
+    use futures_lite::StreamExt;
+    use std::{
+        collections::HashMap,
+        sync::atomic::{AtomicU64, Ordering},
     };
-    let answer = opened.and_then(|request| request.response());
-    match answer {
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+    static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+    let token = format!(
+        "photon_{}_{}",
+        std::process::id(),
+        NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
+    );
+
+    pollster::block_on(async {
+        let opened = futures_lite::future::or(
+            async {
+                let conn = zbus::Connection::session()
+                    .await
+                    .map_err(|err| format!("no session D-Bus: {err}"))?;
+                let sender = conn
+                    .unique_name()
+                    .ok_or_else(|| "D-Bus connection has no unique name".to_owned())?
+                    .trim_start_matches(':')
+                    .replace('.', "_");
+                let predicted = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+                let req_proxy = zbus::Proxy::new(
+                    &conn,
+                    "org.freedesktop.portal.Desktop",
+                    predicted.as_str(),
+                    "org.freedesktop.portal.Request",
+                )
+                .await
+                .map_err(|err| format!("portal request proxy: {err}"))?;
+                let mut responses = req_proxy
+                    .receive_signal("Response")
+                    .await
+                    .map_err(|err| format!("portal Response subscription: {err}"))?;
+
+                let chooser = zbus::Proxy::new(
+                    &conn,
+                    "org.freedesktop.portal.Desktop",
+                    "/org/freedesktop/portal/desktop",
+                    "org.freedesktop.portal.FileChooser",
+                )
+                .await
+                .map_err(|err| format!("portal FileChooser proxy: {err}"))?;
+                let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+                options.insert("handle_token", Value::from(token.as_str()));
+                options.insert("directory", Value::from(true));
+                options.insert("multiple", Value::from(false));
+                options.insert("modal", Value::from(true));
+
+                let actual: OwnedObjectPath = chooser
+                    .call("OpenFile", &("", title, options))
+                    .await
+                    .map_err(|err| format!("portal OpenFile: {err}"))?;
+
+                if actual.as_str() != predicted {
+                    let actual_proxy = zbus::Proxy::new(
+                        &conn,
+                        "org.freedesktop.portal.Desktop",
+                        actual.as_str(),
+                        "org.freedesktop.portal.Request",
+                    )
+                    .await
+                    .map_err(|err| format!("portal actual request proxy: {err}"))?;
+                    responses = actual_proxy
+                        .receive_signal("Response")
+                        .await
+                        .map_err(|err| format!("portal actual Response subscription: {err}"))?;
+                }
+                Ok::<_, String>(Some(responses))
+            },
+            async {
+                async_io::Timer::after(PORTAL_PATIENCE).await;
+                Ok::<_, String>(None)
+            },
+        )
+        .await?;
+
+        let Some(mut responses) = opened else {
+            return Err("the desktop portal did not open in time".to_owned());
+        };
+        let signal = responses
+            .next()
+            .await
+            .ok_or_else(|| "the desktop portal closed without answering".to_owned())?;
+        let (code, results): (u32, HashMap<String, OwnedValue>) = signal
+            .body()
+            .deserialize()
+            .map_err(|err| format!("malformed portal Response: {err}"))?;
+        let uris: Vec<String> = results
+            .get("uris")
+            .and_then(|value| Vec::<String>::try_from(value.clone()).ok())
+            .unwrap_or_default();
+        portal_response(code, &uris)
+    })
+}
+
+/// Decodes a `org.freedesktop.portal.Request::Response` code and its `uris` list.
+#[cfg(any(target_os = "linux", test))]
+fn portal_response(code: u32, uris: &[String]) -> Result<Picked, String> {
+    match code {
         // A place that is no file of this computer's - a share the desktop opened as
         // `smb://` - goes into the field as it is, which says it is no whole path: chosen
         // and nothing said, it would read as a picker that did nothing.
-        Ok(files) => Ok(files.uris().first().map_or(Picked::Cancelled, |uri| {
-            Picked::Folder(
-                uri.to_file_path()
-                    .unwrap_or_else(|()| PathBuf::from(uri.as_str())),
-            )
+        0 => Ok(uris.first().map_or(Picked::Cancelled, |raw| {
+            let path = url::Url::parse(raw)
+                .ok()
+                .and_then(|uri| uri.to_file_path().ok())
+                .unwrap_or_else(|| PathBuf::from(raw));
+            Picked::Folder(path)
         })),
-        Err(ashpd::Error::Response(ResponseError::Cancelled)) => Ok(Picked::Cancelled),
-        Err(err) => Err(err),
+        1 => Ok(Picked::Cancelled),
+        other => Err(format!("portal failed with response code {other}")),
     }
 }
 
@@ -413,5 +504,21 @@ mod tests {
             startup_failed(&err),
             "photon could not open its library:\n\nthe database is locked\n\nNothing was changed."
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portal_response_maps_file_uris_cancel_and_errors() {
+        assert_eq!(
+            portal_response(0, &["file:///tmp/my%20photos".to_owned()]),
+            Ok(Picked::Folder(PathBuf::from("/tmp/my photos")))
+        );
+        assert_eq!(
+            portal_response(0, &["smb://nas/photos".to_owned()]),
+            Ok(Picked::Folder(PathBuf::from("smb://nas/photos")))
+        );
+        assert_eq!(portal_response(0, &[]), Ok(Picked::Cancelled));
+        assert_eq!(portal_response(1, &[]), Ok(Picked::Cancelled));
+        assert!(portal_response(2, &[]).is_err());
     }
 }
