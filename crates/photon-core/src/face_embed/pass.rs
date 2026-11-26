@@ -170,6 +170,12 @@ fn embed_one(candidate: &EmbedCandidate, read: &Read<'_>, embed: &Embed<'_>) -> 
             return None;
         }
     };
+    // Ensure the preview is RGB8 once per photo rather than converting on every face in a
+    // group shot.
+    let preview = match preview {
+        image::DynamicImage::ImageRgb8(_) => preview,
+        other => image::DynamicImage::ImageRgb8(other.into_rgb8()),
+    };
     // tract is Rust and unwinds, so a face it panics on costs that face: marked with no
     // vector by the caller (unless the whole batch failed), since the same face would panic
     // on every pass. Each face is guarded alone so one does not cost its photo's others.

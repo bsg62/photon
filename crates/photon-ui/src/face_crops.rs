@@ -220,16 +220,15 @@ fn cut(engine: &Engine, (face, key): &CropOf) -> Made {
         return Made::Missing;
     };
     match engine.lib.face_crop_source(*face) {
-        Ok(Some((rect, current))) if current == key => match engine.thumbs.face_crop(key, &rect) {
-            Ok(bytes) => match webp::Decoder::new(&bytes).decode() {
-                Some(image) => Made::Pixels(image.to_image().to_rgba8().into_raw()),
-                None => Made::Failed,
-            },
-            Err(photon_core::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-                Made::Missing
+        Ok(Some((rect, current))) if current == key => {
+            match engine.thumbs.face_crop_rgba(key, &rect) {
+                Ok(rgba) => Made::Pixels(rgba),
+                Err(photon_core::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                    Made::Missing
+                }
+                Err(_) => Made::Failed,
             }
-            Err(_) => Made::Failed,
-        },
+        }
         Ok(_) => Made::Missing,
         Err(_) => Made::Failed,
     }

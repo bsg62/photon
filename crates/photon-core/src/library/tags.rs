@@ -105,19 +105,25 @@ impl Library {
     /// the file lists them, followed by the tags the user added, each once.
     pub fn item_tags(&self, item_id: i64) -> Result<Vec<String>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(&format!(
-            "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY src, seq"
-        ))?;
-        let mut tags: Vec<String> = Vec::new();
-        for tag in stmt.query_map(params![item_id], |r| r.get::<_, String>(0))? {
-            let tag = tag?;
-            if !tags.contains(&tag) {
-                tags.push(tag);
-            }
-        }
-        Ok(tags)
+        item_tags_on(&conn, item_id)
     }
+}
 
+pub(super) fn item_tags_on(conn: &rusqlite::Connection, item_id: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT tag FROM ({EFFECTIVE_TAGS}) WHERE item_id = ?1 ORDER BY src, seq"
+    ))?;
+    let mut tags: Vec<String> = Vec::new();
+    for tag in stmt.query_map(params![item_id], |r| r.get::<_, String>(0))? {
+        let tag = tag?;
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    Ok(tags)
+}
+
+impl Library {
     /// Every tag carried by at least one live photo, with its photo count. A photo is
     /// counted once per name, because one carrying both halves of a merge has two rows under
     /// it. Sorted in Rust: the ordering is case-insensitive and `lower()` is ASCII-only

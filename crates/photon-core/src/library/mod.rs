@@ -53,12 +53,29 @@ pub use stats::{CameraCount, LensCount, LibraryStats, STATS_TOP, YearCount};
 pub use tags::{TagCount, TagRule};
 
 use crate::Result;
+use crate::face_detect::Rect;
 use parking_lot::{Mutex, MutexGuard};
 use rusqlite::Connection;
 use std::{
     ops::Deref,
     path::{Path, PathBuf},
 };
+
+/// Everything the viewer reads from SQLite for one live photo, fetched on a single pooled
+/// reader connection so stepping through photos borrows the reader pool once instead of ten
+/// times and reads the `items` row once instead of twice.
+pub struct ViewerItemSnapshot {
+    pub item: Item,
+    pub caption: Option<String>,
+    pub tags: Vec<String>,
+    pub faces: Vec<ItemFace>,
+    pub named_detected: Vec<(i64, Rect, i64, String)>,
+    pub detected: Vec<(i64, Rect, Option<i64>, bool)>,
+    pub picasa_faces: Vec<(Rect, bool)>,
+    pub albums: Vec<i64>,
+    pub copies: Vec<ItemCopy>,
+    pub similar: Vec<ItemCopy>,
+}
 
 /// Read connections kept open between uses. Enough for the thumbnail workers, the scan
 /// thread and a few protocol requests to all be reading at once; a burst beyond it opens
@@ -186,20 +203,54 @@ impl Library {
             conn: Some(conn),
         })
     }
+
+    /// Reads all SQLite state for `id` needed by the viewer on a single pooled reader
+    /// connection, returning `None` if the row does not exist or is marked missing.
+    pub fn viewer_item_snapshot(&self, id: i64) -> Result<Option<ViewerItemSnapshot>> {
+        let conn = self.reader()?;
+        let Some((item, caption)) = items::item_with_caption_on(&conn, id)? else {
+            return Ok(None);
+        };
+        if item.missing_since.is_some() {
+            return Ok(None);
+        }
+        let tags = tags::item_tags_on(&conn, id)?;
+        let faces = faces::item_faces_on(&conn, id)?;
+        let named_detected = faces::item_named_detected_faces_on(&conn, id)?;
+        let detected = detected_faces::item_detected_faces_with_ids_on(&conn, id)?;
+        let picasa_faces = faces::item_picasa_faces_on(&conn, id)?;
+        let albums = albums::item_albums_on(&conn, id)?;
+        let copies = duplicates::copies_of_on(&conn, id)?;
+        let similar = similar::similar_of_on(&conn, id)?;
+        Ok(Some(ViewerItemSnapshot {
+            item,
+            caption,
+            tags,
+            faces,
+            named_detected,
+            detected,
+            picasa_faces,
+            albums,
+            copies,
+            similar,
+        }))
+    }
 }
 
 fn open_reader(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    configure(&conn)?;
+    // Readers never write or change journal mode: setting `busy_timeout` first and skipping
+    // `journal_mode = WAL` / `synchronous = NORMAL` avoids unnecessary lock checks when
+    // opening burst readers under write load.
+    conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")?;
     Ok(conn)
 }
 
 fn configure(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
     // journal_mode returns a row, so it cannot go through execute_batch.
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
-    conn.execute_batch(
-        "PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
-    )?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
     Ok(())
 }
 
@@ -306,5 +357,56 @@ mod tests {
 
         lib.remove_watched_folder(a.id).unwrap();
         assert_eq!(lib.watched_folders().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn readers_are_query_only_and_viewer_snapshot_borrows_once() {
+        let (_dir, lib) = temp_library();
+        let reader = lib.reader().unwrap();
+        let query_only: i64 = reader
+            .query_row("PRAGMA query_only", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(query_only, 1);
+        drop(reader);
+
+        let (_, folder) = crate::testutil::seed_folder(&lib, Path::new("/photos"));
+        let mut item = crate::testutil::new_item(folder, "/photos/a.jpg", 1_000);
+        item.caption = Some("hello".into());
+        item.tags = vec!["summer".into()];
+        let id = lib.insert_items(&[item]).unwrap()[0];
+
+        let before = lib.reads_for_test();
+        let snap = lib.viewer_item_snapshot(id).unwrap().unwrap();
+        assert_eq!(lib.reads_for_test() - before, 1);
+        assert_eq!(snap.item.id, id);
+        assert_eq!(snap.caption.as_deref(), Some("hello"));
+        assert_eq!(snap.tags, vec!["summer"]);
+    }
+
+    #[test]
+    fn no_op_mutations_do_not_bump_thumb_gc_epoch() {
+        use rusqlite::OptionalExtension;
+
+        let (_dir, lib) = temp_library();
+        let epoch = || -> i64 {
+            lib.reader()
+                .unwrap()
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'thumb_gc_epoch'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap()
+                .unwrap_or(0)
+        };
+        let initial = epoch();
+        lib.purge_items(&[]).unwrap();
+        lib.purge_items(&[999_999]).unwrap();
+        assert_eq!(lib.purge_at(&[(999_999, "/nope.jpg".into())]).unwrap(), 0);
+        lib.update_items(&[]).unwrap();
+        assert!(lib.move_items(&[]).unwrap().is_empty());
+        lib.remove_watched_folder(999_999).unwrap();
+        assert_eq!(epoch(), initial);
     }
 }

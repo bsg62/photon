@@ -22,25 +22,67 @@ pub const LEVEL_FLOOR: u32 = 512;
 pub fn halve(pixels: &Pixels) -> Pixels {
     let (width, height) = ((pixels.width / 2).max(1), (pixels.height / 2).max(1));
     let stride = pixels.width as usize * 4;
-    // A side of one pixel has no pair to take the mean of: its one pixel twice.
-    let (right, below) = (
-        if pixels.width > 1 { 4 } else { 0 },
-        if pixels.height > 1 { stride } else { 0 },
-    );
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for y in 0..height as usize {
-        let row = y * 2 * stride;
-        for x in 0..width as usize {
-            let at = row + x * 2 * 4;
-            for channel in 0..4 {
-                let sum = u16::from(pixels.rgba[at + channel])
-                    + u16::from(pixels.rgba[at + right + channel])
-                    + u16::from(pixels.rgba[at + below + channel])
-                    + u16::from(pixels.rgba[at + below + right + channel]);
-                rgba.push(((sum + 2) / 4) as u8);
+    let out_w = width as usize;
+    let out_h = height as usize;
+    let mut rgba = vec![0u8; out_w * out_h * 4];
+
+    if pixels.width >= 2 && pixels.height >= 2 {
+        let pair_bytes = out_w * 8;
+        for (y, dst_row) in rgba.chunks_exact_mut(out_w * 4).enumerate() {
+            let row0_start = y * 2 * stride;
+            let (row0, _) = pixels.rgba[row0_start..row0_start + pair_bytes].as_chunks::<8>();
+            let (row1, _) =
+                pixels.rgba[row0_start + stride..row0_start + stride + pair_bytes].as_chunks::<8>();
+            let (dst_pixels, _) = dst_row.as_chunks_mut::<4>();
+            for ((top, bot), dst) in row0.iter().zip(row1).zip(dst_pixels) {
+                dst[0] = ((u16::from(top[0])
+                    + u16::from(top[4])
+                    + u16::from(bot[0])
+                    + u16::from(bot[4])
+                    + 2)
+                    >> 2) as u8;
+                dst[1] = ((u16::from(top[1])
+                    + u16::from(top[5])
+                    + u16::from(bot[1])
+                    + u16::from(bot[5])
+                    + 2)
+                    >> 2) as u8;
+                dst[2] = ((u16::from(top[2])
+                    + u16::from(top[6])
+                    + u16::from(bot[2])
+                    + u16::from(bot[6])
+                    + 2)
+                    >> 2) as u8;
+                dst[3] = ((u16::from(top[3])
+                    + u16::from(top[7])
+                    + u16::from(bot[3])
+                    + u16::from(bot[7])
+                    + 2)
+                    >> 2) as u8;
+            }
+        }
+    } else {
+        // A side of one pixel has no pair to take the mean of: its one pixel twice.
+        let (right, below) = (
+            if pixels.width > 1 { 4 } else { 0 },
+            if pixels.height > 1 { stride } else { 0 },
+        );
+        for (y, dst_row) in rgba.chunks_exact_mut(out_w * 4).enumerate() {
+            let row = y * 2 * stride;
+            let (dst_pixels, _) = dst_row.as_chunks_mut::<4>();
+            for (x, dst) in dst_pixels.iter_mut().enumerate() {
+                let at = row + x * 2 * 4;
+                for (channel, slot) in dst.iter_mut().enumerate() {
+                    let sum = u16::from(pixels.rgba[at + channel])
+                        + u16::from(pixels.rgba[at + right + channel])
+                        + u16::from(pixels.rgba[at + below + channel])
+                        + u16::from(pixels.rgba[at + below + right + channel]);
+                    *slot = ((sum + 2) >> 2) as u8;
+                }
             }
         }
     }
+
     Pixels {
         width,
         height,

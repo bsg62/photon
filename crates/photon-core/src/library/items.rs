@@ -597,11 +597,12 @@ impl Library {
     /// here would `NULL` out a folder's existing stars on the next size/mtime change, and a
     /// folder the Picasa pass could not read that scan would have no way to restore it.
     pub fn update_items(&self, items: &[(i64, NewItem)]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        // The row's fingerprint changes with its size or mtime, so the thumbnails written
-        // under the old one are orphaned by this write.
-        super::settings::bump_thumb_gc_epoch(&tx)?;
+        let mut updated = 0usize;
         {
             let mut stmt = tx.prepare_cached(
                 "UPDATE items SET folder_id = ?2, path = ?3, file_name = ?4, kind = ?5, size = ?6, mtime_ms = ?7,
@@ -618,7 +619,7 @@ impl Library {
                 tx.prepare_cached("DELETE FROM detected_faces WHERE item_id = ?1")?;
             for (id, it) in items {
                 let c = &it.camera;
-                stmt.execute(params![
+                updated += stmt.execute(params![
                     id,
                     it.folder_id,
                     it.path,
@@ -647,6 +648,11 @@ impl Library {
                 clear_faces.execute(params![id])?;
                 write_tags(&tx, *id, &it.tags)?;
             }
+        }
+        if updated > 0 {
+            // The row's fingerprint changes with its size or mtime, so the thumbnails written
+            // under the old one are orphaned by this write.
+            super::settings::bump_thumb_gc_epoch(&tx)?;
         }
         tx.commit()?;
         Ok(())
@@ -836,14 +842,20 @@ impl Library {
     /// Deletes items by id alone; the scanner uses `purge_at` for the reason `mark_missing`
     /// gives.
     pub fn purge_items(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        super::settings::bump_thumb_gc_epoch(&tx)?;
+        let mut purged = 0usize;
         {
             let mut stmt = tx.prepare_cached("DELETE FROM items WHERE id = ?1")?;
             for id in ids {
-                stmt.execute(params![id])?;
+                purged += stmt.execute(params![id])?;
             }
+        }
+        if purged > 0 {
+            super::settings::bump_thumb_gc_epoch(&tx)?;
         }
         tx.commit()?;
         Ok(())
@@ -873,15 +885,20 @@ impl Library {
     /// `purge_items`, guarded the same way as `mark_missing_at`. Returns how many rows were
     /// deleted.
     pub fn purge_at(&self, rows: &[(i64, String)]) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        super::settings::bump_thumb_gc_epoch(&tx)?;
         let mut purged = 0;
         {
             let mut stmt = tx.prepare_cached("DELETE FROM items WHERE id = ?1 AND path = ?2")?;
             for (id, path) in rows {
                 purged += stmt.execute(params![id, path])? as u64;
             }
+        }
+        if purged > 0 {
+            super::settings::bump_thumb_gc_epoch(&tx)?;
         }
         tx.commit()?;
         Ok(purged)
@@ -951,10 +968,13 @@ impl Library {
     /// that "yes" is the whole record of the unhide: forgotten, a folder renamed with its
     /// INI would hide the photo again.
     pub fn move_items(&self, moves: &[(i64, String, NewItem)]) -> Result<Vec<bool>> {
+        if moves.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        super::settings::bump_thumb_gc_epoch(&tx)?;
         let mut moved = Vec::with_capacity(moves.len());
+        let mut any_moved = false;
         {
             let mut stmt = tx.prepare_cached(
                 // Every right-hand side of a SET reads the row as it was, so a bare `hidden`
@@ -994,9 +1014,13 @@ impl Library {
                 ])?;
                 if changed == 1 {
                     write_tags(&tx, *id, &it.tags)?;
+                    any_moved = true;
                 }
                 moved.push(changed == 1);
             }
+        }
+        if any_moved {
+            super::settings::bump_thumb_gc_epoch(&tx)?;
         }
         tx.commit()?;
         Ok(moved)
@@ -1070,7 +1094,26 @@ impl Library {
             .optional()?
             .flatten())
     }
+}
 
+/// Reads an item row together with its caption on an already-borrowed reader connection.
+pub(super) fn item_with_caption_on(
+    conn: &rusqlite::Connection,
+    id: i64,
+) -> Result<Option<(Item, Option<String>)>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT id, folder_id, path, kind, size, mtime_ms, width, height, orientation, taken_at,
+                thumb_state, thumb_error, missing_since, rating, {CAMERA_COLUMNS},
+                edit_turns, edit_crop, hidden, duration_ms, caption
+         FROM items WHERE id = ?1"
+    ))?;
+    let row = stmt
+        .query_row(params![id], |r| Ok((row_to_item(r)?, r.get(27)?)))
+        .optional()?;
+    Ok(row)
+}
+
+impl Library {
     /// Records the user's edit of one photo and sends its thumbnails back to be made.
     /// Returns `false`, writing nothing, when the photo already has exactly this edit or
     /// does not exist.

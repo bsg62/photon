@@ -202,25 +202,7 @@ impl Library {
     /// merge with photon's own detections needs, where an unnamed face is still a face.
     pub fn item_picasa_faces(&self, item_id: i64) -> Result<Vec<(Rect, bool)>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT f.left, f.top, f.right, f.bottom,
-                    EXISTS (SELECT 1 FROM contacts c WHERE c.hash = f.contact)
-             FROM faces f WHERE f.item_id = ?1 ORDER BY f.rowid",
-        )?;
-        let faces = stmt
-            .query_map(params![item_id], |r| {
-                Ok((
-                    Rect {
-                        left: r.get(0)?,
-                        top: r.get(1)?,
-                        right: r.get(2)?,
-                        bottom: r.get(3)?,
-                    },
-                    r.get(4)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(faces)
+        item_picasa_faces_on(&conn, item_id)
     }
 
     /// The named faces on one photo, in the INI's order. A face whose contact no INI has
@@ -228,29 +210,7 @@ impl Library {
     /// person is that person: their key and their name.
     pub fn item_faces(&self, item_id: i64) -> Result<Vec<ItemFace>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT CASE WHEN p.id IS NULL THEN 'c:' || f.contact ELSE 'p:' || p.id END,
-                    COALESCE(p.name, c.name), f.left, f.top, f.right, f.bottom
-             FROM faces f JOIN contacts c ON c.hash = f.contact
-             LEFT JOIN person_contacts pc ON pc.contact = f.contact
-             LEFT JOIN people p ON p.id = pc.person_id AND p.name IS NOT NULL
-             WHERE f.item_id = ?1
-             ORDER BY f.rowid",
-        )?;
-        let faces = stmt
-            .query_map(params![item_id], |r| {
-                Ok(ItemFace {
-                    key: r.get(0)?,
-                    name: r.get(1)?,
-                    left: r.get(2)?,
-                    top: r.get(3)?,
-                    right: r.get(4)?,
-                    bottom: r.get(5)?,
-                    face_id: None,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(faces)
+        item_faces_on(&conn, item_id)
     }
 
     /// The confirmed faces of named people on one photo, in the picture as shown, with the
@@ -258,30 +218,90 @@ impl Library {
     /// is not here: it is not yet the person's face.
     pub fn item_named_detected_faces(&self, item_id: i64) -> Result<Vec<(i64, Rect, i64, String)>> {
         let conn = self.reader()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT d.id, d.left, d.top, d.right, d.bottom, p.id, p.name
-             FROM detected_faces d JOIN people p ON p.id = d.person_id
-             WHERE d.item_id = ?1 AND d.confirmed = 1 AND p.name IS NOT NULL
-             ORDER BY d.id",
-        )?;
-        let faces = stmt
-            .query_map(params![item_id], |r| {
-                Ok((
-                    r.get(0)?,
-                    Rect {
-                        left: r.get(1)?,
-                        top: r.get(2)?,
-                        right: r.get(3)?,
-                        bottom: r.get(4)?,
-                    },
-                    r.get(5)?,
-                    r.get(6)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(faces)
+        item_named_detected_faces_on(&conn, item_id)
     }
+}
 
+pub(super) fn item_picasa_faces_on(
+    conn: &rusqlite::Connection,
+    item_id: i64,
+) -> Result<Vec<(Rect, bool)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT f.left, f.top, f.right, f.bottom,
+                EXISTS (SELECT 1 FROM contacts c WHERE c.hash = f.contact)
+         FROM faces f WHERE f.item_id = ?1 ORDER BY f.rowid",
+    )?;
+    let faces = stmt
+        .query_map(params![item_id], |r| {
+            Ok((
+                Rect {
+                    left: r.get(0)?,
+                    top: r.get(1)?,
+                    right: r.get(2)?,
+                    bottom: r.get(3)?,
+                },
+                r.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(faces)
+}
+
+pub(super) fn item_faces_on(conn: &rusqlite::Connection, item_id: i64) -> Result<Vec<ItemFace>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT CASE WHEN p.id IS NULL THEN 'c:' || f.contact ELSE 'p:' || p.id END,
+                COALESCE(p.name, c.name), f.left, f.top, f.right, f.bottom
+         FROM faces f JOIN contacts c ON c.hash = f.contact
+         LEFT JOIN person_contacts pc ON pc.contact = f.contact
+         LEFT JOIN people p ON p.id = pc.person_id AND p.name IS NOT NULL
+         WHERE f.item_id = ?1
+         ORDER BY f.rowid",
+    )?;
+    let faces = stmt
+        .query_map(params![item_id], |r| {
+            Ok(ItemFace {
+                key: r.get(0)?,
+                name: r.get(1)?,
+                left: r.get(2)?,
+                top: r.get(3)?,
+                right: r.get(4)?,
+                bottom: r.get(5)?,
+                face_id: None,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(faces)
+}
+
+pub(super) fn item_named_detected_faces_on(
+    conn: &rusqlite::Connection,
+    item_id: i64,
+) -> Result<Vec<(i64, Rect, i64, String)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT d.id, d.left, d.top, d.right, d.bottom, p.id, p.name
+         FROM detected_faces d JOIN people p ON p.id = d.person_id
+         WHERE d.item_id = ?1 AND d.confirmed = 1 AND p.name IS NOT NULL
+         ORDER BY d.id",
+    )?;
+    let faces = stmt
+        .query_map(params![item_id], |r| {
+            Ok((
+                r.get(0)?,
+                Rect {
+                    left: r.get(1)?,
+                    top: r.get(2)?,
+                    right: r.get(3)?,
+                    bottom: r.get(4)?,
+                },
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(faces)
+}
+
+impl Library {
     /// Every named person and every contact no person is linked to, each with a face on a
     /// live photo, with how many photos, sorted by name in Rust (case-insensitively;
     /// `lower()` is ASCII-only without ICU).

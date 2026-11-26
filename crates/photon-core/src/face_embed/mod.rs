@@ -71,7 +71,15 @@ impl Embedder {
         let to_reference = align::fit(&points).ok_or_else(|| {
             model_error("a face's landmarks give no alignment: all in one place, or not numbers")
         })?;
-        let input = align::sample(&image.to_rgb8(), &to_reference);
+        let converted;
+        let rgb = match image.as_rgb8() {
+            Some(rgb) => rgb,
+            None => {
+                converted = image.to_rgb8();
+                &converted
+            }
+        };
+        let input = align::sample(rgb, &to_reference);
         let tensor: Tensor = tract_ndarray::Array4::from_shape_vec((1, 3, SIDE, SIDE), input)
             .map_err(model_error)?
             .into();

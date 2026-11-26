@@ -212,9 +212,49 @@ impl ThumbCache {
             })
     }
 
+    /// Decodes a thumbnail file directly to straight RGBA without allocating an intermediate
+    /// `DynamicImage::ImageRgb8` buffer.
+    pub fn decode_rgba(path: &Path) -> Result<image::RgbaImage> {
+        let bytes = fs::read(path)?;
+        let decoded = webp::Decoder::new(&bytes).decode().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "not a still WebP")
+        })?;
+        let (width, height) = (decoded.width(), decoded.height());
+        let raw = if decoded.is_alpha() {
+            decoded.to_vec()
+        } else {
+            rgb_to_rgba(&decoded, width, height)
+        };
+        image::RgbaImage::from_raw(width, height, raw).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "bad WebP dimensions").into()
+        })
+    }
+
     /// The thumbnail cached for `fp` at `size`, decoded; see `decode`.
     pub(crate) fn read(&self, fp: u64, size: ThumbSize) -> Result<DynamicImage> {
         Self::decode(&self.path_for(fp, size))
+    }
+
+    /// The thumbnail cached for `fp` at `size`, decoded straight to RGBA; see `decode_rgba`.
+    pub(crate) fn read_rgba(&self, fp: u64, size: ThumbSize) -> Result<image::RgbaImage> {
+        Self::decode_rgba(&self.path_for(fp, size))
+    }
+
+    /// A face's crop as resized RGB, cut from the cached preview. Shared by `face_crop`
+    /// (WebP bytes) and `face_crop_rgba` (direct pixels for the native UI).
+    fn face_crop_rgb(&self, key: u64, rect: &crate::face_detect::Rect) -> Result<RgbImage> {
+        use super::face_crop::{CROP_PX, square};
+        let preview = self.decoded_preview(key)?;
+        let (x, y, side) = square(rect, preview.width(), preview.height()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "no face to crop")
+        })?;
+        let cut = image::imageops::crop_imm(&*preview, x, y, side, side).to_image();
+        Ok(image::imageops::resize(
+            &cut,
+            CROP_PX,
+            CROP_PX,
+            image::imageops::FilterType::Triangle,
+        ))
     }
 
     /// A face's crop, as WebP: the square `face_crop::square` gives, cut from the cached
@@ -223,23 +263,20 @@ impl ThumbCache {
     /// a 404 and the page with a placeholder. The decoded preview is kept for the photo's
     /// other faces (`decoded_preview`).
     pub fn face_crop(&self, key: u64, rect: &crate::face_detect::Rect) -> Result<Vec<u8>> {
-        use super::face_crop::{CROP_PX, square};
-        let preview = self.decoded_preview(key)?;
-        let (x, y, side) = square(rect, preview.width(), preview.height()).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "no face to crop")
-        })?;
-        let cut = image::imageops::crop_imm(&*preview, x, y, side, side).to_image();
-        let small = image::imageops::resize(
-            &cut,
-            CROP_PX,
-            CROP_PX,
-            image::imageops::FilterType::Triangle,
-        );
+        use super::face_crop::CROP_PX;
+        let small = self.face_crop_rgb(key, rect)?;
         let encoded = encode_webp(
             &webp::Encoder::from_rgb(small.as_raw(), CROP_PX, CROP_PX),
             ThumbSize::Grid.webp_method(),
         )?;
         Ok(encoded.to_vec())
+    }
+
+    /// A face's crop as straight RGBA bytes (`CROP_PX * CROP_PX * 4`), avoiding the WebP
+    /// encode + decode round-trip for the native UI.
+    pub fn face_crop_rgba(&self, key: u64, rect: &crate::face_detect::Rect) -> Result<Vec<u8>> {
+        let small = self.face_crop_rgb(key, rect)?;
+        Ok(rgb_to_rgba(small.as_raw(), small.width(), small.height()))
     }
 
     /// The cached preview under `key`, decoded: from the ones kept if it is there, else read
@@ -339,6 +376,20 @@ fn is_abandoned_temp(entry: &walkdir::DirEntry) -> bool {
         .and_then(|md| md.modified().ok())
         .and_then(|at| at.elapsed().ok())
         .is_some_and(|age| age > TEMP_GRACE)
+}
+
+fn rgb_to_rgba(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixels = width as usize * height as usize;
+    let mut rgba = vec![0u8; pixels * 4];
+    let (src_chunks, _) = rgb.as_chunks::<3>();
+    let (dst_chunks, _) = rgba.as_chunks_mut::<4>();
+    for (src, dst) in src_chunks.iter().zip(dst_chunks) {
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        dst[3] = 255;
+    }
+    rgba
 }
 
 fn shrink(img: &DynamicImage, max_edge: u32) -> DynamicImage {
@@ -880,5 +931,46 @@ mod tests {
         assert_eq!(cache.collect_garbage(&HashSet::from([1])).unwrap(), 2);
         assert!(cache.is_complete(1));
         assert!(!cache.is_complete(2));
+    }
+
+    #[test]
+    fn decode_rgba_matches_decode_into_rgba8_for_rgb_and_alpha_webp() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::new(dir.path().join("cache"));
+
+        let rgb = DynamicImage::ImageRgb8(RgbImage::from_fn(24, 16, |x, y| {
+            image::Rgb([(x * 10) as u8, (y * 15) as u8, 90])
+        }));
+        cache.store(1, &rgb, &rgb).unwrap();
+        let rgb_path = cache.path_for(1, ThumbSize::Grid);
+        assert_eq!(
+            ThumbCache::decode_rgba(&rgb_path).unwrap(),
+            ThumbCache::decode(&rgb_path).unwrap().into_rgba8()
+        );
+
+        let rgba = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(24, 16, |x, y| {
+            image::Rgba([(x * 10) as u8, (y * 15) as u8, 90, 128])
+        }));
+        cache.store(2, &rgba, &rgba).unwrap();
+        let rgba_path = cache.path_for(2, ThumbSize::Grid);
+        assert_eq!(
+            ThumbCache::decode_rgba(&rgba_path).unwrap(),
+            ThumbCache::decode(&rgba_path).unwrap().into_rgba8()
+        );
+
+        let crop_rgba = cache
+            .face_crop_rgba(
+                1,
+                &crate::face_detect::Rect {
+                    left: 0.1,
+                    top: 0.1,
+                    right: 0.9,
+                    bottom: 0.9,
+                },
+            )
+            .unwrap();
+        let side = super::super::face_crop::CROP_PX as usize;
+        assert_eq!(crop_rgba.len(), side * side * 4);
+        assert!(crop_rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
     }
 }

@@ -108,10 +108,12 @@ impl Library {
     pub fn remove_watched_folder(&self, id: i64) -> Result<()> {
         let mut conn = self.writer();
         let tx = conn.transaction()?;
-        // The cascade takes every item under it, and their thumbnails with no item are
-        // garbage the next collection has to know to look for.
-        super::settings::bump_thumb_gc_epoch(&tx)?;
-        tx.execute("DELETE FROM watched_folders WHERE id = ?1", params![id])?;
+        let removed = tx.execute("DELETE FROM watched_folders WHERE id = ?1", params![id])?;
+        if removed > 0 {
+            // The cascade takes every item under it, and their thumbnails with no item are
+            // garbage the next collection has to know to look for.
+            super::settings::bump_thumb_gc_epoch(&tx)?;
+        }
         tx.commit()?;
         Ok(())
     }

@@ -427,6 +427,9 @@ pub struct Engine {
     face_pass: Mutex<()>,
     /// A request that found the pass running: the runner goes round again.
     face_requested: AtomicBool,
+    /// Set when the user explicitly toggles face detection on so a no-op pass still reports
+    /// the current progress counts; routine scan/drain no-ops skip the full-table scan.
+    face_report_needed: AtomicBool,
     /// Coalesces the rebuilds poster frames ask for; see `frame_stored`.
     frame_refresh: Mutex<FrameRefresh>,
     /// Paces the rebuilds scans make as they go. One for the engine, not one per scan:
@@ -587,6 +590,7 @@ impl Engine {
             face_enabled: AtomicBool::new(face_enabled),
             face_pass: Mutex::new(()),
             face_requested: AtomicBool::new(false),
+            face_report_needed: AtomicBool::new(false),
             frame_refresh: Mutex::new(FrameRefresh::default()),
             scan_rebuilds: Mutex::new(RebuildPacer::default()),
             full_scans: Mutex::new(HashMap::new()),
@@ -2057,6 +2061,7 @@ impl Engine {
         // followed by that on's pass reporting for itself. Held across the rebuild, a
         // second toggle would wait out a whole-library query to flip a flag.
         if enabled {
+            self.face_report_needed.store(true, Ordering::Release);
             self.request_face_pass();
         } else {
             self.refresh_after_write("switching face detection off");
@@ -2185,12 +2190,18 @@ impl Engine {
         let mut pass = FacePass::new();
         let work = match self.face_work() {
             Ok(FaceWork::None) => {
-                self.end_face_pass(&pass);
+                if self.face_report_needed.swap(false, Ordering::AcqRel) {
+                    self.end_face_pass(&pass);
+                }
                 return;
             }
-            Ok(work) => work,
+            Ok(work) => {
+                self.face_report_needed.store(false, Ordering::Release);
+                work
+            }
             Err(err) => {
                 tracing::warn!(%err, "could not list the photos and faces the face pass would do");
+                self.face_report_needed.store(false, Ordering::Release);
                 self.end_face_pass(&pass);
                 return;
             }
