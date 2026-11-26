@@ -370,7 +370,7 @@ fn portal_folder(title: &str) -> Result<Picked, String> {
 }
 
 /// Decodes a `org.freedesktop.portal.Request::Response` code and its `uris` list.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn portal_response(code: u32, uris: &[String]) -> Result<Picked, String> {
     match code {
         // A place that is no file of this computer's - a share the desktop opened as
