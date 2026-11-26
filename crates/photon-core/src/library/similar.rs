@@ -110,20 +110,39 @@ impl Library {
     /// candidate again. This is `set_thumb_state_if_unchanged`'s hazard exactly, and it
     /// takes the same two extra columns to close.
     pub fn set_percep_hash(&self, candidate: &SimilarCandidate, hash: u64) -> Result<bool> {
-        let changed = self.writer().execute(
-            "UPDATE items SET percep_hash = ?2
-             WHERE id = ?1 AND size = ?3 AND mtime_ms = ?4 AND missing_since IS NULL
-               AND edit_turns = ?5 AND edit_crop IS ?6",
-            params![
-                candidate.id,
-                hash as i64,
-                candidate.size,
-                candidate.mtime_ms,
-                candidate.edit.turns,
-                candidate.edit.crop.map(Crop::to_db),
-            ],
-        )?;
-        Ok(changed == 1)
+        Ok(self.set_percep_hashes(&[(candidate, hash)])? == 1)
+    }
+
+    /// Batched version of [`Library::set_percep_hash`]: stores a chunk of perceptual hashes
+    /// in one SQLite transaction so a first pass over a large library does not contend with
+    /// UI writes once per photo. Returns how many rows matched their fingerprint and edit.
+    pub fn set_percep_hashes(&self, batch: &[(&SimilarCandidate, u64)]) -> Result<u64> {
+        if batch.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.writer();
+        let tx = conn.transaction()?;
+        let mut updated = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE items SET percep_hash = ?2
+                 WHERE id = ?1 AND size = ?3 AND mtime_ms = ?4 AND missing_since IS NULL
+                   AND edit_turns = ?5 AND edit_crop IS ?6",
+            )?;
+            for &(candidate, hash) in batch {
+                let changed = stmt.execute(params![
+                    candidate.id,
+                    hash as i64,
+                    candidate.size,
+                    candidate.mtime_ms,
+                    candidate.edit.turns,
+                    candidate.edit.crop.map(Crop::to_db),
+                ])?;
+                updated += changed as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(updated)
     }
 
     /// Every live photo's perceptual hash, with the key of the thumbnail it was taken from.

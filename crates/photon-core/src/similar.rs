@@ -220,11 +220,21 @@ fn groups_digest(groups: &[(i64, i64)]) -> u128 {
 pub fn group(
     hashes: &[(i64, u64)],
     distance: u32,
-    mut same_picture: impl FnMut(usize, usize) -> bool,
+    same_picture: impl FnMut(usize, usize) -> bool,
 ) -> Vec<(i64, i64)> {
+    group_with_cancel(hashes, distance, None, same_picture).0
+}
+
+fn group_with_cancel(
+    hashes: &[(i64, u64)],
+    distance: u32,
+    cancel: Option<&AtomicBool>,
+    mut same_picture: impl FnMut(usize, usize) -> bool,
+) -> (Vec<(i64, i64)>, bool) {
     if distance == 0 || hashes.len() < 2 {
-        return Vec::new();
+        return (Vec::new(), false);
     }
+    let is_cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
     // Bucket by band. The key mixes the band's index in, so the same 16 bits in two
     // different bands do not collide into one bucket.
@@ -250,15 +260,28 @@ pub fn group(
             union(&mut parent, a, b);
         }
     };
-    for (&(band, key), indexes) in &buckets {
+    let mut cut_short = false;
+    'buckets: for (&(band, key), indexes) in &buckets {
+        if is_cancelled() {
+            cut_short = true;
+            break 'buckets;
+        }
         for (i, &a) in indexes.iter().enumerate() {
             for &b in &indexes[i + 1..] {
+                if is_cancelled() {
+                    cut_short = true;
+                    break 'buckets;
+                }
                 consider(a, b);
             }
         }
         // The buckets one bit away, each neighbouring pair of buckets visited once: from
         // the lower key.
         for bit in 0..BAND_BITS {
+            if is_cancelled() {
+                cut_short = true;
+                break 'buckets;
+            }
             let other = key ^ (1 << bit);
             if other < key {
                 continue;
@@ -266,6 +289,10 @@ pub fn group(
             if let Some(neighbours) = buckets.get(&(band, other)) {
                 for &a in indexes {
                     for &b in neighbours {
+                        if is_cancelled() {
+                            cut_short = true;
+                            break 'buckets;
+                        }
                         consider(a, b);
                     }
                 }
@@ -293,7 +320,7 @@ pub fn group(
             out.push((*id, smallest[&root]));
         }
     }
-    out
+    (out, cut_short)
 }
 
 /// Whether `hash` would match another hash *whatever picture that one came from*.
@@ -361,6 +388,11 @@ pub struct PassOutcome {
     pub regrouped: bool,
 }
 
+/// How many perceptual hashes are committed per SQLite transaction during [`update`].
+/// Large enough to amortize WAL commits on 100k+ photo libraries while yielding the writer
+/// lock promptly to UI writes and honoring cancellation between batches.
+const HASH_BATCH: usize = 256;
+
 /// Hashes every photo that has a thumbnail but no hash, then regroups the whole library.
 ///
 /// The hash comes from the **cached 256px grid thumbnail**, not from the photo: the
@@ -399,25 +431,48 @@ pub fn update(
     } else {
         lib.similar_candidates()?
     };
+    let mut batch: Vec<(crate::library::SimilarCandidate, u64)> =
+        Vec::with_capacity(HASH_BATCH.min(candidates.len()));
+    let flush = |batch: &mut Vec<(crate::library::SimilarCandidate, u64)>,
+                 hashed: &mut u64|
+     -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let refs: Vec<(&crate::library::SimilarCandidate, u64)> =
+            batch.iter().map(|(c, h)| (c, *h)).collect();
+        *hashed += lib.set_percep_hashes(&refs)?;
+        batch.clear();
+        Ok(())
+    };
     for candidate in candidates {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        match cache.read(candidate.thumb_key, ThumbSize::Grid) {
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.read(candidate.thumb_key, ThumbSize::Grid)
+        }));
+        match read {
             // False when the row moved on while the thumbnail was being read - the file
             // rewritten, or the user editing the photo, both of which make this the hash of
             // a picture the row no longer shows. Not a failure: the write is refused, the
             // row keeps its cleared `percep_hash`, and the next pass hashes the new picture.
-            Ok(img) => {
-                if lib.set_percep_hash(&candidate, dhash(&img))? {
-                    hashed += 1;
+            Ok(Ok(img)) => {
+                let hash = dhash(&img);
+                batch.push((candidate, hash));
+                if batch.len() >= HASH_BATCH {
+                    flush(&mut batch, &mut hashed)?;
                 }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::debug!(id = candidate.id, %err, "could not read a thumbnail to hash");
+            }
+            Err(_) => {
+                tracing::warn!(id = candidate.id, "thumbnail decode panicked while hashing");
             }
         }
     }
+    flush(&mut batch, &mut hashed)?;
 
     // Whether to regroup is not whether something was hashed: the distance setting may have
     // changed, or a photo may have been purged out of a group, with nothing hashed at all.
@@ -453,7 +508,7 @@ pub fn update(
     // quit waits it out. A cancelled regroup writes nothing - answering "no" to the remaining
     // pairs instead would dissolve real groups - and the next pass does the work.
     let mut cancelled = false;
-    let groups = group(&hashes, distance, |a, b| {
+    let (groups, cut_short) = group_with_cancel(&hashes, distance, Some(cancel), |a, b| {
         if cancelled || cancel.load(Ordering::Relaxed) {
             cancelled = true;
             return false;
@@ -476,6 +531,7 @@ pub fn update(
             _ => false,
         }
     });
+    cancelled |= cut_short;
     // Only a whole answer is remembered. A cancelled regroup stored nothing, and one that
     // could not read a thumbnail answered "no" for that photo's pairs - an answer the next
     // pass, with the thumbnail back, may not give - so either has to be asked again.
