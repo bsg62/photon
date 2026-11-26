@@ -58,9 +58,9 @@ fn decode_cost(item: &Item) -> u64 {
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
     match extension.as_deref() {
-        Some("jpg" | "jpeg") => (pixels * 6).min(JPEG_COST),
-        Some("avif") => pixels * 12,
-        _ => pixels * 6,
+        Some("jpg" | "jpeg") => pixels.saturating_mul(6).min(JPEG_COST),
+        Some("avif") => pixels.saturating_mul(12),
+        _ => pixels.saturating_mul(6),
     }
 }
 
@@ -2826,5 +2826,45 @@ mod tests {
             !death_record(&dir, cached_id).exists(),
             "the record is resolved - Ready - not left standing"
         );
+    }
+
+    // Crafted PNG/TIFF/AVIF headers can declare huge dimensions (up to i32::MAX^2),
+    // which previously overflowed `pixels * 6` / `pixels * 12` outside `catch_unwind`.
+    #[test]
+    fn decode_cost_saturates_for_huge_dimensions() {
+        let mut item = Item {
+            id: 1,
+            folder_id: 1,
+            path: "/photos/huge.png".to_owned(),
+            kind: MediaKind::Image,
+            size: 100,
+            mtime_ms: 0,
+            width: u32::MAX,
+            height: u32::MAX,
+            orientation: 1,
+            taken_at: 0,
+            rating: None,
+            camera: Default::default(),
+            duration_ms: None,
+            thumb_state: ThumbState::Pending,
+            thumb_error: None,
+            missing_since: None,
+            edit: Default::default(),
+            hidden: false,
+        };
+        assert_eq!(decode_cost(&item), u64::MAX);
+
+        item.path = "/photos/huge.avif".to_owned();
+        assert_eq!(decode_cost(&item), u64::MAX);
+
+        item.path = "/photos/huge.jpg".to_owned();
+        assert_eq!(decode_cost(&item), JPEG_COST);
+
+        // Taking a saturated cost from Budget admits when empty and releases cleanly.
+        let budget = Budget::new(DECODE_BUDGET);
+        let admitted = budget.take(u64::MAX);
+        assert_eq!(budget.state.lock().bytes, u64::MAX);
+        drop(admitted);
+        assert_eq!(budget.state.lock().bytes, 0);
     }
 }
