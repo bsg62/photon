@@ -51,7 +51,7 @@ use crate::{
     slideshow_order::{next_still, shuffle_stride},
     status::Line,
     tag_picker::{Mode, Submit, TagPicker},
-    tasks::{Latest, Queue},
+    tasks::{Latest, Pool, Queue},
     theme,
     thumbs::{loader::Loader, shown::Thumbs, source::EngineThumbs},
     tile_menu::{self, Deciding, TileAction},
@@ -810,14 +810,19 @@ impl App {
             let ctx = ctx.clone();
             move || ctx.request_repaint()
         };
+        // Shared pools for UI background tasks: 4 workers for short SQLite/metadata
+        // reads and writes (keeping `exports` on its own thread so a multi-minute export
+        // never starves reads or stars), and 1 worker for full-picture decodes (which
+        // already serialize on `RENDERING`, with viewer and compare mutually exclusive).
+        let tasks = Pool::spawn("app-worker", 4);
+        let render_pool = Pool::spawn("app-render", 1);
         let loader = Loader::spawn(
             Arc::new(EngineThumbs::grid(engine.clone())),
             DECODERS,
             THUMB_TIMEOUT,
             repaint(&ctx),
         );
-        let mut folder_list = Latest::spawn(
-            "folders",
+        let mut folder_list = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| commands::list_folders(&engine).ok()
@@ -828,8 +833,7 @@ impl App {
 
         // A step that moves the engine's view rebuilds the grid where it is made: here,
         // one at a time and in the order asked.
-        let steps = Queue::spawn(
-            "views",
+        let steps = tasks.queue(
             {
                 let engine = engine.clone();
                 move |step: Step| {
@@ -871,8 +875,7 @@ impl App {
             },
             repaint(&ctx),
         );
-        let writes = Queue::spawn(
-            "writes",
+        let writes = tasks.queue(
             {
                 let engine = engine.clone();
                 move |write: Write| match write {
@@ -1104,8 +1107,7 @@ impl App {
             },
             repaint(&ctx),
         );
-        let mut counting = Latest::spawn(
-            "counts",
+        let mut counting = tasks.latest(
             {
                 let engine = engine.clone();
                 move |layout_gen: u64| {
@@ -1132,8 +1134,7 @@ impl App {
         // of 300,000 photos. Not asked for here: the first grid the engine publishes is
         // a data change, built or failed, and asking here as well read them twice at
         // every launch.
-        let collecting = Latest::spawn(
-            "collections",
+        let collecting = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| {
@@ -1160,8 +1161,7 @@ impl App {
         );
         // The path typed in the export's field: whether it is a folder, and one the
         // engine will write into. Asked as it is typed, so only the latest counts.
-        let checking = Latest::spawn(
-            "export destination",
+        let checking = tasks.latest(
             {
                 let engine = engine.clone();
                 let home = ::dirs::home_dir();
@@ -1178,24 +1178,21 @@ impl App {
             THUMB_TIMEOUT,
             repaint(&ctx),
         );
-        let viewer_items = Latest::spawn(
-            "viewer item",
+        let viewer_items = tasks.latest(
             {
                 let engine = engine.clone();
                 move |id: i64| (id, commands::viewer_item(&engine, id))
             },
             repaint(&ctx),
         );
-        let pictures = Latest::spawn(
-            "viewer picture",
+        let pictures = render_pool.latest(
             {
                 let engine = engine.clone();
                 move |asked: PictureAsk| (asked, make_picture(&engine, asked))
             },
             repaint(&ctx),
         );
-        let comparing = Latest::spawn(
-            "compare",
+        let comparing = tasks.latest(
             {
                 let engine = engine.clone();
                 move |ids: Vec<i64>| {
@@ -1220,16 +1217,14 @@ impl App {
             },
             repaint(&ctx),
         );
-        let compare_pictures = Latest::spawn(
-            "compare picture",
+        let compare_pictures = render_pool.latest(
             {
                 let engine = engine.clone();
                 move |asked: PictureAsk| (asked, make_picture(&engine, asked))
             },
             repaint(&ctx),
         );
-        let show_settings = Latest::spawn(
-            "slideshow settings",
+        let show_settings = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| {
@@ -1241,33 +1236,29 @@ impl App {
             },
             repaint(&ctx),
         );
-        let settings_read = Latest::spawn(
-            "settings",
+        let settings_read = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| settings_dialog::read(&engine)
             },
             repaint(&ctx),
         );
-        let memory_read = Latest::spawn("memory", |()| settings_dialog::memory(), repaint(&ctx));
-        let face_count = Latest::spawn(
-            "named count",
+        let memory_read = tasks.latest(|()| settings_dialog::memory(), repaint(&ctx));
+        let face_count = tasks.latest(
             {
                 let engine = engine.clone();
                 move |opening| settings_dialog::named(&engine, opening)
             },
             repaint(&ctx),
         );
-        let settings_lists = Latest::spawn(
-            "settings lists",
+        let settings_lists = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| settings_dialog::lists(&engine)
             },
             repaint(&ctx),
         );
-        let people_read = Latest::spawn(
-            "people page",
+        let people_read = tasks.latest(
             {
                 let engine = engine.clone();
                 move |ask| people::read(&engine, ask)
@@ -1275,16 +1266,14 @@ impl App {
             repaint(&ctx),
         );
         let face_crops = Crops::of(engine.clone(), repaint(&ctx));
-        let people_more = Queue::spawn(
-            "show more",
+        let people_more = tasks.queue(
             {
                 let engine = engine.clone();
                 move |asked| people::more(&engine, asked)
             },
             repaint(&ctx),
         );
-        let stats_read = Latest::spawn(
-            "statistics",
+        let stats_read = tasks.latest(
             {
                 let engine = engine.clone();
                 move |opening| {
@@ -1294,8 +1283,7 @@ impl App {
             },
             repaint(&ctx),
         );
-        let adding_check = Latest::spawn(
-            "folder to add",
+        let adding_check = tasks.latest(
             |text: String| {
                 let home = ::dirs::home_dir();
                 let answer = settings_dialog::check_folder(&text, home.as_deref());
@@ -1303,32 +1291,28 @@ impl App {
             },
             repaint(&ctx),
         );
-        let people = Latest::spawn(
-            "named people",
+        let people = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| commands::named_people(&engine).ok()
             },
             repaint(&ctx),
         );
-        let copy_counts = Latest::spawn(
-            "copy count",
+        let copy_counts = tasks.latest(
             {
                 let engine = engine.clone();
                 move |id: i64| (id, commands::copy_count(&engine, id).ok())
             },
             repaint(&ctx),
         );
-        let video_paths = Latest::spawn(
-            "video path",
+        let video_paths = tasks.latest(
             {
                 let engine = engine.clone();
                 move |id: i64| (id, commands::item_path(&engine, id).ok())
             },
             repaint(&ctx),
         );
-        let edits = Latest::spawn(
-            "export edits",
+        let edits = tasks.latest(
             {
                 let engine = engine.clone();
                 move |()| commands::export_apply_edits(&engine).ok()
@@ -1355,8 +1339,7 @@ impl App {
         // The folder to come back to, here and not by a task, as the theme is: it is
         // wanted with the first grid, and it is one row of the settings table.
         let last_folder = LastFolder::new(commands::last_folder(&engine).ok().flatten());
-        let remembering = Latest::spawn(
-            "last folder",
+        let remembering = tasks.latest(
             {
                 let engine = engine.clone();
                 move |folder: i64| {
@@ -1368,8 +1351,7 @@ impl App {
             || {},
         );
         // Nothing is drawn from this, so nothing is asked to be drawn for it.
-        let layout_store = Latest::spawn(
-            "layout",
+        let layout_store = tasks.latest(
             move |layout: Layout| {
                 if let Err(err) = layout.save(&layout_path) {
                     tracing::warn!(%err, path = %layout_path.display(), "the window's layout was not stored");

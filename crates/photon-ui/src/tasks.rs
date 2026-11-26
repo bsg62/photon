@@ -14,7 +14,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, Sender},
     },
     thread,
     time::{Duration, Instant},
@@ -24,18 +24,185 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Panicked;
 
-struct Slot<J> {
-    pending: Option<(u64, J)>,
+struct PoolState {
+    jobs: VecDeque<Box<dyn FnOnce() + Send>>,
     closed: bool,
 }
 
-struct Shared<J> {
-    slot: Mutex<Slot<J>>,
+struct PoolShared {
+    state: Mutex<PoolState>,
     wake: Condvar,
 }
 
+/// Closes the pool's workers once the pool handle and every `Latest`/`Queue` backed by it
+/// have been dropped (workers hold `Arc<PoolShared>` directly, never `PoolDrop`).
+struct PoolDrop {
+    shared: Arc<PoolShared>,
+}
+
+impl PoolDrop {
+    fn enqueue(&self, job: Box<dyn FnOnce() + Send>) {
+        let mut state = self.shared.state.lock();
+        if state.closed {
+            return;
+        }
+        state.jobs.push_back(job);
+        drop(state);
+        self.shared.wake.notify_one();
+    }
+}
+
+impl Drop for PoolDrop {
+    fn drop(&mut self) {
+        let mut state = self.shared.state.lock();
+        state.closed = true;
+        state.jobs.clear();
+        drop(state);
+        self.shared.wake.notify_all();
+    }
+}
+
+/// A bounded pool of worker threads shared by [`Latest`] and [`Queue`] tasks.
+///
+/// Each [`Latest`] or [`Queue`] created on a pool keeps its own ordering and coalescing
+/// guarantees (at most one job in flight per task handle), while sharing the pool's OS
+/// threads instead of spawning a permanent thread for every UI query.
+#[derive(Clone)]
+pub struct Pool {
+    inner: Arc<PoolDrop>,
+}
+
+impl Pool {
+    /// Starts `workers` threads named `{name}-{i}` (or `{name}` when `workers == 1`).
+    pub fn spawn(name: &str, workers: usize) -> Self {
+        let workers = workers.max(1);
+        let shared = Arc::new(PoolShared {
+            state: Mutex::new(PoolState {
+                jobs: VecDeque::new(),
+                closed: false,
+            }),
+            wake: Condvar::new(),
+        });
+        for i in 0..workers {
+            let theirs = shared.clone();
+            let thread_name = if workers == 1 {
+                name.to_owned()
+            } else {
+                format!("{name}-{i}")
+            };
+            thread::Builder::new()
+                .name(thread_name)
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let mut state = theirs.state.lock();
+                            loop {
+                                if state.closed {
+                                    return;
+                                }
+                                if let Some(job) = state.jobs.pop_front() {
+                                    break job;
+                                }
+                                theirs.wake.wait(&mut state);
+                            }
+                        };
+                        job();
+                    }
+                })
+                .expect("a worker thread could not be started");
+        }
+        Self {
+            inner: Arc::new(PoolDrop { shared }),
+        }
+    }
+
+    /// Creates a [`Latest`] task backed by this pool.
+    pub fn latest<J: Send + 'static, R: Send + 'static>(
+        &self,
+        work: impl Fn(J) -> R + Send + 'static,
+        notify: impl Fn() + Send + 'static,
+    ) -> Latest<J, R> {
+        Latest::on_pool(self.inner.clone(), work, notify)
+    }
+
+    /// Creates a [`Queue`] task backed by this pool.
+    pub fn queue<J: Send + 'static, R: Send + 'static>(
+        &self,
+        work: impl Fn(J) -> R + Send + 'static,
+        notify: impl Fn() + Send + 'static,
+    ) -> Queue<J, R> {
+        Queue::on_pool(self.inner.clone(), work, notify)
+    }
+}
+
+struct Slot<J> {
+    pending: Option<(u64, J)>,
+    scheduled: bool,
+    closed: bool,
+}
+
+struct Runner<F, N> {
+    work: F,
+    notify: N,
+}
+
+struct LatestTask<J, R, F, N> {
+    slot: Arc<Mutex<Slot<J>>>,
+    runner: Mutex<Runner<F, N>>,
+    tx: Sender<(u64, Result<R, Panicked>)>,
+    pool: Arc<PoolDrop>,
+}
+
+fn schedule_latest<J, R, F, N>(task: Arc<LatestTask<J, R, F, N>>)
+where
+    J: Send + 'static,
+    R: Send + 'static,
+    F: Fn(J) -> R + Send + 'static,
+    N: Fn() + Send + 'static,
+{
+    let pool = task.pool.clone();
+    pool.enqueue(Box::new(move || {
+        let (number, job) = {
+            let mut slot = task.slot.lock();
+            if slot.closed {
+                slot.scheduled = false;
+                return;
+            }
+            match slot.pending.take() {
+                Some(pending) => pending,
+                None => {
+                    slot.scheduled = false;
+                    return;
+                }
+            }
+        };
+        let answer = {
+            let runner = task.runner.lock();
+            catch_unwind(AssertUnwindSafe(|| (runner.work)(job))).map_err(|_| Panicked)
+        };
+        let sent = task.tx.send((number, answer)).is_ok();
+        if sent {
+            let runner = task.runner.lock();
+            (runner.notify)();
+        }
+        let reschedule = {
+            let mut slot = task.slot.lock();
+            if !sent || slot.closed || slot.pending.is_none() {
+                slot.scheduled = false;
+                false
+            } else {
+                true
+            }
+        };
+        if reschedule {
+            schedule_latest(task);
+        }
+    }));
+}
+
 pub struct Latest<J, R> {
-    shared: Arc<Shared<J>>,
+    slot: Arc<Mutex<Slot<J>>>,
+    schedule: Box<dyn Fn() + Send>,
     answers: Receiver<(u64, Result<R, Panicked>)>,
     /// The latest question's number. An answer carrying an older one is dropped.
     asked: u64,
@@ -44,48 +211,37 @@ pub struct Latest<J, R> {
 }
 
 impl<J: Send + 'static, R: Send + 'static> Latest<J, R> {
-    /// Starts the worker. `work` answers one question; `notify` is called after each answer
-    /// is ready, from the worker's thread, so the UI can ask to be drawn again.
+    /// Starts a dedicated worker thread for this task. Prefer [`Pool::latest`] when many
+    /// short tasks can share threads.
     pub fn spawn(
         name: &str,
         work: impl Fn(J) -> R + Send + 'static,
         notify: impl Fn() + Send + 'static,
     ) -> Self {
-        let shared = Arc::new(Shared {
-            slot: Mutex::new(Slot {
-                pending: None,
-                closed: false,
-            }),
-            wake: Condvar::new(),
-        });
+        Pool::spawn(name, 1).latest(work, notify)
+    }
+
+    fn on_pool(
+        pool: Arc<PoolDrop>,
+        work: impl Fn(J) -> R + Send + 'static,
+        notify: impl Fn() + Send + 'static,
+    ) -> Self {
+        let slot = Arc::new(Mutex::new(Slot {
+            pending: None,
+            scheduled: false,
+            closed: false,
+        }));
         let (tx, answers) = mpsc::channel();
-        let theirs = shared.clone();
-        thread::Builder::new()
-            .name(name.to_owned())
-            .spawn(move || {
-                loop {
-                    let (number, job) = {
-                        let mut slot = theirs.slot.lock();
-                        loop {
-                            if slot.closed {
-                                return;
-                            }
-                            if let Some(pending) = slot.pending.take() {
-                                break pending;
-                            }
-                            theirs.wake.wait(&mut slot);
-                        }
-                    };
-                    let answer = catch_unwind(AssertUnwindSafe(|| work(job))).map_err(|_| Panicked);
-                    if tx.send((number, answer)).is_err() {
-                        return;
-                    }
-                    notify();
-                }
-            })
-            .expect("a worker thread could not be started");
+        let task = Arc::new(LatestTask {
+            slot: slot.clone(),
+            runner: Mutex::new(Runner { work, notify }),
+            tx,
+            pool,
+        });
+        let schedule = Box::new(move || schedule_latest(task.clone()));
         Self {
-            shared,
+            slot,
+            schedule,
             answers,
             asked: 0,
             answered: 0,
@@ -96,8 +252,19 @@ impl<J: Send + 'static, R: Send + 'static> Latest<J, R> {
     /// finishes, and its answer is dropped.
     pub fn ask(&mut self, job: J) {
         self.asked += 1;
-        self.shared.slot.lock().pending = Some((self.asked, job));
-        self.shared.wake.notify_one();
+        let should_schedule = {
+            let mut slot = self.slot.lock();
+            slot.pending = Some((self.asked, job));
+            if slot.scheduled {
+                false
+            } else {
+                slot.scheduled = true;
+                true
+            }
+        };
+        if should_schedule {
+            (self.schedule)();
+        }
     }
 
     /// The answer to the latest question, once it is there, once.
@@ -135,12 +302,14 @@ impl<J: Send + 'static, R: Send + 'static> Latest<J, R> {
     }
 }
 
-/// The worker ends at its next wait. It is not joined: work in flight may be a database
-/// read on a slow disk, and closing the window must not wait for it.
+/// The worker stops picking up further questions from this handle. Work already in flight
+/// is not joined: it may be a database read on a slow disk, and closing the window must
+/// not wait for it.
 impl<J, R> Drop for Latest<J, R> {
     fn drop(&mut self) {
-        self.shared.slot.lock().closed = true;
-        self.shared.wake.notify_all();
+        let mut slot = self.slot.lock();
+        slot.closed = true;
+        slot.pending = None;
     }
 }
 
@@ -149,14 +318,78 @@ struct Line<J> {
     waiting: VecDeque<(u64, J)>,
     /// Whether a job is being done.
     working: bool,
+    /// Whether a worker task is queued or running for this queue.
+    scheduled: bool,
     closed: bool,
 }
 
 struct SharedLine<J> {
     line: Mutex<Line<J>>,
-    wake: Condvar,
     /// Told when a job is done, for whoever waits for the queue to be empty.
     done: Condvar,
+}
+
+struct QueueTask<J, R, F, N> {
+    shared: Arc<SharedLine<J>>,
+    runner: Mutex<Runner<F, N>>,
+    tx: Sender<(u64, Result<R, Panicked>)>,
+    pool: Arc<PoolDrop>,
+}
+
+fn schedule_queue<J, R, F, N>(task: Arc<QueueTask<J, R, F, N>>)
+where
+    J: Send + 'static,
+    R: Send + 'static,
+    F: Fn(J) -> R + Send + 'static,
+    N: Fn() + Send + 'static,
+{
+    let pool = task.pool.clone();
+    pool.enqueue(Box::new(move || {
+        let (number, job) = {
+            let mut line = task.shared.line.lock();
+            if line.closed {
+                line.scheduled = false;
+                return;
+            }
+            match line.waiting.pop_front() {
+                Some(next) => {
+                    line.working = true;
+                    next
+                }
+                None => {
+                    line.scheduled = false;
+                    return;
+                }
+            }
+        };
+        // A job that panics fails its own answer and no other: a queue that
+        // ended here would leave every later click unanswered for the session.
+        let answer = {
+            let runner = task.runner.lock();
+            catch_unwind(AssertUnwindSafe(|| (runner.work)(job))).map_err(|_| Panicked)
+        };
+        // The answer first, then the word that the job is done: whoever
+        // waited for the queue finds every answer there.
+        let sent = task.tx.send((number, answer)).is_ok();
+        let reschedule = {
+            let mut line = task.shared.line.lock();
+            line.working = false;
+            task.shared.done.notify_all();
+            if !sent || line.closed || line.waiting.is_empty() {
+                line.scheduled = false;
+                false
+            } else {
+                true
+            }
+        };
+        if sent {
+            let runner = task.runner.lock();
+            (runner.notify)();
+        }
+        if reschedule {
+            schedule_queue(task);
+        }
+    }));
 }
 
 /// Every job, in the order it was given.
@@ -168,15 +401,24 @@ struct SharedLine<J> {
 /// never be made.
 pub struct Queue<J, R> {
     shared: Arc<SharedLine<J>>,
+    schedule: Box<dyn Fn() + Send>,
     answers: Receiver<(u64, Result<R, Panicked>)>,
     given: u64,
 }
 
 impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
-    /// Starts the worker. `work` does one job; `notify` is called after each answer is
-    /// ready, from the worker's thread, so the UI can ask to be drawn again.
+    /// Starts a dedicated worker thread for this queue. Prefer [`Pool::queue`] when
+    /// multiple queues can share a worker pool.
     pub fn spawn(
         name: &str,
+        work: impl Fn(J) -> R + Send + 'static,
+        notify: impl Fn() + Send + 'static,
+    ) -> Self {
+        Pool::spawn(name, 1).queue(work, notify)
+    }
+
+    fn on_pool(
+        pool: Arc<PoolDrop>,
         work: impl Fn(J) -> R + Send + 'static,
         notify: impl Fn() + Send + 'static,
     ) -> Self {
@@ -184,47 +426,22 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
             line: Mutex::new(Line {
                 waiting: VecDeque::new(),
                 working: false,
+                scheduled: false,
                 closed: false,
             }),
-            wake: Condvar::new(),
             done: Condvar::new(),
         });
         let (tx, answers) = mpsc::channel();
-        let theirs = shared.clone();
-        thread::Builder::new()
-            .name(name.to_owned())
-            .spawn(move || {
-                loop {
-                    let (number, job) = {
-                        let mut line = theirs.line.lock();
-                        loop {
-                            if line.closed {
-                                return;
-                            }
-                            if let Some(next) = line.waiting.pop_front() {
-                                line.working = true;
-                                break next;
-                            }
-                            theirs.wake.wait(&mut line);
-                        }
-                    };
-                    // A job that panics fails its own answer and no other: a queue that
-                    // ended here would leave every later click unanswered for the session.
-                    let answer = catch_unwind(AssertUnwindSafe(|| work(job))).map_err(|_| Panicked);
-                    // The answer first, then the word that the job is done: whoever
-                    // waited for the queue finds every answer there.
-                    let sent = tx.send((number, answer)).is_ok();
-                    theirs.line.lock().working = false;
-                    theirs.done.notify_all();
-                    if !sent {
-                        return;
-                    }
-                    notify();
-                }
-            })
-            .expect("a worker thread could not be started");
+        let task = Arc::new(QueueTask {
+            shared: shared.clone(),
+            runner: Mutex::new(Runner { work, notify }),
+            tx,
+            pool,
+        });
+        let schedule = Box::new(move || schedule_queue(task.clone()));
         Self {
             shared,
+            schedule,
             answers,
             given: 0,
         }
@@ -239,18 +456,28 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
     /// number, when that one has not started and `replaces` says it may go. Only the last:
     /// with another job behind it, replacing it would have the two swap their order.
     pub fn push_or_replace(&mut self, job: J, replaces: impl FnOnce(&J) -> bool) -> u64 {
-        let mut line = self.shared.line.lock();
-        if let Some((number, last)) = line.waiting.back_mut()
-            && replaces(last)
-        {
-            *last = job;
-            return *number;
+        let (number, should_schedule) = {
+            let mut line = self.shared.line.lock();
+            if let Some((number, last)) = line.waiting.back_mut()
+                && replaces(last)
+            {
+                *last = job;
+                return *number;
+            }
+            self.given += 1;
+            line.waiting.push_back((self.given, job));
+            let schedule = if line.scheduled {
+                false
+            } else {
+                line.scheduled = true;
+                true
+            };
+            (self.given, schedule)
+        };
+        if should_schedule {
+            (self.schedule)();
         }
-        self.given += 1;
-        line.waiting.push_back((self.given, job));
-        drop(line);
-        self.shared.wake.notify_one();
-        self.given
+        number
     }
 
     /// The answers that have come since this was last asked, oldest first, each with its
@@ -276,18 +503,16 @@ impl<J: Send + 'static, R: Send + 'static> Queue<J, R> {
     }
 }
 
-/// As `Latest`: the worker ends at its next wait and is not joined. Jobs still waiting
-/// are not done: the window is closing. For the views' queue each is a rebuild nobody
-/// will see. For a queue of writes it is something the user asked for in the instant
-/// before closing the window, and it is lost: whoever puts a write here that must not
-/// be waits for the queue before the window goes (`finish`).
+/// As `Latest`: work in flight is not joined. Jobs still waiting are not done: the window
+/// is closing. For the views' queue each is a rebuild nobody will see. For a queue of
+/// writes it is something the user asked for in the instant before closing the window, and
+/// it is lost: whoever puts a write here that must not be waits for the queue before the
+/// window goes (`finish`).
 impl<J, R> Drop for Queue<J, R> {
     fn drop(&mut self) {
         let mut line = self.shared.line.lock();
         line.closed = true;
         line.waiting.clear();
-        drop(line);
-        self.shared.wake.notify_all();
     }
 }
 
@@ -589,5 +814,26 @@ mod tests {
         drop(queue);
         go.send(()).unwrap();
         assert!(started.recv_timeout(Duration::from_millis(200)).is_err());
+    }
+
+    // Multiple `Latest` and `Queue` handles sharing one `Pool` preserve per-handle
+    // coalescing and FIFO ordering without spawning a thread per handle.
+    #[test]
+    fn shared_pool_preserves_latest_and_queue_semantics() {
+        let pool = Pool::spawn("shared", 2);
+        let mut latest_a = pool.latest(|x: u32| x * 2, || {});
+        let mut latest_b = pool.latest(|x: u32| x + 100, || {});
+        let mut queue = pool.queue(|x: u32| x * 3, || {});
+        latest_a.ask(4);
+        latest_b.ask(5);
+        queue.push(1);
+        queue.push(2);
+        queue.push(3);
+        assert_eq!(answer_of(&mut latest_a), Ok(8));
+        assert_eq!(answer_of(&mut latest_b), Ok(105));
+        assert_eq!(
+            answers_of(&mut queue, 3),
+            [(1, Ok(3)), (2, Ok(6)), (3, Ok(9))]
+        );
     }
 }
