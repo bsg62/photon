@@ -80,6 +80,8 @@ jobs:
           if ldd "$bin" | grep -qi gtk; then echo "::error::photon links GTK"; exit 1; fi
           grep -qx 'Name=photon' "$RUNNER_TEMP"/deb/usr/share/applications/*.desktop
           test -s "$RUNNER_TEMP/deb/usr/share/icons/hicolor/256x256/apps/io.github.bsg62.photon.png"
+          test -s "$RUNNER_TEMP/deb/usr/share/doc/photon/LICENSE"
+          test -s "$RUNNER_TEMP/deb/usr/share/doc/photon/THIRD-PARTY-NOTICES.md"
       - name: linuxdeploy
         run: |
           curl -fsSL -o "$RUNNER_TEMP/linuxdeploy" \
@@ -106,6 +108,8 @@ jobs:
             echo "::error::the AppImage carries GStreamer on the binary's runpath"; exit 1
           fi
           test -e "$root/usr/fallback/libgstreamer-1.0.so.0"
+          test -s "$root/usr/share/doc/photon/LICENSE"
+          test -s "$root/usr/share/doc/photon/THIRD-PARTY-NOTICES.md"
       - uses: actions/upload-artifact@v5
         with:
           name: photon-linux
@@ -151,6 +155,8 @@ jobs:
           test -x "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
           codesign --verify --verbose "$RUNNER_TEMP/mnt/photon.app"
           lipo -archs "$RUNNER_TEMP/mnt/photon.app/Contents/MacOS/photon"
+          test -s "$RUNNER_TEMP/mnt/photon.app/Contents/Resources/LICENSE"
+          test -s "$RUNNER_TEMP/mnt/photon.app/Contents/Resources/THIRD-PARTY-NOTICES.md"
           hdiutil detach "$RUNNER_TEMP/mnt"
       - uses: actions/upload-artifact@v5
         with:
@@ -232,6 +238,10 @@ jobs:
           Expect 'the upgrade code (the Tauri MSI''s)' $code[0][0] '{0CCAA18B-F3FF-50CE-AD76-6FB4D33F39B7}'
           $file = Rows "SELECT ``FileName`` FROM ``File`` WHERE ``File`` = 'Path'" 1
           Expect 'the program installed' (($file[0][0] -split '\|')[-1]) 'photon.exe'
+          $lic = Rows "SELECT ``FileName`` FROM ``File`` WHERE ``File`` = 'LicenseFile'" 1
+          Expect 'the licence installed' (($lic[0][0] -split '\|')[-1]) 'LICENSE.txt'
+          $notices = Rows "SELECT ``FileName`` FROM ``File`` WHERE ``File`` = 'NoticesFile'" 1
+          Expect 'the third-party notices installed' (($notices[0][0] -split '\|')[-1]) 'THIRD-PARTY-NOTICES.md'
           $cond = Rows "SELECT ``Condition`` FROM ``Component`` WHERE ``Component`` = 'ApplicationShortcutDesktop'" 1
           Expect 'the desktop shortcut component condition' $cond[0][0] 'DESKTOPSHORTCUT'
           $box = Rows "SELECT ``Type``, ``Property`` FROM ``Control`` WHERE ``Dialog_`` = 'PhotonInstallDirDlg' AND ``Control`` = 'DesktopShortcut'" 2

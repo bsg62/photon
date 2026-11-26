@@ -260,11 +260,11 @@ pub fn run(root: &Path, args: &[String]) -> ExitCode {
         let meta = meta(root)?;
         let icons = root.join("crates/photon-ui/icons");
         match kind.as_str() {
-            "deb" => deb(&meta, &binary, &icons, &out),
-            "appimage" => appimage(&meta, &binary, &icons, &out),
+            "deb" => deb(root, &meta, &binary, &icons, &out),
+            "appimage" => appimage(root, &meta, &binary, &icons, &out),
             "dmg" => {
                 let arch = arg(args, "--arch").ok_or("--arch <aarch64|x86_64> is needed")?;
-                dmg(&meta, &binary, &icons, &arch, &out)
+                dmg(root, &meta, &binary, &icons, &arch, &out)
             }
             "msi" => msi(root, &meta, &binary, &icons, &out),
             other => Err(format!("no package called {other}")),
@@ -297,7 +297,24 @@ fn hicolor(tree: &Path, icons: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn deb(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<PathBuf, String> {
+/// The licence and third-party notices bundled into every installer so binary-distribution
+/// attribution obligations (BSD, IJG, Apache-2.0, OFL, LGPL, MPL-2.0, MS-RL) are met.
+const NOTICES: [&str; 2] = ["LICENSE", "THIRD-PARTY-NOTICES.md"];
+
+fn copy_notices(root: &Path, into: &Path) -> Result<(), String> {
+    for file in NOTICES {
+        copy(&root.join(file), &into.join(file))?;
+    }
+    Ok(())
+}
+
+fn deb(
+    root: &Path,
+    meta: &Meta,
+    binary: &Path,
+    icons: &Path,
+    out: &Path,
+) -> Result<PathBuf, String> {
     let tree = fresh(out, "deb-root")?;
     copy(binary, &tree.join("usr/bin/photon"))?;
     write(
@@ -305,6 +322,7 @@ fn deb(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<PathBuf, 
         &desktop_entry(&meta.description),
     )?;
     hicolor(&tree, icons)?;
+    copy_notices(root, &tree.join("usr/share/doc/photon"))?;
     // What the binary links, as Debian names the packages that hold it. dpkg-shlibdeps
     // wants a debian/control beside it, which it reads nothing from here but refuses
     // without a binary stanza's Architecture.
@@ -360,9 +378,16 @@ fn dir_size(dir: &Path) -> Result<u64, String> {
     Ok(size)
 }
 
-fn appimage(meta: &Meta, binary: &Path, icons: &Path, out: &Path) -> Result<PathBuf, String> {
+fn appimage(
+    root: &Path,
+    meta: &Meta,
+    binary: &Path,
+    icons: &Path,
+    out: &Path,
+) -> Result<PathBuf, String> {
     let app_dir = fresh(out, "photon.AppDir")?;
     copy(binary, &app_dir.join("usr/bin/photon"))?;
+    copy_notices(root, &app_dir.join("usr/share/doc/photon"))?;
     let desktop = out.join(format!("{IDENTIFIER}.desktop"));
     write(&desktop, &desktop_entry(&meta.description))?;
     let runner = out.join("AppRun");
@@ -470,6 +495,7 @@ fn bytes_under(dir: &Path) -> Result<u64, String> {
 }
 
 fn dmg(
+    root: &Path,
     meta: &Meta,
     binary: &Path,
     icons: &Path,
@@ -486,6 +512,7 @@ fn dmg(
     copy(binary, &app.join("MacOS/photon"))?;
     write(&app.join("Info.plist"), &info_plist(&meta.version))?;
     copy(&icons.join("icon.icns"), &app.join("Resources/photon.icns"))?;
+    copy_notices(root, &app.join("Resources"))?;
     // Signed ad hoc: an arm64 program that is not signed at all is not run.
     run_tool(
         Command::new("codesign")
@@ -548,6 +575,7 @@ fn msi(
     let licence = std::fs::read_to_string(root.join("LICENSE"))
         .map_err(|err| format!("cannot read LICENSE: {err}"))?;
     write(&work.join("license.rtf"), &license_rtf(&licence))?;
+    copy_notices(root, &work)?;
     copy(&icons.join("icon.ico"), &work.join("icon.ico"))?;
     copy(binary, &work.join("photon.exe"))?;
     // WiX 3: where its installer sets WIX to, when it is there; else on the PATH, where
@@ -565,6 +593,8 @@ fn msi(
                 "-dBinary=photon.exe",
                 "-dIcon=icon.ico",
                 "-dLicenseRtf=license.rtf",
+                "-dLicenseFile=LICENSE",
+                "-dNoticesFile=THIRD-PARTY-NOTICES.md",
             ])
             .args(["main.wxs", "install-dir-ui.wxs"])
             .current_dir(&work),
@@ -803,6 +833,8 @@ mod tests {
         assert!(wxs.contains("<Condition>DESKTOPSHORTCUT</Condition>"));
         assert!(wxs.contains("<Property Id=\"DESKTOPSHORTCUT\" Secure=\"yes\" />"));
         assert!(wxs.contains("Name=\"photon.exe\""));
+        assert!(wxs.contains("Name=\"LICENSE.txt\""));
+        assert!(wxs.contains("Name=\"THIRD-PARTY-NOTICES.md\""));
         assert!(
             !wxs.contains("{{"),
             "a placeholder of Tauri's template is left"
@@ -832,6 +864,14 @@ mod tests {
             "icon.ico",
         ] {
             assert!(icons.join(file).is_file(), "{file}");
+        }
+    }
+
+    // The licence and third-party notices every package ships exist at the repo root.
+    #[test]
+    fn the_notices_are_there() {
+        for file in NOTICES {
+            assert!(root().join(file).is_file(), "{file}");
         }
     }
 }

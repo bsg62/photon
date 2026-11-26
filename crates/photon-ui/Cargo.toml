@@ -46,8 +46,8 @@ photon-engine = { path = "../photon-engine" }
 eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "persistence", "wgpu", "wayland", "x11"] }
 # egui's SVG loader, for the icons.
 egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"] }
-# The platform's interface face, and an installed face for every script it lacks. MIT. Not
-# on crates.io, so pinned to a tag; without its `inter` feature it bundles no font.
+# The platform's interface face, and an installed face for every script it lacks. MIT AND
+# OFL-1.1. Not on crates.io, so pinned to a tag; without its `inter` feature it bundles no font.
 fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", default-features = false }
 # The runs of a line that mixes right-to-left and left-to-right text (`text.rs`).
 unicode-bidi = "0.3.18"
