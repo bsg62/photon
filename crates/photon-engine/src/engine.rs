@@ -908,11 +908,14 @@ impl Engine {
     }
 
     /// Sorts every view by `sort`, rebuilds the grid, and remembers the choice for the next
-    /// launch. Stored only once the rebuild has succeeded: a sort that could not be shown
-    /// is rolled back, and remembering it would bring the failure back at startup.
+    /// launch. Stored only once the rebuild has succeeded and was not superseded by a newer
+    /// view/sort change: a sort that could not be shown is rolled back, and a superseded sort
+    /// must not overwrite a newer choice in SQLite.
     pub fn set_sort(&self, sort: Sort) -> Result<Option<u64>> {
         let shown = self.rebuild_or_restore(|state| state.sort = sort)?;
-        self.lib.set_grid_sort(sort)?;
+        if shown.is_some() {
+            self.lib.set_grid_sort(sort)?;
+        }
         Ok(shown)
     }
 
@@ -972,40 +975,64 @@ impl Engine {
     /// a version: a same-version `GridInfo` can report the restored view, so no version would
     /// tell the UI anything.
     fn rebuild_or_restore(&self, mutate: impl FnOnce(&mut ViewState)) -> Result<Option<u64>> {
-        let previous = {
+        // Take the snapshot under the same `state` lock as the mutation so a concurrent
+        // setter cannot interleave between updating `state` and snapshotting what to build.
+        let (previous, rebuild) = {
             let mut state = self.state.lock();
             let previous = state.clone();
             mutate(&mut state);
             state.epoch += 1;
-            previous
+            let seq = self.next_rebuild.fetch_add(1, Ordering::SeqCst);
+            (
+                previous,
+                Rebuild {
+                    state: state.clone(),
+                    seq,
+                },
+            )
         };
-        // `snapshot`, not `data_snapshot`: moving the view changes no data, so its publish
-        // does not ask the UI to refetch the collections - unless a data rebuild it
-        // overtook left `data_dirty` set, which it then carries.
-        let published = match self.rebuild(self.snapshot()) {
+        let target_epoch = rebuild.state.epoch;
+        // Not `data_snapshot`: moving the view changes no data, so its publish does not ask
+        // the UI to refetch the collections - unless a data rebuild it overtook left
+        // `data_dirty` set, which it then carries.
+        let published = match self.rebuild(rebuild) {
             Ok(published) => published,
-            Err(err) => return Err(self.restore(previous, err)),
+            Err(err) => return Err(self.restore(previous, target_epoch, err)),
         };
         Ok(published.shown_at())
     }
 
-    /// `rebuild_or_restore`'s rollback: puts `previous` back and returns `err`.
-    fn restore(&self, previous: ViewState, err: Error) -> Error {
-        {
+    /// `rebuild_or_restore`'s rollback: puts `previous` back if no later view change has
+    /// already moved `state` past `target_epoch`, and returns `err`.
+    fn restore(&self, previous: ViewState, target_epoch: u64, err: Error) -> Error {
+        let restored = {
             // The whole state rather than field by field, so a field added to it cannot
-            // be left out of the rollback. Only the epoch moves on.
+            // be left out of the rollback. Only restore if `state` is still at the failed
+            // epoch; otherwise a newer view switch already superseded us and must not be
+            // clobbered.
             let mut state = self.state.lock();
-            *state = ViewState {
-                epoch: state.epoch + 1,
-                ..previous
-            };
-        }
+            if state.epoch != target_epoch {
+                None
+            } else {
+                *state = ViewState {
+                    epoch: state.epoch + 1,
+                    ..previous
+                };
+                let seq = self.next_rebuild.fetch_add(1, Ordering::SeqCst);
+                Some(Rebuild {
+                    state: state.clone(),
+                    seq,
+                })
+            }
+        };
         // The bump above discards every rebuild in flight for the state just restored,
         // so rows a scan committed meanwhile would otherwise wait for its next tick. A
         // best-effort rebuild for the restored state closes that; it is the query that
         // was working a moment ago, and if it fails too there is nothing better to do
         // than log it. A view rebuild too: a scan's commit marked the data itself.
-        if let Err(err) = self.rebuild(self.snapshot()) {
+        if let Some(rebuild) = restored
+            && let Err(err) = self.rebuild(rebuild)
+        {
             tracing::warn!(%err, "grid refresh for the restored view failed");
         }
         err
@@ -1586,12 +1613,26 @@ impl Engine {
     }
 
     /// Starts the watcher service unless one is already running or the engine is shutting
-    /// down. Held under `watcher`'s lock for the whole check-then-create so a `shutdown`
-    /// racing this can never miss the service this call is about to store.
+    /// down. Constructs the service *outside* `self.watcher`'s lock so a `watch_root` call
+    /// blocked on an unresponsive mount cannot hold the mutex against `stop_watcher`,
+    /// `add_folder`, or `remove_folder`; if shutdown or another starter won the race while
+    /// it was starting, the extra service is stopped immediately.
     pub fn start_watcher(self: &Arc<Self>) {
-        let mut slot = self.watcher.lock();
-        if slot.is_none() && !self.shutting_down.load(Ordering::SeqCst) {
-            *slot = Some(Arc::new(WatcherService::start(self)));
+        if self.watcher.lock().is_some() || self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let service = Arc::new(WatcherService::start(self));
+        let redundant = {
+            let mut slot = self.watcher.lock();
+            if slot.is_none() && !self.shutting_down.load(Ordering::SeqCst) {
+                *slot = Some(service);
+                None
+            } else {
+                Some(service)
+            }
+        };
+        if let Some(service) = redundant {
+            service.stop();
         }
     }
 
@@ -7310,5 +7351,36 @@ mod tests {
         f.engine.set_view(GridView::Starred).unwrap();
 
         assert_eq!(crate::commands::grid_info(&f.engine, None).search_query, "");
+    }
+
+    // If another view switch moves `state.epoch` while an earlier switch is failing, the
+    // earlier switch's `restore` must not clobber the newer view back to its old `previous`.
+    #[test]
+    fn restore_does_not_clobber_a_newer_view_epoch() {
+        use photon_core::grid::GridView;
+        let f = fixture(&[("a/photo.jpg", &jpeg(16, 16))]);
+        f.add_photos();
+        f.settle();
+
+        let previous = f.engine.state.lock().clone();
+        let failed_epoch = {
+            let mut state = f.engine.state.lock();
+            state.view = GridView::Search;
+            state.arg = "broken".into();
+            state.epoch += 1;
+            state.epoch
+        };
+        // A newer view switch lands before `restore` runs.
+        f.engine.set_view(GridView::Starred).unwrap();
+        assert_eq!(f.engine.view(), GridView::Starred);
+
+        let _ = f
+            .engine
+            .restore(previous, failed_epoch, photon_core::Error::EmptyPersonName);
+        assert_eq!(
+            f.engine.view(),
+            GridView::Starred,
+            "stale rollback must not overwrite a newer view"
+        );
     }
 }

@@ -245,15 +245,32 @@ impl WatcherService {
                  filesystem call open past this point)"
             );
         }
-        // Not "safe because both threads have stopped" — after a timeout one of them may
-        // still be running. It is safe because of what such a thread can do next, which is
-        // nothing that matters: the slot has its own lock, so taking it cannot race;
-        // `rescan_offline_roots` finding `None` does nothing; `retry_watcher_startup`
-        // returns early once `stopping` is set, so it can neither install a fresh watcher
-        // here nor spawn an event thread this `stop` would never see; and
-        // `Engine::start_scan_inner` refuses to start anything while the engine is shutting
-        // down.
-        self.watcher.lock().take();
+        // If every watcher thread stopped, take and drop the OS watcher now. If a thread
+        // timed out inside a blocking `watch_root` on an unresponsive mount, it may still
+        // hold `self.watcher`'s mutex — blocking here would defeat `STOP_TIMEOUT` and hang
+        // shutdown indefinitely. `try_lock()` takes it when free and otherwise lets it drop
+        // when the detached thread eventually unwinds.
+        if still_running == 0 {
+            self.watcher.lock().take();
+        } else if let Some(mut slot) = self.watcher.try_lock() {
+            slot.take();
+        }
+    }
+}
+
+/// Reads watched folders from the library, logging and returning `None` on transient
+/// database errors rather than masquerading as an empty list (which would wipe `pending`
+/// follow-ups or `degraded` roots).
+fn watched_folders_or_log(
+    engine: &Engine,
+    context: &str,
+) -> Option<Vec<photon_core::library::WatchedFolder>> {
+    match engine.lib.watched_folders() {
+        Ok(watched) => Some(watched),
+        Err(err) => {
+            tracing::warn!(%err, context, "could not read watched folders from library");
+            None
+        }
     }
 }
 
@@ -357,7 +374,9 @@ fn watcher_died(
          until it can be restarted"
     );
     watcher.lock().take();
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    let Some(watched) = watched_folders_or_log(engine, "watcher_died") else {
+        return;
+    };
     let mut degraded = degraded.lock();
     let newly: Vec<i64> = watched
         .iter()
@@ -380,10 +399,10 @@ fn watcher_died(
 /// nothing else would ever notice: the periodic rescan those roots fall back to is what
 /// picks the missed changes up.
 fn degrade_failed_roots(engine: &Arc<Engine>, degraded: &Mutex<Vec<i64>>, failures: &[WatchError]) {
-    let roots: Vec<WatchedRoot> = engine
-        .lib
-        .watched_folders()
-        .unwrap_or_default()
+    let Some(watched) = watched_folders_or_log(engine, "degrade_failed_roots") else {
+        return;
+    };
+    let roots: Vec<WatchedRoot> = watched
         .iter()
         .filter(|w| w.online)
         .map(|w| WatchedRoot {
@@ -421,7 +440,9 @@ fn try_start_watcher(
     engine: &Arc<Engine>,
     degraded: &Mutex<Vec<i64>>,
 ) -> Option<(Watcher, Receiver<Changed>, Receiver<Vec<WatchError>>)> {
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    // Returning `None` on a transient DB error leaves `watcher` uninstalled so the ticker
+    // retries on the next tick instead of installing an empty watcher with zero roots.
+    let watched = watched_folders_or_log(engine, "try_start_watcher")?;
     match Watcher::start(DEBOUNCE) {
         Ok((mut watcher, rx, errors)) => {
             let mut failed = Vec::new();
@@ -613,7 +634,9 @@ fn rescan_due_degraded_roots(
     if due.is_empty() {
         return;
     }
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    let Some(watched) = watched_folders_or_log(engine, "rescan_due_degraded_roots") else {
+        return;
+    };
     for id in due {
         // Recorded even when the scan slot is busy and nothing starts: the scan in it ends
         // in a `FullScan` of its own, or, if it is a subtree scan, the root is simply asked
@@ -652,7 +675,9 @@ fn plan_and_apply(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Pending>>, 
     };
     let dirs = canonical(changed.dirs);
     let ini_dirs = canonical(changed.ini_dirs);
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    let Some(watched) = watched_folders_or_log(engine, "plan_and_apply") else {
+        return;
+    };
     let roots: Vec<WatchedRoot> = watched
         .iter()
         .map(|w| WatchedRoot {
@@ -721,7 +746,9 @@ fn try_drain(engine: &Arc<Engine>, pending: &Mutex<HashMap<i64, Pending>>) {
     if candidates.is_empty() {
         return;
     }
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    let Some(watched) = watched_folders_or_log(engine, "try_drain") else {
+        return;
+    };
     for (id, walk) in candidates {
         let Some(folder) = watched.iter().find(|w| w.id == id) else {
             pending.lock().remove(&id);
@@ -818,7 +845,9 @@ fn rescan_offline_roots(
     degraded: &Mutex<Vec<i64>>,
     watcher: &Mutex<Option<Watcher>>,
 ) {
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    let Some(watched) = watched_folders_or_log(engine, "rescan_offline_roots") else {
+        return;
+    };
     for w in watched.into_iter().filter(|w| !w.online) {
         if Path::new(&w.path).is_dir() {
             match try_register(watcher, degraded, w.id, Path::new(&w.path)) {
@@ -903,7 +932,9 @@ fn reregister_degraded_roots(
     if ids.is_empty() {
         return;
     }
-    let watched = engine.lib.watched_folders().unwrap_or_default();
+    let Some(watched) = watched_folders_or_log(engine, "reregister_degraded_roots") else {
+        return;
+    };
     for id in ids {
         let Some(folder) = watched.iter().find(|w| w.id == id) else {
             degraded.lock().retain(|x| *x != id);
@@ -2117,5 +2148,51 @@ mod tests {
 
         assert_eq!(f.engine.grid().1.len(), 1);
         f.engine.stop_watcher();
+    }
+
+    // A transient database error reading `watched_folders` must not masquerade as an empty
+    // list and wipe queued `pending` follow-ups or `degraded` roots.
+    #[test]
+    fn transient_db_error_preserves_pending_and_degraded_state() {
+        let f = fixture(&[("a.jpg", &jpeg(16, 16))]);
+        let watched = f.add_photos();
+        let pending = Mutex::new(HashMap::new());
+        let dir = PathBuf::from(&watched.path).join("sub");
+        queue_pending(&pending, watched.id, dir.clone(), Path::new(&watched.path));
+        let degraded = Mutex::new(vec![watched.id]);
+        let watcher = Mutex::new(None);
+
+        // Break `watched_folders` queries temporarily by renaming the table on a second
+        // connection (the same technique `engine.rs`'s rollback tests use).
+        let db = rusqlite::Connection::open(f.config().db_path).unwrap();
+        db.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        db.execute(
+            "ALTER TABLE watched_folders RENAME TO watched_folders_hidden",
+            [],
+        )
+        .unwrap();
+
+        try_drain(&f.engine, &pending);
+        reregister_degraded_roots(&f.engine, &degraded, &watcher);
+        assert!(
+            try_start_watcher(&f.engine, &degraded).is_none(),
+            "try_start_watcher must not install an empty watcher when watched_folders fails"
+        );
+
+        assert!(
+            pending.lock().contains_key(&watched.id),
+            "pending follow-ups must survive a transient watched_folders error"
+        );
+        assert_eq!(
+            *degraded.lock(),
+            vec![watched.id],
+            "degraded roots must survive a transient watched_folders error"
+        );
+
+        db.execute(
+            "ALTER TABLE watched_folders_hidden RENAME TO watched_folders",
+            [],
+        )
+        .unwrap();
     }
 }
