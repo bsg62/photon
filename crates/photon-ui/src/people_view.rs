@@ -171,7 +171,9 @@ impl PeopleView {
             match made {
                 Made::Pixels(rgba) => {
                     let side = CROP_PX as usize;
-                    let image = ColorImage::from_rgba_unmultiplied([side, side], &rgba);
+                    // Face crops are always opaque (`a == 255`), so premultiplied skips
+                    // the per-pixel alpha-multiply pass while producing identical pixels.
+                    let image = ColorImage::from_rgba_premultiplied([side, side], &rgba);
                     let name = format!("face-crop-{}-{}", of.0, of.1);
                     let texture = ctx.load_texture(name, image, TextureOptions::LINEAR);
                     let drawn = self.frame;

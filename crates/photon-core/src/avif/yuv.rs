@@ -2,8 +2,10 @@
 //! feeds thumbnails, edits and the viewer's full picture alike, as the Tauri photon's web
 //! view showed its own decode of the file instead.
 
+#[cfg(test)]
 use super::av1::Planes;
-use image::{RgbImage, Rgba, RgbaImage};
+use super::av1::{Frame, SampleRow};
+use image::{RgbImage, RgbaImage};
 
 /// H.273 matrix coefficients 0: the planes are G, B, R rather than luma and chroma.
 pub(super) const IDENTITY: u16 = 0;
@@ -71,59 +73,121 @@ fn to8(c: f32) -> u8 {
 /// whether it is computed per pixel or once for its sample, but `luma + a * b` regrouped,
 /// or a division turned into a multiplication by the reciprocal, can round the other way
 /// and move a colour level. `matches_the_per_pixel_conversion` holds it to that.
-pub(super) fn to_rgb(p: &Planes, matrix: u16, full_range: bool) -> RgbImage {
+#[derive(Clone, Copy)]
+struct MatrixParams {
+    matrix: u16,
+    kr: f32,
+    kb: f32,
+    kg: f32,
+    levels: Levels,
+    shift_x: u32,
+}
+
+fn fill_chroma<T: Copy + Into<u16>>(
+    u: &[T],
+    v: &[T],
+    params: MatrixParams,
+    red: &mut [f32],
+    blue: &mut [f32],
+) {
+    for i in 0..red.len() {
+        (red[i], blue[i]) = if params.matrix == IDENTITY {
+            (
+                params.levels.luma(v[i].into()),
+                params.levels.luma(u[i].into()),
+            )
+        } else {
+            (
+                2.0 * (1.0 - params.kr) * params.levels.chroma(v[i].into()),
+                2.0 * (1.0 - params.kb) * params.levels.chroma(u[i].into()),
+            )
+        };
+    }
+}
+
+fn fill_rgb_row<T: Copy + Into<u16>>(
+    row: &mut [u8],
+    luma: &[T],
+    params: MatrixParams,
+    red: &[f32],
+    blue: &[f32],
+) {
+    let pixels = row.as_chunks_mut::<3>().0.iter_mut().zip(luma).enumerate();
+    if params.matrix == IDENTITY {
+        for (x, (px, &s)) in pixels {
+            let i = x >> params.shift_x;
+            *px = [to8(red[i]), to8(params.levels.luma(s.into())), to8(blue[i])];
+        }
+    } else {
+        for (x, (px, &s)) in pixels {
+            let i = x >> params.shift_x;
+            let luma = params.levels.luma(s.into());
+            let r = luma + red[i];
+            let b = luma + blue[i];
+            let g = (luma - params.kr * r - params.kb * b) / params.kg;
+            *px = [to8(r), to8(g), to8(b)];
+        }
+    }
+}
+
+pub(super) fn to_rgb(p: &Frame<'_>, matrix: u16, full_range: bool) -> RgbImage {
     let levels = Levels::new(p.depth, full_range);
     let (width, height) = (p.width, p.height);
     let mut out = vec![0u8; width * height * 3];
     if width > 0 {
-        let rows = out.chunks_exact_mut(width * 3).zip(p.y.chunks_exact(width));
         if p.mono {
-            for (row, luma) in rows {
-                for (px, &s) in row.as_chunks_mut::<3>().0.iter_mut().zip(luma) {
-                    let g = to8(levels.luma(s));
-                    *px = [g, g, g];
+            for (y, row) in out.chunks_exact_mut(width * 3).enumerate() {
+                match p.y_row(y) {
+                    SampleRow::U8(luma) => {
+                        for (px, &s) in row.as_chunks_mut::<3>().0.iter_mut().zip(luma) {
+                            let g = to8(levels.luma(u16::from(s)));
+                            *px = [g, g, g];
+                        }
+                    }
+                    SampleRow::U16(luma) => {
+                        for (px, &s) in row.as_chunks_mut::<3>().0.iter_mut().zip(luma) {
+                            let g = to8(levels.luma(s));
+                            *px = [g, g, g];
+                        }
+                    }
                 }
             }
         } else {
             let (kr, kb) = weights(matrix);
-            let kg = 1.0 - kr - kb;
+            let params = MatrixParams {
+                matrix,
+                kr,
+                kb,
+                kg: 1.0 - kr - kb,
+                levels,
+                shift_x: p.shift.0,
+            };
             let chroma_width = p.chroma_width();
             // What each chroma sample of the current chroma row contributes: R and B's
             // chroma terms, or for identity the R and B samples themselves.
             let mut red = vec![0f32; chroma_width];
             let mut blue = vec![0f32; chroma_width];
             let mut chroma_row = None;
-            for (y, (row, luma)) in rows.enumerate() {
+            for (y, row) in out.chunks_exact_mut(width * 3).enumerate() {
                 let c = y >> p.shift.1;
                 if chroma_row != Some(c) {
                     chroma_row = Some(c);
-                    let at = c * chroma_width;
-                    let (u, v) = (&p.u[at..at + chroma_width], &p.v[at..at + chroma_width]);
-                    for i in 0..chroma_width {
-                        (red[i], blue[i]) = if matrix == IDENTITY {
-                            (levels.luma(v[i]), levels.luma(u[i]))
-                        } else {
-                            (
-                                2.0 * (1.0 - kr) * levels.chroma(v[i]),
-                                2.0 * (1.0 - kb) * levels.chroma(u[i]),
-                            )
-                        };
+                    match (p.u_row(c), p.v_row(c)) {
+                        (SampleRow::U8(u), SampleRow::U8(v)) => {
+                            fill_chroma(u, v, params, &mut red, &mut blue);
+                        }
+                        (SampleRow::U16(u), SampleRow::U16(v)) => {
+                            fill_chroma(u, v, params, &mut red, &mut blue);
+                        }
+                        _ => unreachable!("U and V planes share the frame bit depth"),
                     }
                 }
-                let pixels = row.as_chunks_mut::<3>().0.iter_mut().zip(luma).enumerate();
-                if matrix == IDENTITY {
-                    for (x, (px, &s)) in pixels {
-                        let i = x >> p.shift.0;
-                        *px = [to8(red[i]), to8(levels.luma(s)), to8(blue[i])];
+                match p.y_row(y) {
+                    SampleRow::U8(luma) => {
+                        fill_rgb_row(row, luma, params, &red, &blue);
                     }
-                } else {
-                    for (x, (px, &s)) in pixels {
-                        let i = x >> p.shift.0;
-                        let luma = levels.luma(s);
-                        let r = luma + red[i];
-                        let b = luma + blue[i];
-                        let g = (luma - kr * r - kb * b) / kg;
-                        *px = [to8(r), to8(g), to8(b)];
+                    SampleRow::U16(luma) => {
+                        fill_rgb_row(row, luma, params, &red, &blue);
                     }
                 }
             }
@@ -132,19 +196,17 @@ pub(super) fn to_rgb(p: &Planes, matrix: u16, full_range: bool) -> RgbImage {
     RgbImage::from_raw(width as u32, height as u32, out).expect("sized for the picture")
 }
 
-/// Joins the colour picture with its alpha item's luma, dividing premultiplied colour back
-/// out so the result is straight alpha like every other RGBA image `image` hands around.
-pub(super) fn attach_alpha(
-    rgb: RgbImage,
-    alpha: &Planes,
+fn fill_alpha_row<T: Copy + Into<u16>>(
+    rgb_row: &[u8],
+    alpha_row: &[T],
+    dst_row: &mut [u8],
+    levels: Levels,
     premultiplied: bool,
-) -> Result<RgbaImage, String> {
-    if (alpha.width, alpha.height) != (rgb.width() as usize, rgb.height() as usize) {
-        return Err("the alpha plane does not match the picture's size".into());
-    }
-    let levels = Levels::new(alpha.depth, alpha.full_range);
-    Ok(RgbaImage::from_fn(rgb.width(), rgb.height(), |x, y| {
-        let a = to8(levels.luma(alpha.y[y as usize * alpha.width + x as usize]));
+) {
+    let (src_px, _) = rgb_row.as_chunks::<3>();
+    let (dst_px, _) = dst_row.as_chunks_mut::<4>();
+    for ((&[r, g, b], &a_sample), dst) in src_px.iter().zip(alpha_row).zip(dst_px) {
+        let a = to8(levels.luma(a_sample.into()));
         let straight = |c: u8| {
             if premultiplied && a > 0 {
                 ((u32::from(c) * 255 + u32::from(a) / 2) / u32::from(a)).min(255) as u8
@@ -152,15 +214,53 @@ pub(super) fn attach_alpha(
                 c
             }
         };
-        let [r, g, b] = rgb.get_pixel(x, y).0;
-        Rgba([straight(r), straight(g), straight(b), a])
-    }))
+        *dst = [straight(r), straight(g), straight(b), a];
+    }
+}
+
+/// Joins the colour picture with its alpha item's luma, dividing premultiplied colour back
+/// out so the result is straight alpha like every other RGBA image `image` hands around.
+pub(super) fn attach_alpha(
+    rgb: RgbImage,
+    alpha: &Frame<'_>,
+    premultiplied: bool,
+) -> Result<RgbaImage, String> {
+    let (width, height) = (rgb.width() as usize, rgb.height() as usize);
+    if (alpha.width, alpha.height) != (width, height) {
+        return Err("the alpha plane does not match the picture's size".into());
+    }
+    let levels = Levels::new(alpha.depth, alpha.full_range);
+    let mut out = vec![0u8; width * height * 4];
+    let rgb_raw = rgb.as_raw();
+    for (y, (rgb_row, dst_row)) in rgb_raw
+        .chunks_exact(width * 3)
+        .zip(out.chunks_exact_mut(width * 4))
+        .enumerate()
+    {
+        match alpha.y_row(y) {
+            SampleRow::U8(a) => fill_alpha_row(rgb_row, a, dst_row, levels, premultiplied),
+            SampleRow::U16(a) => fill_alpha_row(rgb_row, a, dst_row, levels, premultiplied),
+        }
+    }
+    Ok(RgbaImage::from_raw(width as u32, height as u32, out).expect("sized for the picture"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::Rgb;
+
+    fn to_rgb(p: &Planes, matrix: u16, full_range: bool) -> RgbImage {
+        super::to_rgb(&p.as_frame(), matrix, full_range)
+    }
+
+    fn attach_alpha(
+        rgb: RgbImage,
+        alpha: &Planes,
+        premultiplied: bool,
+    ) -> Result<RgbaImage, String> {
+        super::attach_alpha(rgb, &alpha.as_frame(), premultiplied)
+    }
 
     /// A width×height picture of one YUV colour, at `depth` bits and `shift` subsampling.
     fn flat(width: usize, height: usize, depth: u8, shift: (u32, u32), yuv: [u16; 3]) -> Planes {

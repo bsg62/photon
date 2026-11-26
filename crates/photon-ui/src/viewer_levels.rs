@@ -96,17 +96,30 @@ pub fn halve(pixels: &Pixels) -> Pixels {
 /// zoom into: on a device that holds 8192 pixels a 12,000-pixel panorama is shown from
 /// its half. Never none: the smallest is kept whatever the limit says.
 pub fn levels(full: Pixels, max_side: u32) -> Vec<Pixels> {
-    let mut levels = vec![full];
-    while levels
-        .last()
-        .is_some_and(|level| level.width.max(level.height) > LEVEL_FLOOR)
-    {
-        let next = halve(levels.last().expect("there is a level"));
-        levels.push(next);
+    map_levels(full, max_side, |level| level)
+}
+
+/// Streaming [`levels`]: drops each oversized level immediately after halving it, and hands
+/// each kept level by value to `convert` right after computing its smaller half so the
+/// caller never holds both the full `Vec<Pixels>` pyramid and its converted images in RAM
+/// at once.
+pub fn map_levels<T>(full: Pixels, max_side: u32, mut convert: impl FnMut(Pixels) -> T) -> Vec<T> {
+    let mut cur = full;
+    while cur.width.max(cur.height) > max_side && cur.width.max(cur.height) > LEVEL_FLOOR {
+        cur = halve(&cur);
     }
-    let fits = |level: &Pixels| level.width.max(level.height) <= max_side;
-    let first = (levels.iter().position(fits)).unwrap_or(levels.len() - 1);
-    levels.split_off(first)
+    let mut out = Vec::new();
+    loop {
+        if cur.width.max(cur.height) > LEVEL_FLOOR {
+            let next = halve(&cur);
+            out.push(convert(cur));
+            cur = next;
+        } else {
+            out.push(convert(cur));
+            break;
+        }
+    }
+    out
 }
 
 /// Which of the levels, given by their widths largest first, is drawn where the picture

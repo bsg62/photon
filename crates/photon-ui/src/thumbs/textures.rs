@@ -86,11 +86,16 @@ pub struct Textures<T> {
     fading: HashMap<TexKey, f64>,
     bytes: usize,
     limit: usize,
+    floor: usize,
     frame: u64,
 }
 
 impl<T> Textures<T> {
     pub fn new(limit: usize) -> Self {
+        Self::with_floor(limit, LIMIT_FLOOR)
+    }
+
+    pub fn with_floor(limit: usize, floor: usize) -> Self {
         Self {
             held: HashMap::new(),
             waiting: VecDeque::new(),
@@ -103,6 +108,7 @@ impl<T> Textures<T> {
             fading: HashMap::new(),
             bytes: 0,
             limit,
+            floor,
             frame: 0,
         }
     }
@@ -274,7 +280,7 @@ impl<T> Textures<T> {
             .filter(|(key, _)| wanted.contains(key))
             .map(|(_, held)| held.bytes)
             .sum();
-        let limit = (in_view.saturating_mul(SLACK).max(LIMIT_FLOOR)).min(self.limit);
+        let limit = (in_view.saturating_mul(SLACK).max(self.floor)).min(self.limit);
         while self.bytes > limit {
             let oldest = self
                 .held
@@ -311,9 +317,8 @@ impl<T> Textures<T> {
     /// of those that could not be had. The limit and the count of frames stay.
     pub fn clear(&mut self) {
         *self = Self {
-            limit: self.limit,
             frame: self.frame,
-            ..Self::new(self.limit)
+            ..Self::with_floor(self.limit, self.floor)
         };
     }
 
@@ -613,5 +618,19 @@ mod tests {
         assert!(textures.failed(wanted[0]));
         assert!(!textures.failed(wanted[1]));
         assert_eq!(textures.missing(&wanted, 0.0), keys(1..2));
+    }
+
+    #[test]
+    fn with_floor_zero_evicts_below_the_grid_floor_to_slack_times_in_view() {
+        let mut textures: Textures<u64> = Textures::with_floor(DEFAULT_LIMIT, 0);
+        // Upload 10 textures of 16 bytes each (160 bytes total, well below LIMIT_FLOOR).
+        for i in 0..10 {
+            textures.begin_frame();
+            load(&mut textures, &keys(i..i + 1));
+        }
+        // Only 1 texture (16 bytes) is in view; with floor 0, limit is SLACK * 16 = 48 bytes
+        // (3 textures), evicting the 7 oldest instead of keeping all 10 under LIMIT_FLOOR.
+        assert_eq!(textures.len(), SLACK);
+        assert_eq!(textures.bytes(), SLACK * 16);
     }
 }

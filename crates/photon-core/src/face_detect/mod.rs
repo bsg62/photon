@@ -122,7 +122,7 @@ impl Plan {
         let side = self.side;
         // Scaled down to fit and never up: a face is found by its size in pixels, and
         // enlarging a small picture only invents them.
-        let fitted = crate::decode::shrink_within(image, side as u32).to_rgb8();
+        let fitted = crate::decode::shrink_within(image, side as u32).into_rgb8();
         // Top left of a black square, as the model was trained: BGR, 0..255, planar.
         let plane = side * side;
         let mut input = vec![0f32; 3 * plane];
@@ -140,17 +140,32 @@ impl Plan {
         if found.len() != 12 {
             return Err(model_error(format!("{} outputs, expected 12", found.len())));
         }
-        let flat = |i: usize| -> Result<Vec<f32>> {
-            Ok(found[i]
-                .to_plain_array_view::<f32>()
-                .map_err(model_error)?
-                .iter()
-                .copied()
-                .collect())
-        };
         let mut raw: Vec<Raw> = Vec::new();
         for (i, stride) in STRIDES.into_iter().enumerate() {
-            let (cls, obj, bbox, kps) = (flat(i)?, flat(3 + i)?, flat(6 + i)?, flat(9 + i)?);
+            let cls_view = found[i].to_plain_array_view::<f32>().map_err(model_error)?;
+            let obj_view = found[3 + i]
+                .to_plain_array_view::<f32>()
+                .map_err(model_error)?;
+            let bbox_view = found[6 + i]
+                .to_plain_array_view::<f32>()
+                .map_err(model_error)?;
+            let kps_view = found[9 + i]
+                .to_plain_array_view::<f32>()
+                .map_err(model_error)?;
+            fn as_cow<'a>(
+                view: &'a tract_ndarray::ArrayViewD<'a, f32>,
+            ) -> std::borrow::Cow<'a, [f32]> {
+                match view.as_slice() {
+                    Some(slice) => std::borrow::Cow::Borrowed(slice),
+                    None => std::borrow::Cow::Owned(view.iter().copied().collect()),
+                }
+            }
+            let (cls, obj, bbox, kps) = (
+                as_cow(&cls_view),
+                as_cow(&obj_view),
+                as_cow(&bbox_view),
+                as_cow(&kps_view),
+            );
             let level = Level {
                 stride,
                 cls: &cls,

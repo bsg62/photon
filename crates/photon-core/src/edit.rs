@@ -404,13 +404,17 @@ pub fn render_picture(path: &Path, orientation: u8, edit: Edit) -> Result<Dynami
     Ok(edit.place(crate::decode::decode_image(path)?, orientation))
 }
 
-/// [`render_picture`], converted to straight RGBA in sRGB from the colour profile extracted
-/// during the same file read.
+/// [`render_picture`], converted to sRGB from the colour profile extracted during the same
+/// file read. Opaque photos remain `ImageRgb8` so callers can downscale before adding an
+/// alpha channel.
 pub fn render_picture_in_srgb(path: &Path, orientation: u8, edit: Edit) -> Result<DynamicImage> {
     let (img, colours) = crate::decode::decode_image_with_colours(path)?;
     let picture = edit.place(img, orientation);
     let profile = colours.and_then(crate::colour::Profile::from_colours);
-    Ok(crate::colour::apply_profile(picture, profile.as_ref()))
+    Ok(crate::colour::apply_profile_preserving_alpha(
+        picture,
+        profile.as_ref(),
+    ))
 }
 
 /// [`render_picture`] fitted within `max_edge` with `filter`, and decoded no larger than

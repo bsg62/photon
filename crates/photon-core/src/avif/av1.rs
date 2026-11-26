@@ -24,6 +24,7 @@ use rav1d::src::lib::{
     dav1d_open, dav1d_picture_unref, dav1d_send_data,
 };
 use std::ffi::c_void;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
@@ -38,8 +39,89 @@ const MAX_FRAME_PIXELS: u32 = 512 * 1024 * 1024 / 4;
 /// macOS: it has to come from the platform's own headers.
 const AGAIN: i32 = -libc::EAGAIN;
 
-/// One decoded AV1 frame. Every plane is widened to 16-bit samples whatever the bit depth,
-/// and packed row after row with no stride padding.
+/// One row of decoded samples borrowed directly from a `Dav1dPicture` plane (or a test
+/// buffer): 8-bit frames stay 1 byte/sample instead of being widened into a `Vec<u16>` copy.
+#[derive(Clone, Copy)]
+pub(crate) enum SampleRow<'a> {
+    U8(&'a [u8]),
+    U16(&'a [u16]),
+}
+
+#[derive(Clone, Copy)]
+struct PlaneRef<'a> {
+    base: *const u8,
+    stride: isize,
+    width: usize,
+    height: usize,
+    depth: u8,
+    _borrow: PhantomData<&'a ()>,
+}
+
+impl<'a> PlaneRef<'a> {
+    fn row(self, y: usize) -> SampleRow<'a> {
+        assert!(
+            y < self.height,
+            "plane row {y} out of bounds {}",
+            self.height
+        );
+        // SAFETY: `PlaneRef<'a>` is only constructed from a live `Dav1dPicture` (or packed
+        // test slice) that outlives `'a`, with `height` rows `stride` bytes apart and
+        // `width` aligned samples per row.
+        unsafe {
+            let start = self.base.offset(y as isize * self.stride);
+            if self.depth == 8 {
+                SampleRow::U8(std::slice::from_raw_parts(start, self.width))
+            } else {
+                SampleRow::U16(std::slice::from_raw_parts(start as *const u16, self.width))
+            }
+        }
+    }
+}
+
+/// Borrowed view of one decoded AV1 frame's planes directly inside `Dav1dPicture`, avoiding
+/// an intermediate full-frame `Vec<u16>` copy before YUV-to-RGB conversion.
+pub(crate) struct Frame<'a> {
+    pub width: usize,
+    pub height: usize,
+    /// 8, 10 or 12.
+    pub depth: u8,
+    /// No chroma planes.
+    pub mono: bool,
+    /// Chroma subsampling as (x, y) shifts: (1, 1) is 4:2:0, (1, 0) 4:2:2, (0, 0) 4:4:4.
+    pub shift: (u32, u32),
+    /// H.273 matrix coefficients and range, as the AV1 sequence header states them.
+    pub matrix: u16,
+    pub full_range: bool,
+    y: PlaneRef<'a>,
+    u: Option<PlaneRef<'a>>,
+    v: Option<PlaneRef<'a>>,
+}
+
+impl<'a> Frame<'a> {
+    pub fn chroma_width(&self) -> usize {
+        (self.width + (1 << self.shift.0) - 1) >> self.shift.0
+    }
+
+    #[cfg(test)]
+    pub fn chroma_height(&self) -> usize {
+        (self.height + (1 << self.shift.1) - 1) >> self.shift.1
+    }
+
+    pub fn y_row(&self, y: usize) -> SampleRow<'a> {
+        self.y.row(y)
+    }
+
+    pub fn u_row(&self, y: usize) -> SampleRow<'a> {
+        self.u.expect("non-mono frame has U plane").row(y)
+    }
+
+    pub fn v_row(&self, y: usize) -> SampleRow<'a> {
+        self.v.expect("non-mono frame has V plane").row(y)
+    }
+}
+
+/// One decoded AV1 frame copied into owned `Vec<u16>` planes, kept for unit tests.
+#[cfg(test)]
 pub(crate) struct Planes {
     pub width: usize,
     pub height: usize,
@@ -57,13 +139,41 @@ pub(crate) struct Planes {
     pub full_range: bool,
 }
 
+#[cfg(test)]
 impl Planes {
     pub fn chroma_width(&self) -> usize {
         (self.width + (1 << self.shift.0) - 1) >> self.shift.0
     }
 
+    #[cfg(test)]
     pub fn chroma_height(&self) -> usize {
         (self.height + (1 << self.shift.1) - 1) >> self.shift.1
+    }
+
+    pub fn as_frame(&self) -> Frame<'_> {
+        // Test buffers store packed `u16` samples even for 8-bit tests; pass depth 16 to
+        // `PlaneRef` only for element-width selection while keeping `Frame.depth` exact.
+        let make = |buf: &[u16], w: usize, h: usize| PlaneRef {
+            base: buf.as_ptr() as *const u8,
+            stride: (w * std::mem::size_of::<u16>()) as isize,
+            width: w,
+            height: h,
+            depth: 16,
+            _borrow: PhantomData,
+        };
+        let (cw, ch) = (self.chroma_width(), self.chroma_height());
+        Frame {
+            width: self.width,
+            height: self.height,
+            depth: self.depth,
+            mono: self.mono,
+            shift: self.shift,
+            matrix: self.matrix,
+            full_range: self.full_range,
+            y: make(&self.y, self.width, self.height),
+            u: (!self.mono).then(|| make(&self.u, cw, ch)),
+            v: (!self.mono).then(|| make(&self.v, cw, ch)),
+        }
     }
 }
 
@@ -98,8 +208,9 @@ impl Drop for Picture {
     }
 }
 
-/// Decodes one AV1 item - a still image, a grid tile or an alpha plane - to its planes.
-pub(crate) fn decode(obu: &[u8]) -> Result<Planes, String> {
+/// Decodes one AV1 item and passes a zero-copy [`Frame`] borrowing `Dav1dPicture`'s planes
+/// to `f`, freeing the picture and decoder context as soon as `f` returns.
+pub(crate) fn decode_with<T>(obu: &[u8], f: impl FnOnce(&Frame<'_>) -> T) -> Result<T, String> {
     if obu.is_empty() {
         return Err("empty AV1 item".into());
     }
@@ -164,10 +275,51 @@ pub(crate) fn decode(obu: &[u8]) -> Result<Planes, String> {
             return Err(format!("the AV1 item decoded to no picture ({})", got.0));
         }
     };
-    planes(&picture.0)
+    let frame = frame_view(&picture.0)?;
+    Ok(f(&frame))
 }
 
-fn planes(picture: &Dav1dPicture) -> Result<Planes, String> {
+#[cfg(test)]
+fn collect_plane<'a>(rows: usize, get: impl Fn(usize) -> SampleRow<'a>) -> Vec<u16> {
+    let mut out = Vec::new();
+    for y in 0..rows {
+        match get(y) {
+            SampleRow::U8(s) => out.extend(s.iter().map(|&v| u16::from(v))),
+            SampleRow::U16(s) => out.extend_from_slice(s),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn decode(obu: &[u8]) -> Result<Planes, String> {
+    decode_with(obu, |frame| {
+        let y = collect_plane(frame.height, |row| frame.y_row(row));
+        let (u, v) = if frame.mono {
+            (Vec::new(), Vec::new())
+        } else {
+            let ch = frame.chroma_height();
+            (
+                collect_plane(ch, |row| frame.u_row(row)),
+                collect_plane(ch, |row| frame.v_row(row)),
+            )
+        };
+        Planes {
+            width: frame.width,
+            height: frame.height,
+            depth: frame.depth,
+            mono: frame.mono,
+            shift: frame.shift,
+            y,
+            u,
+            v,
+            matrix: frame.matrix,
+            full_range: frame.full_range,
+        }
+    })
+}
+
+fn frame_view(picture: &Dav1dPicture) -> Result<Frame<'_>, String> {
     let p = &picture.p;
     let (Ok(width), Ok(height)) = (usize::try_from(p.w), usize::try_from(p.h)) else {
         return Err(format!(
@@ -194,52 +346,44 @@ fn planes(picture: &Dav1dPicture) -> Result<Planes, String> {
     // SAFETY: a returned picture holds a reference to its sequence header, alive until the
     // picture is unreferenced, which cannot happen while `picture` is borrowed here.
     let header = unsafe { header.as_ref() };
-    let mut planes = Planes {
+    let plane_ref = |data: Option<NonNull<c_void>>,
+                     stride: isize,
+                     w: usize,
+                     h: usize|
+     -> Result<PlaneRef<'_>, String> {
+        let base = data.ok_or("AV1 picture missing a plane")?.as_ptr() as *const u8;
+        Ok(PlaneRef {
+            base,
+            stride,
+            width: w,
+            height: h,
+            depth,
+            _borrow: PhantomData,
+        })
+    };
+    let y = plane_ref(picture.data[0], picture.stride[0], width, height)?;
+    let (u, v) = if mono {
+        (None, None)
+    } else {
+        let cw = (width + (1 << shift.0) - 1) >> shift.0;
+        let ch = (height + (1 << shift.1) - 1) >> shift.1;
+        (
+            Some(plane_ref(picture.data[1], picture.stride[1], cw, ch)?),
+            Some(plane_ref(picture.data[2], picture.stride[1], cw, ch)?),
+        )
+    };
+    Ok(Frame {
         width,
         height,
         depth,
         mono,
         shift,
-        y: Vec::new(),
-        u: Vec::new(),
-        v: Vec::new(),
         matrix: header.mtrx as u16,
         full_range: header.color_range != 0,
-    };
-    planes.y = copy_plane(picture.data[0], picture.stride[0], width, height, depth)?;
-    if !mono {
-        let (cw, ch) = (planes.chroma_width(), planes.chroma_height());
-        planes.u = copy_plane(picture.data[1], picture.stride[1], cw, ch, depth)?;
-        planes.v = copy_plane(picture.data[2], picture.stride[1], cw, ch, depth)?;
-    }
-    Ok(planes)
-}
-
-fn copy_plane(
-    data: Option<NonNull<c_void>>,
-    stride: isize,
-    width: usize,
-    height: usize,
-    depth: u8,
-) -> Result<Vec<u16>, String> {
-    let base = data.ok_or("AV1 picture missing a plane")?.as_ptr() as *const u8;
-    let mut out = Vec::with_capacity(width * height);
-    for row in 0..height {
-        // SAFETY: dav1d lays a plane out as `height` rows `stride` bytes apart, each holding
-        // `width` samples of one byte at 8 bits and two (aligned) above, and the picture
-        // outlives this copy.
-        unsafe {
-            let start = base.offset(row as isize * stride);
-            if depth == 8 {
-                let samples = std::slice::from_raw_parts(start, width);
-                out.extend(samples.iter().map(|&s| u16::from(s)));
-            } else {
-                let samples = std::slice::from_raw_parts(start as *const u16, width);
-                out.extend_from_slice(samples);
-            }
-        }
-    }
-    Ok(out)
+        y,
+        u,
+        v,
+    })
 }
 
 #[cfg(test)]

@@ -2742,14 +2742,16 @@ impl App {
                     .error("photon could not compare those photos.", now_ms),
             }
         }
-        // A pane's full picture, kept for the pane it was made for while compare stands.
+        // A pane's full picture, kept for the pane it was made for while compare stands and
+        // remains zoomed in.
         if let Some(answer) = self.compare_pictures.answer() {
             answered = true;
             if let (Ok((asked, made)), Some(open)) = (answer, &mut self.compare) {
                 open.asking = None;
-                let pane = (open.compare.panes().iter())
-                    .position(|pane| pane.id == asked.want.id && pane.key == asked.want.key);
-                if let Some(n) = pane {
+                if open.compare.wants_full()
+                    && let Some(n) = (open.compare.panes().iter())
+                        .position(|pane| pane.id == asked.want.id && pane.key == asked.want.key)
+                {
                     match made {
                         Made::Levels { levels, cut, .. } => {
                             let options = egui::TextureOptions::LINEAR;
@@ -3031,6 +3033,19 @@ impl App {
         let device = ctx.input(|input| input.max_texture_side) as u32;
         let shallow = device.min(within.0.max(within.1).saturating_mul(2));
         let zoom = *open.viewer.zoom();
+        // Back at fit (including when entering Crop, which resets zoom to fit), drop any
+        // deep zoom textures above `shallow` in place without requesting a new render:
+        // `fitted` and the shallow levels remain ready, while the full-resolution level-0
+        // texture (96-200 MB VRAM) is released immediately.
+        if zoom.is_fit()
+            && let Some(full) = open.full.as_mut().filter(|full| full.want == want)
+        {
+            full.trim_to(shallow);
+        }
+        let full = match open.crop.as_ref().filter(|_| uncropped) {
+            Some(crop) => crop.picture(),
+            None => open.picture(),
+        };
         let deep = !uncropped
             && !zoom.is_fit()
             && full
@@ -3736,8 +3751,14 @@ impl App {
         // fitted, a pane is drawn from its preview, which a zoom soon outgrows. Each with
         // levels no larger than twice a pane, as the viewer's are fitted; a zoom past the
         // largest has the whole picture made again (`FullPicture::short_of`). Four
-        // cameras' whole pictures were most of a GB of textures.
-        if open.compare.wants_full() && open.asking.is_none() {
+        // cameras' whole pictures were most of a GB of textures; returning to fit releases
+        // them immediately.
+        if !open.compare.wants_full() {
+            for slot in &mut open.full {
+                *slot = None;
+            }
+            open.asking = None;
+        } else if open.asking.is_none() {
             let scale = ctx.pixels_per_point();
             let place = compare_view::places(ctx.content_rect(), wants.len())[0];
             let pane = (
@@ -3802,6 +3823,12 @@ impl App {
         drop(data);
         drop(levels);
         *open.compare.zoom_mut() = zoom;
+        if !open.compare.wants_full() {
+            for slot in &mut open.full {
+                *slot = None;
+            }
+            open.asking = None;
+        }
 
         let (toasts, next_toast) = self.toasts.at(now);
         if let Some(at) = next_toast {
@@ -5661,6 +5688,27 @@ impl FullPicture {
         let drawn = viewer_layout::contained(w as f32, h as f32, area).width * zoom;
         self.cut && drawn > *width as f32 + 0.5
     }
+
+    /// Drops leading levels larger than `max_side` in place (keeping at least one level) so
+    /// returning to fit releases full-resolution zoom textures from VRAM immediately.
+    fn trim_to(&mut self, max_side: u32) {
+        if self.max_side <= max_side || self.levels.len() <= 1 {
+            return;
+        }
+        let first = self
+            .levels
+            .iter()
+            .position(|(tex, _)| {
+                let [w, h] = tex.size();
+                (w.max(h) as u32) <= max_side
+            })
+            .unwrap_or(self.levels.len() - 1);
+        if first > 0 {
+            self.levels.drain(..first);
+            self.cut = true;
+        }
+        self.max_side = max_side;
+    }
 }
 
 impl Viewing {
@@ -5779,21 +5827,27 @@ fn make_picture(engine: &Engine, asked: PictureAsk) -> Made {
     if picture.thumb_key != asked.want.key {
         return Made::Stale;
     }
+    let opaque = picture.opaque;
     let image = |width: u32, height: u32, rgba: &[u8]| {
-        egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], rgba)
+        if opaque {
+            egui::ColorImage::from_rgba_premultiplied([width as usize, height as usize], rgba)
+        } else {
+            egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], rgba)
+        }
     };
-    let fitted =
-        (picture.fitted.as_ref()).map(|fitted| image(fitted.width, fitted.height, &fitted.rgba));
+    // Convert and drop `fitted`'s raw buffer before halving `full` into levels.
+    let fitted = picture
+        .fitted
+        .map(|fitted| image(fitted.width, fitted.height, &fitted.rgba));
     let full = crate::thumbs::textures::Pixels {
         width: picture.full.width,
         height: picture.full.height,
         rgba: picture.full.rgba,
     };
     let width = full.width;
-    let levels: Vec<_> = viewer_levels::levels(full, asked.max_side)
-        .into_iter()
-        .map(|level| image(level.width, level.height, &level.rgba))
-        .collect();
+    let levels = viewer_levels::map_levels(full, asked.max_side, |level| {
+        image(level.width, level.height, &level.rgba)
+    });
     let cut = levels
         .first()
         .is_some_and(|level| level.size[0] as u32 != width);
